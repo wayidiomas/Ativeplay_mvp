@@ -174,7 +174,16 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const response = await fetch(url, options);
+      // Cria novo signal de timeout para cada tentativa
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
 
       // Se 429 (rate limit), tenta novamente com backoff
       if (response.status === 429 && attempt < retries) {
@@ -289,11 +298,11 @@ function parseExtinf(line) {
 }
 
 async function parseM3UStream(url, options = {}) {
+  // fetchWithRetry já cria signal de timeout internamente
   const response = await fetchWithRetry(url, {
     headers: {
       'User-Agent': USER_AGENT,
     },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
 
   if (!response.ok) {
