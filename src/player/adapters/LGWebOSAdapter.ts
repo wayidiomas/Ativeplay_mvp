@@ -68,6 +68,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   };
   private mediaId: string | null = null;
   private isBuffering: boolean = false;
+  private lastKnownPosition: number = 0; // ms
 
   constructor(containerId?: string) {
     if (typeof window !== 'undefined') {
@@ -340,6 +341,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
           },
           onSuccess: () => {
             this.setState('ready');
+            this.lastKnownPosition = this.options.startPosition || 0;
             resolve();
           },
           onFailure: (error) => {
@@ -367,6 +369,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
           method: 'seek',
           parameters: { mediaId: this.mediaId, position: this.options.startPosition },
         });
+        this.lastKnownPosition = this.options.startPosition;
       }
 
       if (this.options.autoPlay) {
@@ -502,6 +505,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
         method: 'seek',
         parameters: { mediaId: this.mediaId, position },
       });
+      this.lastKnownPosition = position;
       return;
     }
 
@@ -512,7 +516,8 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   seekForward(ms: number): void {
     if (this.isWebOS && this.webOS && this.mediaId) {
-      this.seek(ms);
+      const newPos = Math.max(0, this.lastKnownPosition + ms);
+      this.seek(newPos);
       return;
     }
     if (this.video) {
@@ -522,7 +527,8 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   seekBackward(ms: number): void {
     if (this.isWebOS && this.webOS && this.mediaId) {
-      this.seek(-ms);
+      const newPos = Math.max(0, this.lastKnownPosition - ms);
+      this.seek(newPos);
       return;
     }
     if (this.video) {
@@ -587,6 +593,43 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     }
   }
 
+  /**
+   * Ajusta estilo de legenda (quando suportado pelo Luna Service).
+   * @param style fontSize: 0-4, color: 'white'|'yellow'|'red'|'green'|'cyan', position: 'bottom'|'top'
+   */
+  setSubtitleStyle(style: { fontSize?: number; color?: 'white' | 'yellow' | 'red' | 'green' | 'cyan'; position?: 'bottom' | 'top' }): void {
+    if (!this.webOS || !this.mediaId) return;
+
+    const colorMap: Record<string, number> = {
+      yellow: 0,
+      red: 1,
+      white: 2,
+      green: 3,
+      cyan: 4,
+    };
+
+    if (style.fontSize !== undefined) {
+      this.webOS.service.request('luna://com.webos.media', {
+        method: 'setSubtitleFontSize',
+        parameters: { mediaId: this.mediaId, fontSize: Math.min(4, Math.max(0, style.fontSize)) },
+      });
+    }
+
+    if (style.color !== undefined) {
+      this.webOS.service.request('luna://com.webos.media', {
+        method: 'setSubtitleColor',
+        parameters: { mediaId: this.mediaId, color: colorMap[style.color] ?? 2 },
+      });
+    }
+
+    if (style.position !== undefined) {
+      this.webOS.service.request('luna://com.webos.media', {
+        method: 'setSubtitlePosition',
+        parameters: { mediaId: this.mediaId, position: style.position === 'top' ? 4 : 0 },
+      });
+    }
+  }
+
   // State & Info
 
   getState(): PlayerState {
@@ -599,9 +642,8 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   getPlaybackInfo(): PlaybackInfo {
     if (this.isWebOS) {
-      // Sem feedback contínuo; retorna parcial
       return {
-        currentTime: 0,
+        currentTime: this.lastKnownPosition,
         duration: 0,
         bufferedTime: 0,
         playbackRate: 1,

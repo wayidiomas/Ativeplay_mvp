@@ -315,6 +315,10 @@ export class BrowserAdapter implements IPlayerAdapter {
     }
   }
 
+  setSubtitleStyle(): void {
+    // Sem suporte nativo a customização de estilo no HTML5 básico (noop aqui).
+  }
+
   // State & Info
 
   getState(): PlayerState {

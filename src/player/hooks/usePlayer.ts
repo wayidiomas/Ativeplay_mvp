@@ -15,6 +15,7 @@ import type {
   AudioTrack,
   SubtitleTrack,
 } from '../types';
+import { parseHlsManifest, type HlsManifestInfo } from '@core/services/hls/manifest';
 import { createPlayer, destroyMainPlayer, type PlayerFactoryOptions } from '../PlayerFactory';
 
 export interface UsePlayerOptions extends PlayerFactoryOptions {
@@ -50,9 +51,18 @@ export interface UsePlayerReturn {
   setAudioTrack: (index: number) => void;
   setSubtitleTrack: (index: number) => void;
   toggleSubtitles: () => void;
+  setSubtitleStyle: (style: {
+    fontSize?: number;
+    color?: 'white' | 'yellow' | 'red' | 'green' | 'cyan';
+    position?: 'bottom' | 'top';
+  }) => void;
   setVolume: (volume: number) => void;
   toggleMute: () => void;
   close: () => void;
+
+  // External tracks parsed from HLS manifest (if available)
+  externalAudioTracks: HlsManifestInfo['audio'];
+  externalSubtitleTracks: HlsManifestInfo['subtitles'];
 
   // Player instance
   player: IPlayerAdapter | null;
@@ -82,6 +92,10 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     audioIndex: 0,
     subtitleIndex: -1,
     subtitleEnabled: false,
+  });
+  const [externalTracks, setExternalTracks] = useState<HlsManifestInfo>({
+    audio: [],
+    subtitles: [],
   });
 
   // Initialize player
@@ -153,6 +167,25 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     if (!playerRef.current) return;
     await playerRef.current.open(url, playerOptions);
     await playerRef.current.prepare();
+
+    // Se for manifest HLS, tenta parsear EXT-X-MEDIA para faixas externas
+    if (url.endsWith('.m3u8')) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          const text = await res.text();
+          const parsed = parseHlsManifest(text);
+          setExternalTracks(parsed);
+        } else {
+          setExternalTracks({ audio: [], subtitles: [] });
+        }
+      } catch (e) {
+        console.warn('[usePlayer] Falha ao parsear manifest HLS:', e);
+        setExternalTracks({ audio: [], subtitles: [] });
+      }
+    } else {
+      setExternalTracks({ audio: [], subtitles: [] });
+    }
   }, []);
 
   const play = useCallback(() => {
@@ -202,6 +235,19 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     playerRef.current?.setVolume(volume);
     setPlaybackInfo((prev) => ({ ...prev, volume }));
   }, []);
+
+  const setSubtitleStyle = useCallback(
+    (style: {
+      fontSize?: number;
+      color?: 'white' | 'yellow' | 'red' | 'green' | 'cyan';
+      position?: 'bottom' | 'top';
+    }) => {
+      if (playerRef.current?.setSubtitleStyle) {
+        playerRef.current.setSubtitleStyle(style);
+      }
+    },
+    []
+  );
 
   const toggleMute = useCallback(() => {
     if (!playerRef.current) return;
@@ -254,9 +300,12 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     setAudioTrack,
     setSubtitleTrack,
     toggleSubtitles,
+    setSubtitleStyle,
     setVolume,
     toggleMute,
     close,
+    externalAudioTracks: externalTracks.audio,
+    externalSubtitleTracks: externalTracks.subtitles,
 
     // Player instance
     player: playerRef.current,

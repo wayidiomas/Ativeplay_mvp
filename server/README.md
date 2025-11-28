@@ -137,6 +137,59 @@ Celular envia URL da playlist.
 ### `GET /s/:id`
 Página HTML para o celular enviar URL.
 
+## API de Parsing (app)
+
+Endpoints usados pelo app para offload de parsing de playlists:
+
+### `POST /api/playlist/parse`
+Recebe `{ url, options }`, faz download/parse no servidor e retorna `hash`, `stats` e `groups`. Tenta usar cache pelo `hash` da URL.
+
+**Request:**
+```json
+{
+  "url": "http://exemplo.com/playlist.m3u",
+  "options": {
+    "normalize": true,
+    "removeDuplicates": true
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "cached": false,
+  "hash": "<sha1-da-url>",
+  "data": {
+    "stats": { "totalItems": 123, "movieCount": 10, "seriesCount": 5, "liveCount": 108, "unknownCount": 0, "groupCount": 20 },
+    "groups": [ { "id": "group_filmes_movie", "name": "FILMES", "mediaKind": "movie", "itemCount": 10, "logo": null } ]
+  }
+}
+```
+
+### `GET /api/playlist/items/:hash?limit=5000&offset=0`
+Retorna itens paginados do parse já armazenado em cache.
+
+**Response:**
+```json
+{
+  "items": [ { "id": "item_123", "name": "Canal X", "url": "http://...m3u8", "group": "CANAIS", "mediaKind": "live", "parsedTitle": { "title": "Canal X" } } ],
+  "total": 123000,
+  "limit": 5000,
+  "offset": 0
+}
+```
+
+## Variáveis de ambiente úteis
+
+- `BASE_URL`: URL pública do servidor (usada no QR code)
+- `PARSE_CACHE_TTL_MS`: tempo de vida do cache de playlists (default 600000)
+- `MAX_M3U_SIZE_MB`: bloqueia downloads maiores que esse tamanho via Content-Length (default 200)
+- `MAX_ITEMS_PAGE`: limite por página em `/api/playlist/items` (default 5000)
+- `FETCH_TIMEOUT_MS`: timeout de download da playlist (default 15000)
+- `USER_AGENT`: user-agent usado no fetch da playlist
+
 ## Limitações do Free Tier (Render)
 
 - ⏸️ **Cold start**: Servidor hiberna após 15 min de inatividade

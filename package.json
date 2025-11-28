@@ -17,10 +17,10 @@
     "axios": "^1.7.7",
     "dexie": "^4.0.10",
     "dexie-react-hooks": "^1.1.7",
-    "iptv-playlist-parser": "^0.15.0",
     "nvm": "^0.0.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-icons": "^5.5.0",
     "react-router-dom": "^6.28.0",
     "zustand": "^5.0.8"
   },

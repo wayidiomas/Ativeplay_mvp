@@ -4,7 +4,6 @@
   "vendor": "AtiveApp Midias",
   "type": "web",
   "main": "index.html",
-  "content": "http://192.168.0.4:3003",
   "title": "AtivePlay",
   "icon": "icon.png",
   "largeIcon": "largeIcon.png",

@@ -3,7 +3,7 @@
  * Main navigation hub for the IPTV player
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePlaylistStore } from '@store/playlistStore';
 import {
@@ -13,6 +13,19 @@ import {
   type MediaKind,
   type M3UItem,
 } from '@core/db/schema';
+import {
+  MdMovie,
+  MdTv,
+  MdLiveTv,
+  MdFavorite,
+  MdSettings,
+  MdSearch,
+  MdExitToApp,
+  MdPlayArrow,
+  MdInfoOutline,
+  MdErrorOutline,
+  MdHelpOutline
+} from 'react-icons/md';
 import styles from './Home.module.css';
 
 interface HomeProps {
@@ -36,15 +49,14 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const [searchResults, setSearchResults] = useState<M3UItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
 
+  // Refs for focus management
+  const contentRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+
   // Load groups when nav changes
   useEffect(() => {
     async function loadGroups() {
-      console.log('[HOME DEBUG] ===== CARREGANDO GRUPOS =====');
-      console.log('[HOME DEBUG] activePlaylist:', activePlaylist);
-      console.log('[HOME DEBUG] selectedNav:', selectedNav);
-
       if (!activePlaylist) {
-        console.log('[HOME DEBUG] SEM activePlaylist - abortando');
         setLoading(false);
         return;
       }
@@ -68,13 +80,10 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             return;
         }
 
-        console.log('[HOME DEBUG] Buscando grupos com playlistId:', activePlaylist.id, 'mediaKind:', mediaKind);
         const loadedGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
-        console.log('[HOME DEBUG] Grupos carregados:', loadedGroups.length);
-        console.log('[HOME DEBUG] Primeiros 3 grupos:', loadedGroups.slice(0, 3));
         setGroups(loadedGroups.sort((a, b) => a.name.localeCompare(b.name)));
       } catch (error) {
-        console.error('[HOME DEBUG] Erro ao carregar grupos:', error);
+        console.error('Erro ao carregar grupos:', error);
         setGroups([]);
       } finally {
         setLoading(false);
@@ -103,30 +112,27 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
               setSelectedNav(navItems[currentIndex + 1]);
             }
             break;
+          case 'ArrowRight':
+            // Move focus to content
+            const firstContent = contentRef.current?.querySelector('button');
+            if (firstContent) {
+              (firstContent as HTMLElement).focus();
+            }
+            break;
         }
         return;
       }
 
-      // Handle content area scroll with arrow keys
-      const contentArea = document.querySelector(`.${styles.content}`) as HTMLElement;
-      if (contentArea && document.activeElement?.closest(`.${styles.content}`)) {
-        const scrollAmount = 200;
+      // Handle content area navigation
+      if (document.activeElement?.closest(`.${styles.content}`)) {
         switch (e.key) {
-          case 'ArrowUp':
-            contentArea.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
-            e.preventDefault();
-            break;
-          case 'ArrowDown':
-            contentArea.scrollBy({ top: scrollAmount, behavior: 'smooth' });
-            e.preventDefault();
-            break;
-          case 'PageUp':
-            contentArea.scrollBy({ top: -contentArea.clientHeight, behavior: 'smooth' });
-            e.preventDefault();
-            break;
-          case 'PageDown':
-            contentArea.scrollBy({ top: contentArea.clientHeight, behavior: 'smooth' });
-            e.preventDefault();
+          case 'ArrowLeft':
+            // If on the left edge, move back to sidebar
+            const rect = document.activeElement.getBoundingClientRect();
+            if (rect.left < 350) { // Threshold for sidebar return
+              const currentNavBtn = sidebarRef.current?.querySelector(`.${styles.active}`) as HTMLElement;
+              if (currentNavBtn) currentNavBtn.focus();
+            }
             break;
         }
       }
@@ -156,13 +162,13 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       case 'movies':
         return 'Filmes';
       case 'series':
-        return 'Series';
+        return 'Séries';
       case 'live':
         return 'TV ao Vivo';
       case 'favorites':
         return 'Favoritos';
       case 'settings':
-        return 'Configuracoes';
+        return 'Configurações';
       default:
         return '';
     }
@@ -184,7 +190,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     async function runSearch() {
       setSearchLoading(true);
       try {
-        const playlistId = activePlaylist!.id; // já checado acima
+        const playlistId = activePlaylist!.id;
         let collection = db.items.where('playlistId').equals(playlistId);
         if (searchKind !== 'all') {
           collection = db.items.where({ playlistId, mediaKind: searchKind });
@@ -219,6 +225,39 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     };
   }, [activePlaylist, searchKind, searchTerm]);
 
+  const renderHero = () => {
+    // Only show hero for Movies/Series when not searching
+    if (searchTerm.trim().length >= 2 || (selectedNav !== 'movies' && selectedNav !== 'series')) {
+      return null;
+    }
+
+    return (
+      <div className={styles.hero}>
+        <div
+          className={styles.heroBackground}
+          style={{ backgroundImage: 'url(https://image.tmdb.org/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.svg)' }} // Placeholder hero
+        />
+        <div className={styles.heroContent}>
+          <h1 className={styles.heroTitle}>
+            {selectedNav === 'movies' ? 'Destaque Filmes' : 'Destaque Séries'}
+          </h1>
+          <p className={styles.heroDescription}>
+            Explore os melhores conteúdos selecionados para você.
+            Uma experiência cinematográfica completa na sua sala de estar.
+          </p>
+          <div className={styles.heroActions}>
+            <button className={`${styles.heroButton} ${styles.heroButtonPrimary}`}>
+              <MdPlayArrow size={24} /> Assistir
+            </button>
+            <button className={`${styles.heroButton} ${styles.heroButtonSecondary}`}>
+              <MdInfoOutline size={24} /> Mais Informações
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderContent = () => {
     const isSearching = searchTerm.trim().length >= 2;
 
@@ -235,7 +274,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       if (searchResults.length === 0) {
         return (
           <div className={styles.emptyState}>
-            <div className={styles.emptyIcon}>?</div>
+            <div className={styles.emptyIcon}><MdHelpOutline size={64} /></div>
             <h2 className={styles.emptyTitle}>Nenhum resultado</h2>
             <p className={styles.emptyText}>Tente outro termo ou filtro.</p>
           </div>
@@ -245,7 +284,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       return (
         <div className={styles.section}>
           <div className={styles.sectionHeader}>
-            <h2 className={styles.sectionTitle}>Resultados</h2>
+            <h2 className={styles.sectionTitle}>Resultados da Busca</h2>
           </div>
           <div className={styles.resultsGrid}>
             {searchResults.map((item) => (
@@ -268,7 +307,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
                   />
                 ) : null}
                 <div className={styles.resultPlaceholder} style={item.logo ? { display: 'none' } : undefined}>
-                  {item.mediaKind === 'live' ? 'O' : '#'}
+                  {item.mediaKind === 'live' ? <MdLiveTv size={48} /> : <MdMovie size={48} />}
                 </div>
                 <div className={styles.resultOverlay}>
                   <div className={styles.resultTitle}>{getDisplayName(item)}</div>
@@ -288,7 +327,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       return (
         <div className={styles.loading}>
           <div className={styles.spinner} />
-          <span className={styles.loadingText}>Carregando...</span>
+          <span className={styles.loadingText}>Carregando catálogo...</span>
         </div>
       );
     }
@@ -296,10 +335,10 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     if (selectedNav === 'favorites') {
       return (
         <div className={styles.emptyState}>
-          <div className={styles.emptyIcon}>*</div>
+          <div className={styles.emptyIcon}><MdFavorite size={64} /></div>
           <h2 className={styles.emptyTitle}>Sem Favoritos</h2>
           <p className={styles.emptyText}>
-            Adicione items aos favoritos para velos aqui
+            Adicione items aos favoritos para vê-los aqui
           </p>
         </div>
       );
@@ -308,10 +347,10 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     if (selectedNav === 'settings') {
       return (
         <div className={styles.emptyState}>
-          <div className={styles.emptyIcon}>@</div>
-          <h2 className={styles.emptyTitle}>Configuracoes</h2>
+          <div className={styles.emptyIcon}><MdSettings size={64} /></div>
+          <h2 className={styles.emptyTitle}>Configurações</h2>
           <p className={styles.emptyText}>
-            Em breve: opcoes de playlist, tema e mais
+            Em breve: opções de playlist, tema e mais
           </p>
         </div>
       );
@@ -320,10 +359,10 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     if (groups.length === 0) {
       return (
         <div className={styles.emptyState}>
-          <div className={styles.emptyIcon}>?</div>
-          <h2 className={styles.emptyTitle}>Nenhum Conteudo</h2>
+          <div className={styles.emptyIcon}><MdErrorOutline size={64} /></div>
+          <h2 className={styles.emptyTitle}>Nenhum Conteúdo</h2>
           <p className={styles.emptyText}>
-            Nao foram encontrados itens nesta categoria
+            Não foram encontrados itens nesta categoria
           </p>
         </div>
       );
@@ -341,10 +380,9 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
               className={styles.groupCard}
               onClick={() => onSelectGroup(group)}
               onFocus={(e) => {
-                // Auto scroll to keep focused card visible
                 e.currentTarget.scrollIntoView({
                   behavior: 'smooth',
-                  block: 'nearest',
+                  block: 'center',
                   inline: 'nearest'
                 });
               }}
@@ -369,7 +407,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   return (
     <div className={styles.container}>
       {/* Sidebar */}
-      <aside className={styles.sidebar}>
+      <aside className={styles.sidebar} ref={sidebarRef}>
         <div className={styles.logo}>
           <img src="/vite.svg" alt="AtivePlay" className={styles.logoIcon} />
           <span className={styles.logoText}>AtivePlay</span>
@@ -382,7 +420,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}
             tabIndex={0}
           >
-            <span className={styles.navIcon}>#</span>
+            <span className={styles.navIcon}><MdMovie /></span>
             Filmes
           </button>
           <button
@@ -391,8 +429,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}
             tabIndex={0}
           >
-            <span className={styles.navIcon}>=</span>
-            Series
+            <span className={styles.navIcon}><MdTv /></span>
+            Séries
           </button>
           <button
             className={`${styles.navItem} ${selectedNav === 'live' ? styles.active : ''}`}
@@ -400,7 +438,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}
             tabIndex={0}
           >
-            <span className={styles.navIcon}>O</span>
+            <span className={styles.navIcon}><MdLiveTv /></span>
             TV ao Vivo
           </button>
           <button
@@ -409,7 +447,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}
             tabIndex={0}
           >
-            <span className={styles.navIcon}>*</span>
+            <span className={styles.navIcon}><MdFavorite /></span>
             Favoritos
           </button>
           <button
@@ -418,8 +456,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             onFocus={(e) => e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' })}
             tabIndex={0}
           >
-            <span className={styles.navIcon}>@</span>
-            Configuracoes
+            <span className={styles.navIcon}><MdSettings /></span>
+            Configurações
           </button>
         </nav>
 
@@ -427,13 +465,14 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
           <div className={styles.playlistInfo}>
             <div className={styles.playlistName}>{activePlaylist.name}</div>
             <div className={styles.playlistStats}>
-              {activePlaylist.movieCount} filmes | {activePlaylist.seriesCount} series | {activePlaylist.liveCount} canais
+              {activePlaylist.movieCount} filmes | {activePlaylist.seriesCount} séries
             </div>
           </div>
         )}
 
         <button className={styles.exitButton} onClick={handleExit} tabIndex={0}>
-          Sair para Onboarding
+          <MdExitToApp size={20} style={{ marginRight: 8 }} />
+          Sair
         </button>
       </aside>
 
@@ -449,21 +488,25 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             >
               <option value="all">Todos</option>
               <option value="movie">Filmes</option>
-              <option value="series">Series</option>
+              <option value="series">Séries</option>
               <option value="live">TV ao Vivo</option>
             </select>
-            <input
-              type="text"
-              className={styles.searchInput}
-              placeholder="Buscar..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              tabIndex={0}
-            />
+            <div className={styles.searchInputWrapper}>
+              <MdSearch className={styles.searchIcon} size={20} />
+              <input
+                type="text"
+                className={styles.searchInput}
+                placeholder="Buscar..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                tabIndex={0}
+              />
+            </div>
           </div>
         </header>
 
-        <div className={styles.content}>
+        <div className={styles.content} ref={contentRef}>
+          {renderHero()}
           {renderContent()}
         </div>
       </main>

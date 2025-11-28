@@ -6,6 +6,17 @@
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { usePlayer } from '@player/hooks/usePlayer';
 import type { AudioTrack, SubtitleTrack } from '@player/types';
+import {
+  MdPlayArrow,
+  MdPause,
+  MdReplay10,
+  MdForward10,
+  MdVolumeUp,
+  MdSubtitles,
+  MdClose,
+  MdCheck,
+  MdErrorOutline
+} from 'react-icons/md';
 import styles from './PlayerContainer.module.css';
 
 interface PlayerContainerProps {
@@ -221,10 +232,10 @@ export function PlayerContainer({
       <div className={styles.container} ref={containerRef}>
         <div id="player-container" className={styles.videoContainer} />
         <div className={styles.errorOverlay}>
-          <div className={styles.errorIcon}>!</div>
-          <h2 className={styles.errorTitle}>Erro na Reproducao</h2>
+          <MdErrorOutline className={styles.errorIcon} />
+          <h2 className={styles.errorTitle}>Erro na Reprodução</h2>
           <p className={styles.errorMessage}>
-            Nao foi possivel reproduzir o video
+            Não foi possível reproduzir o vídeo
           </p>
           <button
             className={styles.retryButton}
@@ -249,9 +260,8 @@ export function PlayerContainer({
 
       {/* Controls Overlay */}
       <div
-        className={`${styles.controlsOverlay} ${
-          !controlsVisible ? styles.hidden : ''
-        }`}
+        className={`${styles.controlsOverlay} ${!controlsVisible ? styles.hidden : ''
+          }`}
       >
         {/* Top Bar */}
         <div className={styles.topBar}>
@@ -261,14 +271,14 @@ export function PlayerContainer({
             onClick={onClose}
             tabIndex={controlsVisible ? 0 : -1}
           >
-            X
+            <MdClose />
           </button>
         </div>
 
         {/* Bottom Bar */}
         <div className={styles.bottomBar}>
           {/* Progress Bar */}
-          <div className={styles.progressContainer}>
+          <div className={styles.progressContainer} tabIndex={0}>
             <div
               className={styles.progressBar}
               role="progressbar"
@@ -283,6 +293,10 @@ export function PlayerContainer({
               <div
                 className={styles.progressFilled}
                 style={{ width: `${progress}%` }}
+              />
+              <div
+                className={styles.scrubber}
+                style={{ left: `${progress}%` }}
               />
             </div>
             <div className={styles.timeInfo}>
@@ -299,7 +313,7 @@ export function PlayerContainer({
               tabIndex={controlsVisible ? 0 : -1}
               title="Voltar 10s"
             >
-              {'<<'}
+              <MdReplay10 />
             </button>
 
             <button
@@ -308,25 +322,25 @@ export function PlayerContainer({
               tabIndex={controlsVisible ? 0 : -1}
               autoFocus
             >
-              {state === 'playing' ? '||' : '>'}
+              {state === 'playing' ? <MdPause /> : <MdPlayArrow />}
             </button>
 
             <button
               className={styles.controlButton}
               onClick={() => seekForward(10000)}
               tabIndex={controlsVisible ? 0 : -1}
-              title="Avancar 10s"
+              title="Avançar 10s"
             >
-              {'>>'}
+              <MdForward10 />
             </button>
 
             <button
               className={styles.controlButton}
               onClick={() => setActiveMenu(activeMenu === 'audio' ? null : 'audio')}
               tabIndex={controlsVisible ? 0 : -1}
-              title="Audio"
+              title="Áudio"
             >
-              A
+              <MdVolumeUp />
             </button>
 
             <button
@@ -337,7 +351,7 @@ export function PlayerContainer({
               tabIndex={controlsVisible ? 0 : -1}
               title="Legendas"
             >
-              CC
+              <MdSubtitles />
             </button>
           </div>
         </div>
@@ -345,13 +359,12 @@ export function PlayerContainer({
         {/* Audio Track Menu */}
         {activeMenu === 'audio' && audioTracks.length > 0 && (
           <div className={styles.trackMenu}>
-            <div className={styles.trackMenuTitle}>Audio</div>
+            <div className={styles.trackMenuTitle}>Áudio</div>
             {audioTracks.map((track: AudioTrack) => (
               <div
                 key={track.index}
-                className={`${styles.trackItem} ${
-                  currentAudioIndex === track.index ? styles.active : ''
-                }`}
+                className={`${styles.trackItem} ${currentAudioIndex === track.index ? styles.active : ''
+                  }`}
                 onClick={() => {
                   setAudioTrack(track.index);
                   setActiveMenu(null);
@@ -359,6 +372,7 @@ export function PlayerContainer({
                 tabIndex={0}
                 role="button"
               >
+                <MdCheck className={styles.trackItemIcon} />
                 {track.label || track.language}
               </div>
             ))}
@@ -370,9 +384,8 @@ export function PlayerContainer({
           <div className={styles.trackMenu}>
             <div className={styles.trackMenuTitle}>Legendas</div>
             <div
-              className={`${styles.trackItem} ${
-                currentSubtitleIndex === -1 ? styles.active : ''
-              }`}
+              className={`${styles.trackItem} ${currentSubtitleIndex === -1 ? styles.active : ''
+                }`}
               onClick={() => {
                 setSubtitleTrack(-1);
                 setActiveMenu(null);
@@ -380,14 +393,14 @@ export function PlayerContainer({
               tabIndex={0}
               role="button"
             >
+              <MdCheck className={styles.trackItemIcon} />
               Desativado
             </div>
             {subtitleTracks.map((track: SubtitleTrack) => (
               <div
                 key={track.index}
-                className={`${styles.trackItem} ${
-                  currentSubtitleIndex === track.index ? styles.active : ''
-                }`}
+                className={`${styles.trackItem} ${currentSubtitleIndex === track.index ? styles.active : ''
+                  }`}
                 onClick={() => {
                   setSubtitleTrack(track.index);
                   setActiveMenu(null);
@@ -395,6 +408,7 @@ export function PlayerContainer({
                 tabIndex={0}
                 role="button"
               >
+                <MdCheck className={styles.trackItemIcon} />
                 {track.label || track.language}
               </div>
             ))}

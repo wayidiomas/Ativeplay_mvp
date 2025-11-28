@@ -30,6 +30,10 @@ const initialState = {
   errorMessage: null,
 };
 
+// Debounce state for progress updates
+let lastProgressUpdate = 0;
+const PROGRESS_UPDATE_INTERVAL = 100; // 100ms minimum between updates
+
 export const useOnboardingStore = create<OnboardingState>((set) => ({
   ...initialState,
 
@@ -37,7 +41,22 @@ export const useOnboardingStore = create<OnboardingState>((set) => ({
 
   setPlaylistUrl: (playlistUrl) => set({ playlistUrl }),
 
-  setProgress: (progress) => set({ progress }),
+  setProgress: (progress) => {
+    // Always allow complete/error phases
+    if (progress?.phase === 'complete' || progress?.phase === 'error') {
+      set({ progress });
+      return;
+    }
+
+    // Debounce other progress updates
+    const now = Date.now();
+    if (now - lastProgressUpdate < PROGRESS_UPDATE_INTERVAL) {
+      return;
+    }
+
+    lastProgressUpdate = now;
+    set({ progress });
+  },
 
   setError: (errorMessage) => set({ errorMessage, step: 'error' }),
 

@@ -1,9 +1,11 @@
 /**
  * MediaGrid
  * Grid display of media items (movies, series, live channels)
+ * NOW WITH VIRTUAL SCROLLING for memory optimization
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
 import styles from './MediaGrid.module.css';
 
@@ -13,34 +15,40 @@ interface MediaGridProps {
   onSelectItem: (item: M3UItem) => void;
 }
 
-const PAGE_SIZE = 60;
+const INITIAL_LOAD_LIMIT = 1000; // Load first 1000 items, render only visible
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
-  const [items, setItems] = useState<M3UItem[]>([]);
+  const [allItems, setAllItems] = useState<M3UItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(true);
-  const [page, setPage] = useState(0);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const loadingMoreRef = useRef(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const parentRef = useRef<HTMLDivElement>(null);
 
-  // Load items for the group
+  // Load items for the group - virtual scrolling loads all at once
+  // but only renders visible items
   useEffect(() => {
     async function loadItems() {
       setLoading(true);
       try {
+        // Get total count first
+        const count = await db.items
+          .where({ playlistId: group.playlistId, group: group.name })
+          .count();
+
+        setTotalCount(count);
+
+        // Load initial batch (up to 1000 items)
+        // For larger lists, we could implement progressive loading
+        const limit = Math.min(count, INITIAL_LOAD_LIMIT);
         const loadedItems = await db.items
           .where({ playlistId: group.playlistId, group: group.name })
-          .offset(0)
-          .limit(PAGE_SIZE)
+          .limit(limit)
           .toArray();
 
-        setItems(loadedItems);
-        setHasMore(loadedItems.length === PAGE_SIZE);
-        setPage(1);
+        setAllItems(loadedItems);
       } catch (error) {
         console.error('Erro ao carregar itens:', error);
-        setItems([]);
-        setHasMore(false);
+        setAllItems([]);
+        setTotalCount(0);
       } finally {
         setLoading(false);
       }
@@ -49,50 +57,20 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     loadItems();
   }, [group]);
 
-  // Incremental load (infinite scroll)
-  const loadMore = useCallback(async () => {
-    if (loadingMoreRef.current || !hasMore) return;
-    loadingMoreRef.current = true;
-    try {
-      const offset = page * PAGE_SIZE;
-      const moreItems = await db.items
-        .where({ playlistId: group.playlistId, group: group.name })
-        .offset(offset)
-        .limit(PAGE_SIZE)
-        .toArray();
+  // Virtual scrolling setup
+  // Estimated row height: 200px (180px card + 20px gap)
+  // Grid has 4-5 columns, so divide by 4 to get row height
+  const ITEMS_PER_ROW = 4;
+  const ROW_HEIGHT = 220;
 
-      setItems((prev) => [...prev, ...moreItems]);
-      setHasMore(moreItems.length === PAGE_SIZE);
-      setPage((prev) => prev + 1);
-    } catch (error) {
-      console.error('Erro ao carregar mais itens:', error);
-      setHasMore(false);
-    } finally {
-      loadingMoreRef.current = false;
-    }
-  }, [group, hasMore, page]);
+  const rowVirtualizer = useVirtualizer({
+    count: Math.ceil(allItems.length / ITEMS_PER_ROW),
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 2, // Render 2 extra rows above/below viewport
+  });
 
-  // IntersectionObserver para disparar loadMore
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            loadMore();
-          }
-        });
-      },
-      { root: null, rootMargin: '0px', threshold: 0.1 }
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [loadMore]);
-
-  // Keyboard navigation and scroll
+  // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Backspace') {
@@ -100,25 +78,24 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         return;
       }
 
-      // Handle grid scroll with arrow keys
-      const gridArea = document.querySelector(`.${styles.grid}`) as HTMLElement;
-      if (gridArea && document.activeElement?.closest(`.${styles.grid}`)) {
-        const scrollAmount = 200;
+      // Handle grid scroll with arrow keys using virtualizer
+      if (parentRef.current && document.activeElement?.closest(`.${styles.grid}`)) {
+        const scrollAmount = ROW_HEIGHT;
         switch (e.key) {
           case 'ArrowUp':
-            gridArea.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
+            parentRef.current.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
             e.preventDefault();
             break;
           case 'ArrowDown':
-            gridArea.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+            parentRef.current.scrollBy({ top: scrollAmount, behavior: 'smooth' });
             e.preventDefault();
             break;
           case 'PageUp':
-            gridArea.scrollBy({ top: -gridArea.clientHeight, behavior: 'smooth' });
+            parentRef.current.scrollBy({ top: -parentRef.current.clientHeight, behavior: 'smooth' });
             e.preventDefault();
             break;
           case 'PageDown':
-            gridArea.scrollBy({ top: gridArea.clientHeight, behavior: 'smooth' });
+            parentRef.current.scrollBy({ top: parentRef.current.clientHeight, behavior: 'smooth' });
             e.preventDefault();
             break;
         }
@@ -150,7 +127,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     );
   }
 
-  if (items.length === 0) {
+  if (allItems.length === 0 && !loading) {
     return (
       <div className={styles.container}>
         <header className={styles.header}>
@@ -178,64 +155,98 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         </button>
         <h1 className={styles.title}>{group.name}</h1>
         <span className={styles.itemCount}>
-          {items.length} {items.length === 1 ? 'item' : 'itens'}
+          {totalCount} {totalCount === 1 ? 'item' : 'itens'}
+          {totalCount > INITIAL_LOAD_LIMIT && (
+            <span style={{ opacity: 0.7 }}> (mostrando {INITIAL_LOAD_LIMIT})</span>
+          )}
         </span>
       </header>
 
-      <div className={styles.grid}>
-        {items.map((item) => (
-          <button
-            key={item.id}
-            className={styles.card}
-            onClick={() => onSelectItem(item)}
-            onFocus={(e) => {
-              // Auto scroll to keep focused card visible
-              e.currentTarget.scrollIntoView({
-                behavior: 'smooth',
-                block: 'nearest',
-                inline: 'nearest'
-              });
-            }}
-            tabIndex={0}
-          >
-            {item.logo ? (
-              <img
-                src={item.logo}
-                alt={getDisplayName(item)}
-                className={styles.cardPoster}
-                loading="lazy"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                  (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
-                }}
-              />
-            ) : null}
-            <div className={styles.cardPlaceholder} style={item.logo ? { display: 'none' } : undefined}>
-              {item.mediaKind === 'live' ? 'O' : '#'}
-            </div>
+      <div
+        ref={parentRef}
+        className={styles.grid}
+        style={{
+          height: '100%',
+          overflow: 'auto',
+        }}
+      >
+        <div
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            // Each virtual row contains ITEMS_PER_ROW items
+            const startIdx = virtualRow.index * ITEMS_PER_ROW;
+            const rowItems = allItems.slice(startIdx, startIdx + ITEMS_PER_ROW);
 
-            <div className={styles.cardOverlay}>
-              <div className={styles.cardTitle}>{getDisplayName(item)}</div>
-              <div className={styles.cardMeta}>
-                {item.year && <span className={styles.cardYear}>{item.year}</span>}
-                {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
-                {item.season && item.episode && (
-                  <span className={styles.cardYear}>
-                    S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
-                  </span>
-                )}
+            return (
+              <div
+                key={virtualRow.key}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                  gap: '20px',
+                }}
+              >
+                {rowItems.map((item) => (
+                  <button
+                    key={item.id}
+                    className={styles.card}
+                    onClick={() => onSelectItem(item)}
+                    onFocus={(e) => {
+                      // Auto scroll to keep focused card visible
+                      e.currentTarget.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'nearest',
+                        inline: 'nearest'
+                      });
+                    }}
+                    tabIndex={0}
+                  >
+                    {item.logo ? (
+                      <img
+                        src={item.logo}
+                        alt={getDisplayName(item)}
+                        className={styles.cardPoster}
+                        loading="lazy"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
+                        }}
+                      />
+                    ) : null}
+                    <div className={styles.cardPlaceholder} style={item.logo ? { display: 'none' } : undefined}>
+                      {item.mediaKind === 'live' ? 'O' : '#'}
+                    </div>
+
+                    <div className={styles.cardOverlay}>
+                      <div className={styles.cardTitle}>{getDisplayName(item)}</div>
+                      <div className={styles.cardMeta}>
+                        {item.year && <span className={styles.cardYear}>{item.year}</span>}
+                        {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
+                        {item.season && item.episode && (
+                          <span className={styles.cardYear}>
+                            S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                ))}
               </div>
-            </div>
-          </button>
-        ))}
-        <div ref={sentinelRef} className={styles.sentinel} aria-hidden />
-      </div>
-      {hasMore && (
-        <div className={styles.loadingMore}>
-          <div className={styles.spinner} />
-          <span className={styles.loadingText}>Carregando mais...</span>
+            );
+          })}
         </div>
-      )}
+      </div>
     </div>
   );
 }

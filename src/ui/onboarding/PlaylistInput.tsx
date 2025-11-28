@@ -23,7 +23,6 @@ export function PlaylistInput() {
   // QR Code session
   const {
     qrDataUrl,
-    isActive: qrActive,
     isLoading: qrLoading,
     error: qrError,
     receivedUrl,

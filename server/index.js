@@ -6,11 +6,18 @@
 import express from 'express';
 import cors from 'cors';
 import QRCode from 'qrcode';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { networkInterfaces } from 'os';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Parsing/cache config
+const PARSE_CACHE_TTL_MS = parseInt(process.env.PARSE_CACHE_TTL_MS || '600000', 10); // 10min
+const MAX_M3U_SIZE_MB = parseInt(process.env.MAX_M3U_SIZE_MB || '200', 10); // limite de Content-Length
+const MAX_ITEMS_PAGE = parseInt(process.env.MAX_ITEMS_PAGE || '5000', 10);
+const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '15000', 10);
+const USER_AGENT = process.env.USER_AGENT || 'AtivePlay-Server/1.0';
 
 /**
  * Detecta IP local da máquina na rede
@@ -27,6 +34,416 @@ function getLocalIP() {
   }
   return 'localhost';
 }
+
+function hashPlaylist(url) {
+  return createHash('sha1').update(url).digest('hex');
+}
+
+function isHttpUrl(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+function normalizeSpaces(value = '') {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function generateItemId(url, index) {
+  const hash = url.split('').reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0);
+  return `item_${Math.abs(hash)}_${index}`;
+}
+
+function generateGroupId(name, mediaKind) {
+  const safeName = name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+  return `group_${safeName}_${mediaKind}`;
+}
+
+// Regras de classificação (espelhadas do client)
+const GROUP_PATTERNS = {
+  live: [
+    /\b(canais?|channels?|tv|live|24\/7|sports?|news|ao vivo|abertos?)\b/i,
+    /\b(globo|sbt|record|band|redetv|cultura)\b/i,
+  ],
+  movie: [
+    /\b(filmes?|movies?|cinema|lancamentos?|lançamentos?)\b/i,
+    /\bvod\b/i,
+    /\b(acao|terror|comedia|drama|ficcao|aventura|animacao|suspense|romance)\b/i,
+    /\b(dublado|legendado|dual|nacional)\b/i,
+    /\b(4k|uhd|fhd|hd)\s*(filmes?|movies?)?\b/i,
+    /[:\|]\s*(filmes?|movies?|vod)/i,
+    /\|\s*br\s*\|\s*(filmes?|movies?|vod)/i,
+    /\[\s*br\s*\]\s*(filmes?|movies?|vod)/i,
+  ],
+  series: [
+    /\b(series?|shows?|novelas?|animes?|doramas?|k-?dramas?)\b/i,
+    /\b(netflix|hbo|amazon|disney|apple|paramount|star)\b/i,
+    /\btemporadas?\b/i,
+    /s[eé]ries?/i,
+    /[:\|]\s*s[eé]ries?/i,
+    /\|\s*br\s*\|\s*s[eé]ries?/i,
+    /\[\s*br\s*\]\s*s[eé]ries?/i,
+  ],
+};
+
+const TITLE_PATTERNS = {
+  live: [/\b(24\/7|24h|live|ao vivo)\b/i],
+  movie: [
+    /\(\d{4}\)/,
+    /\[\d{4}\]/,
+    /\b(20[0-2]\d|19\d{2})\b/,
+    /\b(4k|2160p|1080p|720p|480p|bluray|webrip|hdrip|dvdrip|hdcam|web-dl|bdrip|hdts|hd-ts|cam|hdcam)\b/i,
+    /\b(dublado|dual|leg|legendado|nacional|dub|sub)\b/i,
+    /\b(acao|terror|comedia|drama|suspense|romance|aventura|animacao|ficcao)\b/i,
+  ],
+  series: [
+    /s\d{1,2}[\s._-]?e\d{1,2}/i,
+    /\b\d{1,2}x\d{1,2}\b/i,
+    /\bT\d{1,2}[\s._-]?E\d{1,2}\b/i,
+    /\btemporada\s*\d+/i,
+    /\bepisodio\s*\d+/i,
+    /\bseason\s*\d+/i,
+    /\bepisode\s*\d+/i,
+    /\bcap[ií]tulo\s*\d+/i,
+    /\bep\.?\s*\d+/i,
+  ],
+};
+
+const TITLE_EXTRACTORS = {
+  year: /[\(\[](\d{4})[\)\]]/,
+  yearStandalone: /\b(19|20)\d{2}\b/,
+  season: /(?:s|season|temporada)[\s._-]?(\d{1,2})/i,
+  episode: /(?:e|episode|episodio)[\s._-]?(\d{1,3})/i,
+  seasonEpisode: /s(\d{1,2})[\s._-]?e(\d{1,3})/i,
+  altSeasonEpisode: /(\d{1,2})x(\d{1,3})/i,
+  quality: /\b(4k|2160p|1080p|720p|480p|360p|hd|fhd|uhd|sd)\b/i,
+  multiAudio: /\b(dual|multi|dublado\s*e\s*legendado)\b/i,
+  dubbed: /\b(dub|dublado|dubbed|nacional)\b/i,
+  subbed: /\b(leg|legendado|subbed|sub)\b/i,
+  language: /\b(pt|por|ptbr|pt-br|en|eng|es|esp|fr|fra|de|deu|it|ita|ja|jpn)\b/i,
+};
+
+function classifyByGroup(group) {
+  if (!group) return 'unknown';
+  const lowerGroup = group.toLowerCase();
+  for (const pattern of GROUP_PATTERNS.series) if (pattern.test(lowerGroup)) return 'series';
+  for (const pattern of GROUP_PATTERNS.movie) if (pattern.test(lowerGroup)) return 'movie';
+  for (const pattern of GROUP_PATTERNS.live) if (pattern.test(lowerGroup)) return 'live';
+  return 'unknown';
+}
+
+function classifyByTitle(name) {
+  if (!name) return 'unknown';
+  for (const pattern of TITLE_PATTERNS.series) if (pattern.test(name)) return 'series';
+  let movieScore = 0;
+  for (const pattern of TITLE_PATTERNS.movie) if (pattern.test(name)) movieScore++;
+  if (movieScore >= 1) return 'movie';
+  for (const pattern of TITLE_PATTERNS.live) if (pattern.test(name)) return 'live';
+  return 'unknown';
+}
+
+function classify(name, group) {
+  const groupKind = classifyByGroup(group);
+  if (groupKind !== 'unknown') return groupKind;
+  return classifyByTitle(name);
+}
+
+function cleanTitle(title) {
+  return title
+    .replace(/[\[\(][^\]\)]*[\]\)]/g, '')
+    .replace(/\b(4k|2160p|1080p|720p|480p|360p|hd|fhd|uhd|sd)\b/gi, '')
+    .replace(/\b(aac|ac3|dts|x264|x265|hevc|h264|h265|webdl|web-dl|bluray|bdrip|webrip|hdrip|dvdrip|hdcam)\b/gi, '')
+    .replace(/\b(dub|dublado|dubbed|leg|legendado|subbed|sub|dual|multi|nacional)\b/gi, '')
+    .replace(/[|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.\-_]+$/, '')
+    .trim();
+}
+
+function parseTitle(name) {
+  let title = name;
+  let year;
+  let season;
+  let episode;
+  let quality;
+  let language;
+  const isMultiAudio = TITLE_EXTRACTORS.multiAudio.test(name);
+  const isDubbed = TITLE_EXTRACTORS.dubbed.test(name);
+  const isSubbed = TITLE_EXTRACTORS.subbed.test(name);
+
+  const yearMatch = name.match(TITLE_EXTRACTORS.year);
+  if (yearMatch) {
+    year = parseInt(yearMatch[1], 10);
+    title = title.replace(yearMatch[0], '').trim();
+  } else {
+    const yearStandalone = name.match(TITLE_EXTRACTORS.yearStandalone);
+    if (yearStandalone) {
+      const potentialYear = parseInt(yearStandalone[0], 10);
+      if (potentialYear >= 1900 && potentialYear <= new Date().getFullYear() + 1) {
+        year = potentialYear;
+      }
+    }
+  }
+
+  const seMatch = name.match(TITLE_EXTRACTORS.seasonEpisode);
+  if (seMatch) {
+    season = parseInt(seMatch[1], 10);
+    episode = parseInt(seMatch[2], 10);
+    title = title.replace(seMatch[0], '').trim();
+  } else {
+    const altMatch = name.match(TITLE_EXTRACTORS.altSeasonEpisode);
+    if (altMatch) {
+      season = parseInt(altMatch[1], 10);
+      episode = parseInt(altMatch[2], 10);
+      title = title.replace(altMatch[0], '').trim();
+    } else {
+      const seasonMatch = name.match(TITLE_EXTRACTORS.season);
+      if (seasonMatch) season = parseInt(seasonMatch[1], 10);
+      const episodeMatch = name.match(TITLE_EXTRACTORS.episode);
+      if (episodeMatch) episode = parseInt(episodeMatch[1], 10);
+    }
+  }
+
+  const qualityMatch = name.match(TITLE_EXTRACTORS.quality);
+  if (qualityMatch) {
+    quality = qualityMatch[1].toUpperCase();
+    title = title.replace(qualityMatch[0], '').trim();
+  }
+
+  const langMatch = name.match(TITLE_EXTRACTORS.language);
+  if (langMatch) language = langMatch[1].toUpperCase();
+
+  title = cleanTitle(title);
+
+  return {
+    title,
+    year,
+    season,
+    episode,
+    quality,
+    language,
+    isMultiAudio,
+    isDubbed,
+    isSubbed,
+  };
+}
+
+function parseExtinf(line) {
+  if (!line.startsWith('#EXTINF:')) return null;
+  const content = line.substring(8);
+  const firstComma = content.indexOf(',');
+  if (firstComma === -1) return null;
+  const header = content.substring(0, firstComma);
+  const title = content.substring(firstComma + 1).trim();
+  const durationMatch = header.match(/^-?\d+/);
+  const duration = durationMatch ? parseInt(durationMatch[0], 10) : -1;
+  const attributes = new Map();
+  const attrRegex = /(\w+(?:-\w+)*)="([^"]*)"/g;
+  let match;
+  while ((match = attrRegex.exec(header)) !== null) {
+    attributes.set(match[1], match[2]);
+  }
+  return { duration, attributes, title };
+}
+
+async function parseM3UStream(url, options = {}) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': USER_AGENT,
+    },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  const contentLength = response.headers.get('content-length');
+  if (contentLength) {
+    const sizeMb = parseInt(contentLength, 10) / (1024 * 1024);
+    if (sizeMb > MAX_M3U_SIZE_MB) {
+      throw new Error(`Playlist muito grande: ${sizeMb.toFixed(1)}MB (limite ${MAX_M3U_SIZE_MB}MB)`);
+    }
+  }
+
+  if (!response.body) {
+    throw new Error('Response body não disponível');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = '';
+  let currentExtinf = null;
+  let itemIndex = 0;
+  let foundHeader = false;
+  const items = [];
+  const groupsMap = new Map();
+  const stats = {
+    totalItems: 0,
+    liveCount: 0,
+    movieCount: 0,
+    seriesCount: 0,
+    unknownCount: 0,
+    groupCount: 0,
+  };
+  const seenUrls = new Set();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      if (trimmed === '#EXTM3U') {
+        foundHeader = true;
+        continue;
+      }
+
+      if (trimmed.startsWith('#') && !trimmed.startsWith('#EXTINF:')) continue;
+
+      if (trimmed.startsWith('#EXTINF:')) {
+        currentExtinf = parseExtinf(trimmed);
+        continue;
+      }
+
+      if (currentExtinf && trimmed.startsWith('http')) {
+        if (options.removeDuplicates && seenUrls.has(trimmed)) {
+          currentExtinf = null;
+          continue;
+        }
+
+        const nameRaw = currentExtinf.title;
+        const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
+        const tvgId = currentExtinf.attributes.get('tvg-id');
+        const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+        const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
+        const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+
+        const mediaKind = classify(name, groupTitle);
+        const parsedTitle = parseTitle(name);
+
+        const item = {
+          id: generateItemId(trimmed, itemIndex++),
+          name,
+          url: trimmed,
+          logo: tvgLogo,
+          group: groupTitle,
+          mediaKind,
+          parsedTitle,
+          epgId: tvgId,
+        };
+
+        items.push(item);
+        seenUrls.add(trimmed);
+
+        stats.totalItems++;
+        switch (mediaKind) {
+          case 'live':
+            stats.liveCount++;
+            break;
+          case 'movie':
+            stats.movieCount++;
+            break;
+          case 'series':
+            stats.seriesCount++;
+            break;
+          default:
+            stats.unknownCount++;
+        }
+
+        const groupId = generateGroupId(groupTitle, mediaKind);
+        const existingGroup = groupsMap.get(groupId);
+        if (existingGroup) {
+          existingGroup.itemCount++;
+        } else {
+          groupsMap.set(groupId, {
+            id: groupId,
+            name: groupTitle,
+            mediaKind,
+            itemCount: 1,
+            logo: tvgLogo,
+          });
+        }
+
+        currentExtinf = null;
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const trimmed = buffer.trim();
+    if (currentExtinf && trimmed.startsWith('http')) {
+      if (!(options.removeDuplicates && seenUrls.has(trimmed))) {
+        const nameRaw = currentExtinf.title;
+        const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
+        const tvgId = currentExtinf.attributes.get('tvg-id');
+        const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+        const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
+        const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+        const mediaKind = classify(name, groupTitle);
+        const parsedTitle = parseTitle(name);
+        items.push({
+          id: generateItemId(trimmed, itemIndex++),
+          name,
+          url: trimmed,
+          logo: tvgLogo,
+          group: groupTitle,
+          mediaKind,
+          parsedTitle,
+          epgId: tvgId,
+        });
+        seenUrls.add(trimmed);
+      }
+    }
+  }
+
+  if (!foundHeader) {
+    throw new Error('Formato de playlist inválido (falta #EXTM3U)');
+  }
+
+  const groups = Array.from(groupsMap.values());
+  stats.groupCount = groups.length;
+
+  return { items, groups, stats };
+}
+
+const parseCache = new Map();
+
+function getCached(hash) {
+  const entry = parseCache.get(hash);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > PARSE_CACHE_TTL_MS) {
+    parseCache.delete(hash);
+    return null;
+  }
+  return entry;
+}
+
+function setCache(hash, payload) {
+  parseCache.set(hash, {
+    ...payload,
+    createdAt: Date.now(),
+  });
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [hash, entry] of parseCache.entries()) {
+    if (now - entry.createdAt > PARSE_CACHE_TTL_MS) {
+      parseCache.delete(hash);
+    }
+  }
+}, 60000);
 
 // Armazena sessões ativas (em produção, usar Redis)
 // Estrutura: { sessionId: { url: null, createdAt: timestamp, expiresAt: timestamp } }
@@ -53,6 +470,77 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     status: 'online',
     activeSessions: sessions.size,
+  });
+});
+
+/**
+ * POST /api/playlist/parse
+ * Faz download/parse da playlist no servidor e retorna hash + stats/grupos
+ */
+app.post('/api/playlist/parse', async (req, res) => {
+  try {
+    const { url, options = {} } = req.body || {};
+
+    if (!url || typeof url !== 'string' || !isHttpUrl(url)) {
+      return res.status(400).json({ success: false, error: 'URL inválida' });
+    }
+
+    const hash = hashPlaylist(url);
+    const cached = getCached(hash);
+    if (cached) {
+      return res.json({
+        success: true,
+        cached: true,
+        hash,
+        data: {
+          stats: cached.stats,
+          groups: cached.groups,
+        },
+      });
+    }
+
+    const parsed = await parseM3UStream(url, {
+      normalize: options.normalize,
+      removeDuplicates: options.removeDuplicates !== false,
+    });
+
+    setCache(hash, parsed);
+
+    res.json({
+      success: true,
+      cached: false,
+      hash,
+      data: {
+        stats: parsed.stats,
+        groups: parsed.groups,
+      },
+    });
+  } catch (error) {
+    console.error('[Parse] Erro:', error);
+    res.status(500).json({ success: false, error: error.message || 'Erro ao parsear playlist' });
+  }
+});
+
+/**
+ * GET /api/playlist/items/:hash
+ * Retorna itens paginados de uma playlist já parseada
+ */
+app.get('/api/playlist/items/:hash', (req, res) => {
+  const { hash } = req.params;
+  const cached = getCached(hash);
+  if (!cached) {
+    return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit || `${MAX_ITEMS_PAGE}`, 10), MAX_ITEMS_PAGE);
+  const offset = parseInt(req.query.offset || '0', 10);
+  const slice = cached.items.slice(offset, offset + limit);
+
+  res.json({
+    items: slice,
+    total: cached.items.length,
+    limit,
+    offset,
   });
 });
 

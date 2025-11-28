@@ -4,12 +4,128 @@
  */
 
 import { db, type Playlist, type M3UItem, type M3UGroup } from './schema';
-import { fetchAndParseM3U, type ProgressCallback } from '../services/m3u';
+import type { ProgressCallback } from '../services/m3u';
 
 const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
+const SERVER_URL = import.meta.env.VITE_BRIDGE_URL;
+
+/**
+ * Processa M3U usando APENAS o servidor (SEM FALLBACK)
+ * Se servidor falhar, lança erro
+ */
+async function fetchFromServer(
+  url: string,
+  onProgress?: ProgressCallback
+): Promise<{ stats: any; groups: any[]; items: any[] }> {
+  // Validação: servidor deve estar configurado
+  if (!SERVER_URL) {
+    throw new Error('Servidor não configurado. Configure VITE_BRIDGE_URL no .env');
+  }
+
+  onProgress?.({
+    phase: 'downloading',
+    current: 0,
+    total: 100,
+    percentage: 0,
+    message: 'Conectando ao servidor...',
+  });
+
+  try {
+    // Chama API de parsing
+    const response = await fetch(`${SERVER_URL}/api/playlist/parse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        options: {
+          includeGroups: true,
+          normalize: true,
+          removeDuplicates: true,
+        },
+      }),
+      signal: AbortSignal.timeout(30000), // 30s timeout
+    });
+
+    if (!response.ok) {
+      throw new Error(`Erro do servidor: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+
+    if (!result.success) {
+      throw new Error(result.error || 'Erro ao processar playlist no servidor');
+    }
+
+    onProgress?.({
+      phase: 'downloading',
+      current: 50,
+      total: 100,
+      percentage: 50,
+      message: result.cached ? 'Cache hit no servidor!' : 'Processado no servidor',
+    });
+
+    // Busca itens em páginas até completar tudo
+    const allItems: any[] = [];
+    let offset = 0;
+    let total = 0;
+
+    while (true) {
+      const itemsResponse = await fetch(
+        `${SERVER_URL}/api/playlist/items/${result.hash}?limit=5000&offset=${offset}`
+      );
+
+      if (!itemsResponse.ok) {
+        throw new Error(`Erro ao buscar itens: ${itemsResponse.status}`);
+      }
+
+      const page = await itemsResponse.json();
+      allItems.push(...(page.items || []));
+      total = page.total || allItems.length;
+
+      if (allItems.length >= total || (page.items || []).length === 0) {
+        break;
+      }
+
+      offset += page.limit || 5000;
+    }
+
+    onProgress?.({
+      phase: 'downloading',
+      current: 100,
+      total: 100,
+      percentage: 100,
+      message: 'Download completo!',
+    });
+
+    return {
+      stats: result.data.stats,
+      groups: result.data.groups,
+      items: allItems,
+    };
+
+  } catch (error) {
+    // Erro específico: mostra mensagem clara ao usuário
+    const errorMessage = error instanceof Error
+      ? error.message
+      : 'Erro desconhecido ao processar playlist';
+
+    console.error('[Server] Erro ao processar playlist:', errorMessage);
+
+    onProgress?.({
+      phase: 'error',
+      current: 0,
+      total: 100,
+      percentage: 0,
+      message: errorMessage,
+    });
+
+    throw new Error(`Falha no servidor: ${errorMessage}`);
+  }
+}
 
 /**
  * Adiciona uma nova playlist a partir de uma URL
+ * Usa APENAS o servidor para processar M3U (sem fallback client-side)
  */
 export async function addPlaylist(
   url: string,
@@ -31,8 +147,8 @@ export async function addPlaylist(
   // Gera ID unico
   const playlistId = `playlist_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-  // Parseia a playlist
-  const parsed = await fetchAndParseM3U(url, playlistId, onProgress);
+  // APENAS SERVIDOR (sem fallback)
+  const parsed = await fetchFromServer(url, onProgress);
 
   // Determina se deve ser ativa (primeira playlist = ativa)
   const isFirst = playlistCount === 0;
@@ -63,33 +179,39 @@ export async function addPlaylist(
     console.log('[DB DEBUG] Playlist object:', playlist);
     await db.playlists.add(playlist);
 
-    // Salva itens em lotes
-    const items: M3UItem[] = parsed.items.map((item) => ({
-      id: `${playlistId}_${item.id}`,
-      playlistId,
-      name: item.name,
-      url: item.url,
-      logo: item.logo,
-      group: item.group,
-      mediaKind: item.mediaKind,
-      title: item.parsedTitle.title,
-      year: item.parsedTitle.year,
-      season: item.parsedTitle.season,
-      episode: item.parsedTitle.episode,
-      quality: item.parsedTitle.quality,
-      epgId: item.epgId,
-      createdAt: Date.now(),
-    }));
+    // Se items array está vazio, significa que streaming parser já inseriu no DB
+    // Apenas salvamos grupos nesse caso
+    if (parsed.items.length > 0) {
+      console.log('[DB DEBUG] Inserindo itens no DB');
+      const items: M3UItem[] = parsed.items.map((item: any) => ({
+        id: `${playlistId}_${item.id}`,
+        playlistId,
+        name: item.name,
+        url: item.url,
+        logo: item.logo,
+        group: item.group,
+        mediaKind: item.mediaKind,
+        title: item.parsedTitle?.title || item.title || item.name,
+        year: item.parsedTitle?.year || item.year,
+        season: item.parsedTitle?.season || item.season,
+        episode: item.parsedTitle?.episode || item.episode,
+        quality: item.parsedTitle?.quality || item.quality,
+        epgId: item.epgId,
+        createdAt: Date.now(),
+      }));
 
-    // Insere em lotes de 500
-    const batchSize = 500;
-    for (let i = 0; i < items.length; i += batchSize) {
-      const batch = items.slice(i, i + batchSize);
-      await db.items.bulkAdd(batch);
+      // Insere em lotes de 500
+      const batchSize = 500;
+      for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        await db.items.bulkAdd(batch);
+      }
+    } else {
+      console.log('[DB DEBUG] Items já inseridos pelo streaming parser');
     }
 
-    // Salva grupos
-    const groups: M3UGroup[] = parsed.groups.map((group) => ({
+    // Salva grupos (grupos sempre vêm no retorno)
+    const groups: M3UGroup[] = parsed.groups.map((group: any) => ({
       id: `${playlistId}_${group.id}`,
       playlistId,
       name: group.name,
@@ -98,7 +220,17 @@ export async function addPlaylist(
       logo: group.logo,
       createdAt: Date.now(),
     }));
-    await db.groups.bulkAdd(groups);
+
+    // Grupos podem já ter sido inseridos pelo streaming parser
+    if (groups.length > 0) {
+      try {
+        await db.groups.bulkAdd(groups);
+      } catch (error) {
+        // Se erro de chave duplicada, ignora (grupos já foram inseridos)
+        console.log('[DB DEBUG] Grupos já existem (inseridos pelo streaming parser)');
+      }
+    }
+
     console.log('[DB DEBUG] Transação completada com sucesso!');
   });
 
@@ -124,6 +256,7 @@ export async function addPlaylist(
 
 /**
  * Atualiza uma playlist existente (re-sincroniza)
+ * Usa APENAS o servidor para re-processar M3U
  */
 export async function refreshPlaylist(
   playlistId: string,
@@ -134,8 +267,8 @@ export async function refreshPlaylist(
     throw new Error('Playlist nao encontrada');
   }
 
-  // Parseia novamente
-  const parsed = await fetchAndParseM3U(playlist.url, playlistId, onProgress);
+  // Re-processa usando servidor
+  const parsed = await fetchFromServer(playlist.url, onProgress);
 
   await db.transaction('rw', [db.playlists, db.items, db.groups], async () => {
     // Remove itens e grupos antigos
@@ -152,32 +285,34 @@ export async function refreshPlaylist(
       seriesCount: parsed.stats.seriesCount,
     });
 
-    // Re-insere itens
-    const items: M3UItem[] = parsed.items.map((item) => ({
-      id: `${playlistId}_${item.id}`,
-      playlistId,
-      name: item.name,
-      url: item.url,
-      logo: item.logo,
-      group: item.group,
-      mediaKind: item.mediaKind,
-      title: item.parsedTitle.title,
-      year: item.parsedTitle.year,
-      season: item.parsedTitle.season,
-      episode: item.parsedTitle.episode,
-      quality: item.parsedTitle.quality,
-      epgId: item.epgId,
-      createdAt: Date.now(),
-    }));
+    // Re-insere itens (vindos do servidor)
+    if (parsed.items.length > 0) {
+      const items: M3UItem[] = parsed.items.map((item: any) => ({
+        id: `${playlistId}_${item.id}`,
+        playlistId,
+        name: item.name,
+        url: item.url,
+        logo: item.logo,
+        group: item.group,
+        mediaKind: item.mediaKind,
+        title: item.parsedTitle?.title || item.title || item.name,
+        year: item.parsedTitle?.year || item.year,
+        season: item.parsedTitle?.season || item.season,
+        episode: item.parsedTitle?.episode || item.episode,
+        quality: item.parsedTitle?.quality || item.quality,
+        epgId: item.epgId,
+        createdAt: Date.now(),
+      }));
 
-    const batchSize = 500;
-    for (let i = 0; i < items.length; i += batchSize) {
-      const batch = items.slice(i, i + batchSize);
-      await db.items.bulkAdd(batch);
+      const batchSize = 500;
+      for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        await db.items.bulkAdd(batch);
+      }
     }
 
     // Re-insere grupos
-    const groups: M3UGroup[] = parsed.groups.map((group) => ({
+    const groups: M3UGroup[] = parsed.groups.map((group: any) => ({
       id: `${playlistId}_${group.id}`,
       playlistId,
       name: group.name,
@@ -186,7 +321,10 @@ export async function refreshPlaylist(
       logo: group.logo,
       createdAt: Date.now(),
     }));
-    await db.groups.bulkAdd(groups);
+
+    if (groups.length > 0) {
+      await db.groups.bulkAdd(groups);
+    }
   });
 }
 

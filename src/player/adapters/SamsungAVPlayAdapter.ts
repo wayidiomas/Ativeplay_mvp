@@ -453,6 +453,10 @@ export class SamsungAVPlayAdapter implements IPlayerAdapter {
     }
   }
 
+  setSubtitleStyle(): void {
+    // AVPlay não expõe customização de estilo via API pública; noop.
+  }
+
   // State & Info
 
   getState(): PlayerState {

@@ -95,6 +95,15 @@ export interface IPlayerAdapter {
    */
   setSubtitleEnabled(enabled: boolean): void;
 
+  /**
+   * Ajusta estilo de legenda (opcional, se suportado pela plataforma)
+   */
+  setSubtitleStyle?(style: {
+    fontSize?: number;
+    color?: 'white' | 'yellow' | 'red' | 'green' | 'cyan';
+    position?: 'bottom' | 'top';
+  }): void;
+
   // State & Info
   /**
    * Obtem o estado atual do player
