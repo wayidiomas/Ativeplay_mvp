@@ -16,7 +16,8 @@ const PORT = process.env.PORT || 3001;
 const PARSE_CACHE_TTL_MS = parseInt(process.env.PARSE_CACHE_TTL_MS || '600000', 10); // 10min
 const MAX_M3U_SIZE_MB = parseInt(process.env.MAX_M3U_SIZE_MB || '200', 10); // limite de Content-Length
 const MAX_ITEMS_PAGE = parseInt(process.env.MAX_ITEMS_PAGE || '5000', 10);
-const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '15000', 10);
+const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '60000', 10); // 60s (aumentado)
+const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10); // Retry com backoff
 const USER_AGENT = process.env.USER_AGENT || 'AtivePlay-Server/1.0';
 
 /**
@@ -164,6 +165,43 @@ function cleanTitle(title) {
     .trim();
 }
 
+/**
+ * Faz fetch com retry e backoff exponencial
+ * Útil para contornar rate limiting (429) e timeouts temporários
+ */
+async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      // Se 429 (rate limit), tenta novamente com backoff
+      if (response.status === 429 && attempt < retries) {
+        const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000); // Max 10s
+        console.log(`[Fetch] Rate limited (429). Retry ${attempt + 1}/${retries} em ${backoffMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error;
+
+      // Se timeout ou erro de rede, tenta novamente
+      if (attempt < retries) {
+        const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+        console.log(`[Fetch] Erro: ${error.message}. Retry ${attempt + 1}/${retries} em ${backoffMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        continue;
+      }
+    }
+  }
+
+  // Todas as tentativas falharam
+  throw lastError;
+}
+
 function parseTitle(name) {
   let title = name;
   let year;
@@ -251,7 +289,7 @@ function parseExtinf(line) {
 }
 
 async function parseM3UStream(url, options = {}) {
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     headers: {
       'User-Agent': USER_AGENT,
     },
@@ -259,6 +297,16 @@ async function parseM3UStream(url, options = {}) {
   });
 
   if (!response.ok) {
+    // Mensagens de erro mais amigáveis
+    if (response.status === 404) {
+      throw new Error('Playlist não encontrada (404). Verifique se a URL está correta.');
+    }
+    if (response.status === 403) {
+      throw new Error('Acesso negado (403). A playlist pode exigir autenticação.');
+    }
+    if (response.status === 429) {
+      throw new Error('Muitas requisições (429). Servidor do M3U está limitando acessos. Tente novamente em alguns minutos.');
+    }
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
 
@@ -517,7 +565,15 @@ app.post('/api/playlist/parse', async (req, res) => {
     });
   } catch (error) {
     console.error('[Parse] Erro:', error);
-    res.status(500).json({ success: false, error: error.message || 'Erro ao parsear playlist' });
+
+    // Mensagens de erro mais amigáveis para o usuário
+    let userMessage = error.message || 'Erro ao processar playlist';
+
+    if (error.name === 'TimeoutError' || error.message?.includes('timeout')) {
+      userMessage = 'Timeout: O servidor do M3U demorou muito para responder (>60s). Tente novamente ou use uma URL mais rápida.';
+    }
+
+    res.status(500).json({ success: false, error: userMessage });
   }
 });
 
