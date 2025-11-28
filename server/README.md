@@ -170,6 +170,7 @@ Recebe `{ url, options }`, faz download/parse no servidor e retorna `hash`, `sta
 
 ### `GET /api/playlist/items/:hash?limit=5000&offset=0`
 Retorna itens paginados do parse já armazenado em cache.
+Itens são armazenados em disco (`.parse-cache/*.ndjson`) para evitar uso alto de memória; o cache expira conforme `PARSE_CACHE_TTL_MS`.
 
 **Response:**
 ```json

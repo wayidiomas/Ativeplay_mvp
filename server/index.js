@@ -8,6 +8,10 @@ import cors from 'cors';
 import QRCode from 'qrcode';
 import { createHash, randomBytes } from 'crypto';
 import { networkInterfaces } from 'os';
+import { createWriteStream, createReadStream, promises as fs } from 'fs';
+import { finished } from 'stream/promises';
+import path from 'path';
+import readline from 'readline';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -19,6 +23,9 @@ const MAX_ITEMS_PAGE = parseInt(process.env.MAX_ITEMS_PAGE || '5000', 10);
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '60000', 10); // 60s (aumentado)
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10); // Retry com backoff
 const USER_AGENT = process.env.USER_AGENT || 'AtivePlay-Server/1.0';
+const CACHE_DIR = process.env.PARSE_CACHE_DIR || path.join(process.cwd(), '.parse-cache');
+
+await fs.mkdir(CACHE_DIR, { recursive: true });
 
 /**
  * Detecta IP local da máquina na rede
@@ -185,6 +192,10 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
 
       clearTimeout(timeoutId);
 
+      if (attempt > 0) {
+        console.log(`[Fetch] Sucesso após retry ${attempt}/${retries}`);
+      }
+
       // Se 429 (rate limit), tenta novamente com backoff
       if (response.status === 429 && attempt < retries) {
         const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000); // Max 10s
@@ -297,7 +308,18 @@ function parseExtinf(line) {
   return { duration, attributes, title };
 }
 
-async function parseM3UStream(url, options = {}) {
+async function parseM3UStream(url, options = {}, hashOverride) {
+  const hash = hashOverride || hashPlaylist(url);
+  const itemsFile = path.join(CACHE_DIR, `${hash}.ndjson`);
+  const tempFile = `${itemsFile}.tmp`;
+
+  console.log('[Parse] Iniciando parse', {
+    url,
+    hash,
+    normalize: !!options.normalize,
+    removeDuplicates: options.removeDuplicates !== false,
+  });
+
   // fetchWithRetry já cria signal de timeout internamente
   const response = await fetchWithRetry(url, {
     headers: {
@@ -320,17 +342,18 @@ async function parseM3UStream(url, options = {}) {
   }
 
   const contentLength = response.headers.get('content-length');
-  if (contentLength) {
-    const sizeMb = parseInt(contentLength, 10) / (1024 * 1024);
-    if (sizeMb > MAX_M3U_SIZE_MB) {
-      throw new Error(`Playlist muito grande: ${sizeMb.toFixed(1)}MB (limite ${MAX_M3U_SIZE_MB}MB)`);
-    }
+    if (contentLength) {
+      const sizeMb = parseInt(contentLength, 10) / (1024 * 1024);
+      if (sizeMb > MAX_M3U_SIZE_MB) {
+        throw new Error(`Playlist muito grande: ${sizeMb.toFixed(1)}MB (limite ${MAX_M3U_SIZE_MB}MB)`);
+      }
   }
 
   if (!response.body) {
     throw new Error('Response body não disponível');
   }
 
+  const writer = createWriteStream(tempFile, { encoding: 'utf8' });
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
 
@@ -338,7 +361,6 @@ async function parseM3UStream(url, options = {}) {
   let currentExtinf = null;
   let itemIndex = 0;
   let foundHeader = false;
-  const items = [];
   const groupsMap = new Map();
   const stats = {
     totalItems: 0,
@@ -348,130 +370,148 @@ async function parseM3UStream(url, options = {}) {
     unknownCount: 0,
     groupCount: 0,
   };
-  const seenUrls = new Set();
+  const seenUrls = options.removeDuplicates === false ? null : new Set();
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
 
-      if (trimmed === '#EXTM3U') {
-        foundHeader = true;
-        continue;
-      }
-
-      if (trimmed.startsWith('#') && !trimmed.startsWith('#EXTINF:')) continue;
-
-      if (trimmed.startsWith('#EXTINF:')) {
-        currentExtinf = parseExtinf(trimmed);
-        continue;
-      }
-
-      if (currentExtinf && trimmed.startsWith('http')) {
-        if (options.removeDuplicates && seenUrls.has(trimmed)) {
-          currentExtinf = null;
+        if (trimmed === '#EXTM3U') {
+          foundHeader = true;
           continue;
         }
 
-        const nameRaw = currentExtinf.title;
-        const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
-        const tvgId = currentExtinf.attributes.get('tvg-id');
-        const tvgLogo = currentExtinf.attributes.get('tvg-logo');
-        const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
-        const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+        if (trimmed.startsWith('#') && !trimmed.startsWith('#EXTINF:')) continue;
 
-        const mediaKind = classify(name, groupTitle);
-        const parsedTitle = parseTitle(name);
-
-        const item = {
-          id: generateItemId(trimmed, itemIndex++),
-          name,
-          url: trimmed,
-          logo: tvgLogo,
-          group: groupTitle,
-          mediaKind,
-          parsedTitle,
-          epgId: tvgId,
-        };
-
-        items.push(item);
-        seenUrls.add(trimmed);
-
-        stats.totalItems++;
-        switch (mediaKind) {
-          case 'live':
-            stats.liveCount++;
-            break;
-          case 'movie':
-            stats.movieCount++;
-            break;
-          case 'series':
-            stats.seriesCount++;
-            break;
-          default:
-            stats.unknownCount++;
+        if (trimmed.startsWith('#EXTINF:')) {
+          currentExtinf = parseExtinf(trimmed);
+          continue;
         }
 
-        const groupId = generateGroupId(groupTitle, mediaKind);
-        const existingGroup = groupsMap.get(groupId);
-        if (existingGroup) {
-          existingGroup.itemCount++;
-        } else {
-          groupsMap.set(groupId, {
-            id: groupId,
-            name: groupTitle,
-            mediaKind,
-            itemCount: 1,
+        if (currentExtinf && trimmed.startsWith('http')) {
+          if (seenUrls && seenUrls.has(trimmed)) {
+            currentExtinf = null;
+            continue;
+          }
+
+          const nameRaw = currentExtinf.title;
+          const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
+          const tvgId = currentExtinf.attributes.get('tvg-id');
+          const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+          const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
+          const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+
+          const mediaKind = classify(name, groupTitle);
+          const parsedTitle = parseTitle(name);
+
+          const item = {
+            id: generateItemId(trimmed, itemIndex++),
+            name,
+            url: trimmed,
             logo: tvgLogo,
-          });
+            group: groupTitle,
+            mediaKind,
+            parsedTitle,
+            epgId: tvgId,
+          };
+
+          writer.write(`${JSON.stringify(item)}\n`);
+          if (seenUrls) seenUrls.add(trimmed);
+
+          stats.totalItems++;
+          switch (mediaKind) {
+            case 'live':
+              stats.liveCount++;
+              break;
+            case 'movie':
+              stats.movieCount++;
+              break;
+            case 'series':
+              stats.seriesCount++;
+              break;
+            default:
+              stats.unknownCount++;
+          }
+
+          const groupId = generateGroupId(groupTitle, mediaKind);
+          const existingGroup = groupsMap.get(groupId);
+          if (existingGroup) {
+            existingGroup.itemCount++;
+          } else {
+            groupsMap.set(groupId, {
+              id: groupId,
+              name: groupTitle,
+              mediaKind,
+              itemCount: 1,
+              logo: tvgLogo,
+            });
+          }
+
+          currentExtinf = null;
         }
-
-        currentExtinf = null;
       }
     }
-  }
 
-  if (buffer.trim()) {
-    const trimmed = buffer.trim();
-    if (currentExtinf && trimmed.startsWith('http')) {
-      if (!(options.removeDuplicates && seenUrls.has(trimmed))) {
-        const nameRaw = currentExtinf.title;
-        const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
-        const tvgId = currentExtinf.attributes.get('tvg-id');
-        const tvgLogo = currentExtinf.attributes.get('tvg-logo');
-        const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
-        const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
-        const mediaKind = classify(name, groupTitle);
-        const parsedTitle = parseTitle(name);
-        items.push({
-          id: generateItemId(trimmed, itemIndex++),
-          name,
-          url: trimmed,
-          logo: tvgLogo,
-          group: groupTitle,
-          mediaKind,
-          parsedTitle,
-          epgId: tvgId,
-        });
-        seenUrls.add(trimmed);
+    if (buffer.trim()) {
+      const trimmed = buffer.trim();
+      if (currentExtinf && trimmed.startsWith('http')) {
+        if (!(seenUrls && seenUrls.has(trimmed))) {
+          const nameRaw = currentExtinf.title;
+          const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
+          const tvgId = currentExtinf.attributes.get('tvg-id');
+          const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+          const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
+          const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+          const mediaKind = classify(name, groupTitle);
+          const parsedTitle = parseTitle(name);
+          const item = {
+            id: generateItemId(trimmed, itemIndex++),
+            name,
+            url: trimmed,
+            logo: tvgLogo,
+            group: groupTitle,
+            mediaKind,
+            parsedTitle,
+            epgId: tvgId,
+          };
+          writer.write(`${JSON.stringify(item)}\n`);
+          if (seenUrls) seenUrls.add(trimmed);
+        }
       }
     }
+
+    if (!foundHeader) {
+      throw new Error('Formato de playlist inválido (falta #EXTM3U)');
+    }
+
+    const groups = Array.from(groupsMap.values());
+    stats.groupCount = groups.length;
+
+    writer.end();
+    await finished(writer);
+    await fs.rename(tempFile, itemsFile);
+
+    console.log('[Parse] Finalizado', {
+      hash,
+      totalItems: stats.totalItems,
+      groups: stats.groupCount,
+      file: itemsFile,
+    });
+
+    return { itemsFile, groups, stats, hash };
+  } catch (error) {
+    writer.destroy();
+    await fs.rm(tempFile, { force: true }).catch(() => {});
+    throw error;
   }
-
-  if (!foundHeader) {
-    throw new Error('Formato de playlist inválido (falta #EXTM3U)');
-  }
-
-  const groups = Array.from(groupsMap.values());
-  stats.groupCount = groups.length;
-
-  return { items, groups, stats };
 }
 
 const parseCache = new Map();
@@ -498,6 +538,9 @@ setInterval(() => {
   for (const [hash, entry] of parseCache.entries()) {
     if (now - entry.createdAt > PARSE_CACHE_TTL_MS) {
       parseCache.delete(hash);
+      if (entry.itemsFile) {
+        fs.rm(entry.itemsFile, { force: true }).catch(() => {});
+      }
     }
   }
 }, 60000);
@@ -545,21 +588,30 @@ app.post('/api/playlist/parse', async (req, res) => {
     const hash = hashPlaylist(url);
     const cached = getCached(hash);
     if (cached) {
-      return res.json({
-        success: true,
-        cached: true,
-        hash,
-        data: {
-          stats: cached.stats,
-          groups: cached.groups,
-        },
-      });
+      try {
+        await fs.access(cached.itemsFile);
+        console.log('[Parse] Cache hit', { hash, url });
+        return res.json({
+          success: true,
+          cached: true,
+          hash,
+          data: {
+            stats: cached.stats,
+            groups: cached.groups,
+          },
+        });
+      } catch (error) {
+        // Cache sem arquivo -> invalida e reprocessa
+        console.warn('[Parse] Cache inconsistente, reprocessando', { hash });
+        parseCache.delete(hash);
+      }
     }
 
+    console.log('[Parse] Cache miss, processando', { hash, url });
     const parsed = await parseM3UStream(url, {
       normalize: options.normalize,
       removeDuplicates: options.removeDuplicates !== false,
-    });
+    }, hash);
 
     setCache(hash, parsed);
 
@@ -590,23 +642,52 @@ app.post('/api/playlist/parse', async (req, res) => {
  * GET /api/playlist/items/:hash
  * Retorna itens paginados de uma playlist já parseada
  */
-app.get('/api/playlist/items/:hash', (req, res) => {
+app.get('/api/playlist/items/:hash', async (req, res) => {
   const { hash } = req.params;
   const cached = getCached(hash);
   if (!cached) {
     return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
   }
 
+  if (!cached.itemsFile) {
+    return res.status(500).json({ error: 'Cache sem referência de arquivo de itens' });
+  }
+
   const limit = Math.min(parseInt(req.query.limit || `${MAX_ITEMS_PAGE}`, 10), MAX_ITEMS_PAGE);
   const offset = parseInt(req.query.offset || '0', 10);
-  const slice = cached.items.slice(offset, offset + limit);
+  const items = [];
 
-  res.json({
-    items: slice,
-    total: cached.items.length,
-    limit,
-    offset,
-  });
+  try {
+    const fileStream = createReadStream(cached.itemsFile, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    let index = 0;
+    for await (const line of rl) {
+      if (index >= offset && items.length < limit) {
+        try {
+          items.push(JSON.parse(line));
+        } catch (error) {
+          console.warn('[Items] Linha inválida no cache, pulando');
+        }
+      }
+      index++;
+      if (items.length >= limit) break;
+    }
+
+    rl.close();
+
+    console.log('[Items] Página servida', { hash, offset, limit, returned: items.length, total: cached.stats?.totalItems || index });
+
+    res.json({
+      items,
+      total: cached.stats?.totalItems || index,
+      limit,
+      offset,
+    });
+  } catch (error) {
+    console.error('[Items] Erro ao ler cache:', error);
+    res.status(500).json({ error: 'Erro ao ler cache de itens' });
+  }
 });
 
 /**
