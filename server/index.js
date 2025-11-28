@@ -20,7 +20,7 @@ const PORT = process.env.PORT || 3001;
 const PARSE_CACHE_TTL_MS = parseInt(process.env.PARSE_CACHE_TTL_MS || '600000', 10); // 10min
 const MAX_M3U_SIZE_MB = parseInt(process.env.MAX_M3U_SIZE_MB || '200', 10); // limite de Content-Length
 const MAX_ITEMS_PAGE = parseInt(process.env.MAX_ITEMS_PAGE || '5000', 10);
-const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '60000', 10); // 60s (aumentado)
+const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '300000', 10); // 300s (5min) - para servidores IPTV lentos
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10); // Retry com backoff
 const USER_AGENT = process.env.USER_AGENT || 'AtivePlay-Server/1.0';
 const CACHE_DIR = process.env.PARSE_CACHE_DIR || path.join(process.cwd(), '.parse-cache');
@@ -631,7 +631,7 @@ app.post('/api/playlist/parse', async (req, res) => {
     let userMessage = error.message || 'Erro ao processar playlist';
 
     if (error.name === 'TimeoutError' || error.message?.includes('timeout')) {
-      userMessage = 'Timeout: O servidor do M3U demorou muito para responder (>60s). Tente novamente ou use uma URL mais rápida.';
+      userMessage = 'Timeout: O servidor do M3U demorou muito para responder (>5min). Tente novamente ou use uma URL mais rápida.';
     }
 
     res.status(500).json({ success: false, error: userMessage });

@@ -43,7 +43,7 @@ async function fetchFromServer(
           removeDuplicates: true,
         },
       }),
-      signal: AbortSignal.timeout(120000), // 120s timeout (servidor pode fazer 3 retries de 60s)
+      signal: AbortSignal.timeout(600000), // 600s (10min) timeout - servidor pode fazer 3 retries de 5min
     });
 
     if (!response.ok) {
