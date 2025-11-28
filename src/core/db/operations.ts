@@ -10,8 +10,8 @@ const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
 const SERVER_URL = import.meta.env.VITE_BRIDGE_URL;
 
 /**
- * Processa M3U usando APENAS o servidor (SEM FALLBACK)
- * Se servidor falhar, lança erro
+ * Processa M3U usando servidor com padrão assíncrono (polling)
+ * Resolve problema de timeout de 30s do Render
  */
 async function fetchFromServer(
   url: string,
@@ -31,8 +31,8 @@ async function fetchFromServer(
   });
 
   try {
-    // Chama API de parsing
-    const response = await fetch(`${SERVER_URL}/api/playlist/parse`, {
+    // 1. Inicia job de parsing (retorna imediatamente com jobId)
+    const parseResponse = await fetch(`${SERVER_URL}/api/playlist/parse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -43,35 +43,144 @@ async function fetchFromServer(
           removeDuplicates: true,
         },
       }),
-      signal: AbortSignal.timeout(600000), // 600s (10min) timeout - servidor pode fazer 3 retries de 5min
+      signal: AbortSignal.timeout(30000), // 30s - só espera criar o job
     });
 
-    if (!response.ok) {
-      throw new Error(`Erro do servidor: ${response.status} ${response.statusText}`);
+    if (!parseResponse.ok) {
+      throw new Error(`Erro do servidor: ${parseResponse.status} ${parseResponse.statusText}`);
     }
 
-    const result = await response.json();
+    const parseResult = await parseResponse.json();
 
-    if (!result.success) {
-      throw new Error(result.error || 'Erro ao processar playlist no servidor');
+    if (!parseResult.success) {
+      throw new Error(parseResult.error || 'Erro ao processar playlist no servidor');
+    }
+
+    // Se foi cache hit, retorna imediatamente
+    if (parseResult.cached) {
+      onProgress?.({
+        phase: 'downloading',
+        current: 50,
+        total: 100,
+        percentage: 50,
+        message: 'Cache hit no servidor!',
+      });
+
+      // Busca itens do cache
+      const allItems: any[] = [];
+      let offset = 0;
+      let total = 0;
+
+      while (true) {
+        const itemsResponse = await fetch(
+          `${SERVER_URL}/api/playlist/items/${parseResult.hash}?limit=5000&offset=${offset}`
+        );
+
+        if (!itemsResponse.ok) {
+          throw new Error(`Erro ao buscar itens: ${itemsResponse.status}`);
+        }
+
+        const page = await itemsResponse.json();
+        allItems.push(...(page.items || []));
+        total = page.total || allItems.length;
+
+        if (allItems.length >= total || (page.items || []).length === 0) {
+          break;
+        }
+
+        offset += page.limit || 5000;
+      }
+
+      onProgress?.({
+        phase: 'downloading',
+        current: 100,
+        total: 100,
+        percentage: 100,
+        message: 'Download completo!',
+      });
+
+      return {
+        stats: parseResult.data.stats,
+        groups: parseResult.data.groups,
+        items: allItems,
+      };
+    }
+
+    // 2. Faz polling do status até completar (job assíncrono)
+    const jobId = parseResult.jobId;
+    const hash = parseResult.hash;
+
+    onProgress?.({
+      phase: 'downloading',
+      current: 10,
+      total: 100,
+      percentage: 10,
+      message: 'Processando playlist no servidor...',
+    });
+
+    let status: any;
+    const maxAttempts = 120; // 120 * 5s = 10 minutos máximo
+    let attempt = 0;
+
+    while (attempt < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 5000)); // Poll a cada 5s
+
+      const statusResponse = await fetch(`${SERVER_URL}/api/playlist/status/${jobId}`);
+
+      if (!statusResponse.ok) {
+        throw new Error(`Erro ao verificar status: ${statusResponse.status}`);
+      }
+
+      status = await statusResponse.json();
+
+      if (!status.success) {
+        throw new Error(status.error || 'Erro ao verificar status do job');
+      }
+
+      // Atualiza progresso
+      if (status.progress) {
+        onProgress?.({
+          phase: 'downloading',
+          current: Math.floor(status.progress.percentage * 0.8), // 0-80% do progresso total
+          total: 100,
+          percentage: Math.floor(status.progress.percentage * 0.8),
+          message: status.progress.message || 'Processando...',
+        });
+      }
+
+      // Job completado
+      if (status.status === 'completed') {
+        break;
+      }
+
+      // Job falhou
+      if (status.status === 'failed') {
+        throw new Error(status.error || 'Erro no processamento da playlist');
+      }
+
+      attempt++;
+    }
+
+    if (attempt >= maxAttempts) {
+      throw new Error('Timeout: Processamento demorou mais de 10 minutos');
     }
 
     onProgress?.({
       phase: 'downloading',
-      current: 50,
+      current: 80,
       total: 100,
-      percentage: 50,
-      message: result.cached ? 'Cache hit no servidor!' : 'Processado no servidor',
+      percentage: 80,
+      message: 'Baixando itens processados...',
     });
 
-    // Busca itens em páginas até completar tudo
+    // 3. Busca itens em páginas
     const allItems: any[] = [];
     let offset = 0;
     let total = 0;
 
     while (true) {
       const itemsResponse = await fetch(
-        `${SERVER_URL}/api/playlist/items/${result.hash}?limit=5000&offset=${offset}`
+        `${SERVER_URL}/api/playlist/items/${hash}?limit=5000&offset=${offset}`
       );
 
       if (!itemsResponse.ok) {
@@ -98,8 +207,8 @@ async function fetchFromServer(
     });
 
     return {
-      stats: result.data.stats,
-      groups: result.data.groups,
+      stats: status.data.stats,
+      groups: status.data.groups,
       items: allItems,
     };
 
