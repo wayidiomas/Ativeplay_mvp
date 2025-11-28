@@ -12,6 +12,7 @@ import { createWriteStream, createReadStream, promises as fs } from 'fs';
 import { finished } from 'stream/promises';
 import path from 'path';
 import readline from 'readline';
+import { cacheIndex } from './services/cacheIndex.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -514,50 +515,7 @@ async function parseM3UStream(url, options = {}, hashOverride) {
   }
 }
 
-const parseCache = new Map();
-const parseJobs = new Map(); // jobId -> { status, hash, progress, error, result }
-
-function getCached(hash) {
-  const entry = parseCache.get(hash);
-  if (!entry) return null;
-  if (Date.now() - entry.createdAt > PARSE_CACHE_TTL_MS) {
-    parseCache.delete(hash);
-    return null;
-  }
-  return entry;
-}
-
-function setCache(hash, payload) {
-  parseCache.set(hash, {
-    ...payload,
-    createdAt: Date.now(),
-  });
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [hash, entry] of parseCache.entries()) {
-    if (now - entry.createdAt > PARSE_CACHE_TTL_MS) {
-      parseCache.delete(hash);
-      if (entry.itemsFile) {
-        fs.rm(entry.itemsFile, { force: true }).catch(() => {});
-      }
-    }
-  }
-}, 60000);
-
-// Limpa jobs antigos a cada 5 minutos (mantém por 1 hora)
-const JOB_TTL_MS = 60 * 60 * 1000; // 1 hora
-setInterval(() => {
-  const now = Date.now();
-  for (const [jobId, job] of parseJobs.entries()) {
-    const jobAge = now - job.createdAt;
-    if (jobAge > JOB_TTL_MS) {
-      parseJobs.delete(jobId);
-      console.log(`[Jobs] Removido job expirado: ${jobId}`);
-    }
-  }
-}, 5 * 60 * 1000);
+// Cache-First: sem jobs em memória, usa cacheIndex (disco) que sobrevive a restarts
 
 // Armazena sessões ativas (em produção, usar Redis)
 // Estrutura: { sessionId: { url: null, createdAt: timestamp, expiresAt: timestamp } }
@@ -589,8 +547,8 @@ app.get('/', (req, res) => {
 
 /**
  * POST /api/playlist/parse
- * Inicia job assíncrono de parse e retorna jobId imediatamente
- * (Resolve problema do timeout de 30s do Render)
+ * Cache-First: Retorna cache do disco se existir, senão processa e salva
+ * (Cache sobrevive a server restarts via cacheIndex)
  */
 app.post('/api/playlist/parse', async (req, res) => {
   try {
@@ -601,13 +559,15 @@ app.post('/api/playlist/parse', async (req, res) => {
     }
 
     const hash = hashPlaylist(url);
-    const cached = getCached(hash);
 
-    // Se cache válido, retorna imediatamente
+    // Verifica cache (índice em memória + arquivo no disco)
+    const cached = cacheIndex.get(hash);
     if (cached) {
+      // Valida que arquivo .ndjson ainda existe
+      const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
       try {
-        await fs.access(cached.itemsFile);
-        console.log('[Parse] Cache hit', { hash, url });
+        await fs.access(itemsPath);
+        console.log('[Parse] Cache hit', { hash, totalItems: cached.stats.totalItems });
         return res.json({
           success: true,
           cached: true,
@@ -619,114 +579,51 @@ app.post('/api/playlist/parse', async (req, res) => {
         });
       } catch (error) {
         console.warn('[Parse] Cache inconsistente, reprocessando', { hash });
-        parseCache.delete(hash);
+        await cacheIndex.delete(hash);
       }
     }
 
-    // Gera job ID único
-    const jobId = randomBytes(8).toString('hex');
+    // Cache miss: processa M3U
+    console.log('[Parse] Cache miss, processando...', { hash, url });
 
-    // Cria job em status 'processing'
-    parseJobs.set(jobId, {
-      status: 'processing',
-      hash,
+    const parsed = await parseM3UStream(url, {
+      normalize: options.normalize,
+      removeDuplicates: options.removeDuplicates !== false,
+    }, hash);
+
+    // Salva no cache (disco + índice)
+    await cacheIndex.set(hash, {
       url,
-      progress: { phase: 'starting', percentage: 0, message: 'Iniciando processamento...' },
+      stats: parsed.stats,
+      groups: parsed.groups,
       createdAt: Date.now(),
+      expiresAt: Date.now() + PARSE_CACHE_TTL_MS,
     });
 
-    console.log('[Parse] Job criado', { jobId, hash, url });
+    console.log('[Parse] Processado e salvo no cache', { hash, totalItems: parsed.stats.totalItems });
 
-    // Retorna imediatamente com jobId (< 1s, evita timeout do Render)
-    res.json({
+    return res.json({
       success: true,
-      jobId,
+      cached: false,
       hash,
-      message: 'Processamento iniciado. Use /api/playlist/status/:jobId para verificar progresso.',
+      data: {
+        stats: parsed.stats,
+        groups: parsed.groups,
+      },
     });
-
-    // Processa em background (não espera)
-    (async () => {
-      try {
-        console.log('[Parse] Iniciando background job', { jobId, hash, url });
-
-        const parsed = await parseM3UStream(url, {
-          normalize: options.normalize,
-          removeDuplicates: options.removeDuplicates !== false,
-        }, hash);
-
-        setCache(hash, parsed);
-
-        // Atualiza job para 'completed'
-        parseJobs.set(jobId, {
-          status: 'completed',
-          hash,
-          url,
-          result: {
-            stats: parsed.stats,
-            groups: parsed.groups,
-          },
-          progress: { phase: 'completed', percentage: 100, message: 'Processamento concluído!' },
-          completedAt: Date.now(),
-        });
-
-        console.log('[Parse] Job completado', { jobId, hash, totalItems: parsed.stats.totalItems });
-      } catch (error) {
-        console.error('[Parse] Job falhou', { jobId, error: error.message });
-
-        let userMessage = error.message || 'Erro ao processar playlist';
-        if (error.name === 'TimeoutError' || error.message?.includes('timeout')) {
-          userMessage = 'Timeout: O servidor do M3U demorou muito para responder (>5min). Tente novamente ou use uma URL mais rápida.';
-        }
-
-        parseJobs.set(jobId, {
-          status: 'failed',
-          hash,
-          url,
-          error: userMessage,
-          progress: { phase: 'error', percentage: 0, message: userMessage },
-          failedAt: Date.now(),
-        });
-      }
-    })();
 
   } catch (error) {
-    console.error('[Parse] Erro ao criar job:', error);
-    res.status(500).json({ success: false, error: error.message || 'Erro ao criar job de processamento' });
+    console.error('[Parse] Erro:', error);
+
+    let userMessage = error.message || 'Erro ao processar playlist';
+    if (error.name === 'TimeoutError' || error.message?.includes('timeout')) {
+      userMessage = 'Timeout: O servidor do M3U demorou muito para responder (>5min). Tente novamente ou use uma URL mais rápida.';
+    }
+
+    res.status(500).json({ success: false, error: userMessage });
   }
 });
 
-/**
- * GET /api/playlist/status/:jobId
- * Verifica status de um job de parse em andamento
- */
-app.get('/api/playlist/status/:jobId', (req, res) => {
-  const { jobId } = req.params;
-  const job = parseJobs.get(jobId);
-
-  if (!job) {
-    return res.status(404).json({
-      success: false,
-      error: 'Job não encontrado ou expirado'
-    });
-  }
-
-  // Retorna status atual
-  const response = {
-    success: true,
-    status: job.status,
-    progress: job.progress,
-  };
-
-  if (job.status === 'completed') {
-    response.data = job.result;
-    response.hash = job.hash;
-  } else if (job.status === 'failed') {
-    response.error = job.error;
-  }
-
-  res.json(response);
-});
 
 /**
  * GET /api/playlist/items/:hash
@@ -734,13 +631,10 @@ app.get('/api/playlist/status/:jobId', (req, res) => {
  */
 app.get('/api/playlist/items/:hash', async (req, res) => {
   const { hash } = req.params;
-  const cached = getCached(hash);
+  const cached = cacheIndex.get(hash);
+
   if (!cached) {
     return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
-  }
-
-  if (!cached.itemsFile) {
-    return res.status(500).json({ error: 'Cache sem referência de arquivo de itens' });
   }
 
   const limit = Math.min(parseInt(req.query.limit || `${MAX_ITEMS_PAGE}`, 10), MAX_ITEMS_PAGE);
@@ -748,7 +642,8 @@ app.get('/api/playlist/items/:hash', async (req, res) => {
   const items = [];
 
   try {
-    const fileStream = createReadStream(cached.itemsFile, { encoding: 'utf8' });
+    const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
+    const fileStream = createReadStream(itemsPath, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
     let index = 0;
@@ -1121,9 +1016,13 @@ app.get('/s/:id', (req, res) => {
   `);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   const localIP = getLocalIP();
   console.log(`🚀 AtivePlay Bridge rodando na porta ${PORT}`);
   console.log(`📱 URL local: http://${localIP}:${PORT}`);
   console.log(`📱 URL base: ${process.env.BASE_URL || `http://${localIP}:${PORT}`}`);
+
+  // Carrega índice do cache ao iniciar (sobrevive a server restarts)
+  await cacheIndex.load();
+  console.log(`📦 Cache: ${cacheIndex.index.size} playlists disponíveis`);
 });
