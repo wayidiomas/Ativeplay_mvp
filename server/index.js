@@ -7,9 +7,26 @@ import express from 'express';
 import cors from 'cors';
 import QRCode from 'qrcode';
 import { randomBytes } from 'crypto';
+import { networkInterfaces } from 'os';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+/**
+ * Detecta IP local da máquina na rede
+ */
+function getLocalIP() {
+  const nets = networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      // Pula endereços internos e não IPv4
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+  return 'localhost';
+}
 
 // Armazena sessões ativas (em produção, usar Redis)
 // Estrutura: { sessionId: { url: null, createdAt: timestamp, expiresAt: timestamp } }
@@ -49,7 +66,9 @@ app.post('/session/create', async (req, res) => {
     const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutos
 
     // URL que será aberta no celular
-    const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+    // Em produção usa BASE_URL (Render), em dev usa IP local
+    const localIP = getLocalIP();
+    const baseUrl = process.env.BASE_URL || `http://${localIP}:${PORT}`;
     const mobileUrl = `${baseUrl}/s/${sessionId}`;
 
     // Cria sessão
@@ -379,6 +398,8 @@ app.get('/s/:id', (req, res) => {
 });
 
 app.listen(PORT, () => {
+  const localIP = getLocalIP();
   console.log(`🚀 AtivePlay Bridge rodando na porta ${PORT}`);
-  console.log(`📱 URL base: ${process.env.BASE_URL || `http://localhost:${PORT}`}`);
+  console.log(`📱 URL local: http://${localIP}:${PORT}`);
+  console.log(`📱 URL base: ${process.env.BASE_URL || `http://${localIP}:${PORT}`}`);
 });
