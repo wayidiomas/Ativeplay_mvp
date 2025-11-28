@@ -10,8 +10,83 @@ const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
 const SERVER_URL = import.meta.env.VITE_BRIDGE_URL;
 
 /**
- * Processa M3U usando servidor com Cache-First architecture
- * Servidor retorna cache do disco ou processa e aguarda (sem jobs/polling)
+ * Faz polling do status de um job até completar
+ */
+async function pollJobUntilComplete(
+  jobId: string,
+  onProgress?: ProgressCallback
+): Promise<{ hash: string; stats: any; groups: any[] }> {
+  const pollInterval = 2000; // Poll a cada 2s
+  const maxAttempts = 300; // 10 minutos (300 × 2s)
+  let attempts = 0;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+
+    try {
+      const response = await fetch(`${SERVER_URL}/api/jobs/${jobId}`, {
+        signal: AbortSignal.timeout(10000), // 10s timeout para cada poll
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Job não encontrado (pode ter expirado)');
+        }
+        throw new Error(`Erro ao verificar status do job (${response.status})`);
+      }
+
+      const jobStatus = await response.json();
+
+      // Job completado com sucesso
+      if (jobStatus.status === 'completed') {
+        return {
+          hash: jobStatus.data.hash,
+          stats: jobStatus.data.stats,
+          groups: jobStatus.data.groups,
+        };
+      }
+
+      // Job falhou
+      if (jobStatus.status === 'failed') {
+        throw new Error(`Erro ao processar playlist: ${jobStatus.error || 'Erro desconhecido'}`);
+      }
+
+      // Job ainda processando - atualiza progresso
+      const percentage = Math.min(10 + (jobStatus.progress || 0) * 0.4, 45);
+      const statusMessages: Record<string, string> = {
+        waiting: `Aguardando na fila (posição ${jobStatus.queuePosition || '?'})...`,
+        active: 'Processando playlist...',
+        delayed: 'Processamento atrasado...',
+      };
+
+      onProgress?.({
+        phase: 'downloading',
+        current: percentage,
+        total: 100,
+        percentage,
+        message: statusMessages[jobStatus.status] || 'Processando...',
+      });
+
+      // Aguarda antes do próximo poll
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+    } catch (error) {
+      // Se for timeout ou erro de rede, tenta novamente
+      if (attempts >= maxAttempts) {
+        throw new Error('Timeout ao processar playlist. Tente novamente.');
+      }
+      // Aguarda antes de retentar
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    }
+  }
+
+  throw new Error('Timeout ao processar playlist após 10 minutos');
+}
+
+/**
+ * Processa M3U usando servidor com Worker Pool architecture
+ * - Cache hit: retorna imediatamente
+ * - Cache miss: faz polling até job completar
  */
 async function fetchFromServer(
   url: string,
@@ -31,13 +106,13 @@ async function fetchFromServer(
   });
 
   try {
-    // 1. Chama servidor para processar/buscar cache (aguarda resposta completa)
+    // 1. Envia request para servidor (pode retornar cache OU jobId)
     onProgress?.({
       phase: 'downloading',
-      current: 10,
+      current: 5,
       total: 100,
-      percentage: 10,
-      message: 'Processando playlist (pode levar até 10min para playlists grandes)...',
+      percentage: 5,
+      message: 'Verificando cache...',
     });
 
     const parseResponse = await fetch(`${SERVER_URL}/api/playlist/parse`, {
@@ -51,8 +126,7 @@ async function fetchFromServer(
           removeDuplicates: true,
         },
       }),
-      // Timeout de 15 minutos (playlists muito grandes podem demorar)
-      signal: AbortSignal.timeout(15 * 60 * 1000),
+      signal: AbortSignal.timeout(30000), // 30s timeout (só para request inicial)
     });
 
     if (!parseResponse.ok) {
@@ -66,16 +140,55 @@ async function fetchFromServer(
       throw new Error(parseResult.error || 'Erro ao processar playlist no servidor');
     }
 
-    onProgress?.({
-      phase: 'downloading',
-      current: 50,
-      total: 100,
-      percentage: 50,
-      message: parseResult.cached ? 'Cache hit! Baixando itens...' : 'Processamento completo! Baixando itens...',
-    });
+    let hash: string;
+    let stats: any;
+    let groups: any[];
+
+    // Cache hit → dados retornados imediatamente
+    if (parseResult.cached) {
+      onProgress?.({
+        phase: 'downloading',
+        current: 30,
+        total: 100,
+        percentage: 30,
+        message: 'Cache hit! Baixando itens...',
+      });
+
+      hash = parseResult.hash;
+      stats = parseResult.data.stats;
+      groups = parseResult.data.groups;
+    }
+    // Job enfileirado → faz polling até completar
+    else if (parseResult.queued) {
+      const jobId = parseResult.jobId;
+
+      onProgress?.({
+        phase: 'downloading',
+        current: 10,
+        total: 100,
+        percentage: 10,
+        message: 'Processando playlist (aguardando na fila)...',
+      });
+
+      // Polling até job completar
+      const jobResult = await pollJobUntilComplete(jobId, onProgress);
+
+      hash = jobResult.hash;
+      stats = jobResult.stats;
+      groups = jobResult.groups;
+
+      onProgress?.({
+        phase: 'downloading',
+        current: 50,
+        total: 100,
+        percentage: 50,
+        message: 'Processamento completo! Baixando itens...',
+      });
+    } else {
+      throw new Error('Resposta inesperada do servidor');
+    }
 
     // 2. Busca todos os itens em páginas
-    const hash = parseResult.hash;
     const allItems: any[] = [];
     let offset = 0;
     let total = 0;
@@ -119,8 +232,8 @@ async function fetchFromServer(
     });
 
     return {
-      stats: parseResult.data.stats,
-      groups: parseResult.data.groups,
+      stats,
+      groups,
       items: allItems,
     };
 

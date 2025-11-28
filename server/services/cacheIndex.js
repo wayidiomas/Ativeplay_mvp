@@ -14,6 +14,10 @@ class CacheIndex {
     this.index = new Map();
   }
 
+  get size() {
+    return this.index.size;
+  }
+
   /**
    * Carrega índice do disco na inicialização do servidor
    */
