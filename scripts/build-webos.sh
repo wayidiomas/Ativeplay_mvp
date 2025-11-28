@@ -6,6 +6,9 @@ DIST_DIR="${ROOT_DIR}/dist"
 WEBOS_DIR="${ROOT_DIR}/webos"
 
 echo "==> Build web (Vite)"
+# Gera bundles modernos e legacy para compatibilidade com todas as TVs webOS
+# - webOS 3.x: Recebe bundle ES5 + SystemJS + polyfills
+# - webOS 4.x+: Recebe bundle ES2020 nativo
 npm run build
 
 echo "==> Copiando manifestos e ícones webOS"

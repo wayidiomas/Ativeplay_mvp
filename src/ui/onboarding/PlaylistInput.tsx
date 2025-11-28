@@ -10,6 +10,7 @@ import {
   FocusContext,
 } from '@noriginmedia/norigin-spatial-navigation';
 import { useOnboardingStore } from '@store/onboardingStore';
+import { useQRSession } from '@core/hooks/useQRSession';
 import styles from './PlaylistInput.module.css';
 
 export function PlaylistInput() {
@@ -18,6 +19,21 @@ export function PlaylistInput() {
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const setPlaylistUrl = useOnboardingStore((s) => s.setPlaylistUrl);
+
+  // QR Code session
+  const {
+    qrDataUrl,
+    isActive: qrActive,
+    isLoading: qrLoading,
+    error: qrError,
+    receivedUrl,
+    startSession,
+    stopSession,
+  } = useQRSession((receivedPlaylistUrl) => {
+    // Quando URL é recebida do celular, preenche o input
+    setUrl(receivedPlaylistUrl);
+    setError('');
+  });
 
   const { ref: containerRef, focusKey } = useFocusable({
     focusKey: 'playlist-input-container',
@@ -39,6 +55,12 @@ export function PlaylistInput() {
   useEffect(() => {
     // Foca no input ao montar
     inputRef.current?.focus();
+    // Inicia sessão QR code
+    startSession();
+
+    return () => {
+      stopSession();
+    };
   }, []);
 
   function validateUrl(value: string): boolean {
@@ -81,42 +103,83 @@ export function PlaylistInput() {
         <div className={styles.header}>
           <h1 className={styles.title}>Adicionar Playlist</h1>
           <p className={styles.subtitle}>
-            Digite a URL da sua playlist M3U para comecar
+            Digite a URL da sua playlist M3U ou escaneie o QR code com seu celular
           </p>
         </div>
 
-        <div className={styles.form}>
-          <div
-            ref={inputFocusRef}
-            className={`${styles.inputWrapper} ${inputFocused ? styles.focused : ''}`}
-          >
-            <input
-              ref={inputRef}
-              type="url"
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value);
-                setError('');
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="http://exemplo.com/playlist.m3u"
-              className={styles.input}
-              autoComplete="off"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-            />
+        <div className={styles.content}>
+          <div className={styles.form}>
+            <div
+              ref={inputFocusRef}
+              className={`${styles.inputWrapper} ${inputFocused ? styles.focused : ''}`}
+            >
+              <input
+                ref={inputRef}
+                type="url"
+                value={url}
+                onChange={(e) => {
+                  setUrl(e.target.value);
+                  setError('');
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="http://exemplo.com/playlist.m3u"
+                className={styles.input}
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+            </div>
+
+            {error && <p className={styles.error}>{error}</p>}
+
+            <button
+              ref={buttonRef}
+              onClick={handleSubmit}
+              className={`${styles.button} ${buttonFocused ? styles.focused : ''}`}
+            >
+              Carregar Playlist
+            </button>
           </div>
 
-          {error && <p className={styles.error}>{error}</p>}
+          <div className={styles.divider}>
+            <span>OU</span>
+          </div>
 
-          <button
-            ref={buttonRef}
-            onClick={handleSubmit}
-            className={`${styles.button} ${buttonFocused ? styles.focused : ''}`}
-          >
-            Carregar Playlist
-          </button>
+          <div className={styles.qrSection}>
+            <h2 className={styles.qrTitle}>Enviar do Celular</h2>
+            <div className={styles.qrBox}>
+              {qrLoading && (
+                <div className={styles.qrLoading}>
+                  <div className={styles.spinner} />
+                  <p>Gerando QR code...</p>
+                </div>
+              )}
+
+              {qrError && (
+                <div className={styles.qrError}>
+                  <p>⚠️ {qrError}</p>
+                  <button onClick={startSession} className={styles.retryButton}>
+                    Tentar novamente
+                  </button>
+                </div>
+              )}
+
+              {qrDataUrl && !qrError && (
+                <>
+                  <img src={qrDataUrl} alt="QR Code" className={styles.qrImage} />
+                  {receivedUrl && (
+                    <div className={styles.qrSuccess}>
+                      ✓ URL recebida!
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <p className={styles.qrHint}>
+              Escaneie com a câmera do celular
+            </p>
+          </div>
         </div>
 
         <div className={styles.help}>

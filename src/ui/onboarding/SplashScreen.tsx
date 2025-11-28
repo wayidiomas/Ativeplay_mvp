@@ -21,10 +21,19 @@ export function SplashScreen() {
   );
 
   useEffect(() => {
+    // Timeout de segurança: se IndexedDB não responder em 5s, navega para onboarding
+    const safetyTimer = setTimeout(() => {
+      console.warn('[SplashScreen] IndexedDB timeout após 5s, navegando para onboarding');
+      navigate('/onboarding/input', { replace: true });
+    }, 5000);
+
     if (activePlaylist === undefined) {
-      // Dexie ainda carregando, não navega ainda
-      return;
+      // Dexie ainda carregando, aguarda (com timeout de segurança acima)
+      return () => clearTimeout(safetyTimer);
     }
+
+    // IndexedDB respondeu, limpa timeout de segurança
+    clearTimeout(safetyTimer);
 
     const timer = setTimeout(() => {
       if (activePlaylist) {
@@ -35,7 +44,10 @@ export function SplashScreen() {
       }
     }, 1500); // mantém splash por pelo menos 1.5s
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(safetyTimer);
+    };
   }, [activePlaylist, navigate, setActivePlaylist]);
 
   return (

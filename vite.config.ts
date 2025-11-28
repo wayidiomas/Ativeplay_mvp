@@ -53,19 +53,25 @@ function corsProxyPlugin(): Plugin {
   };
 }
 
+const enableLegacy = process.env.VITE_NO_LEGACY !== '1';
+
 // https://vite.dev/config/
-export default defineConfig({
-  base: './',
+export default defineConfig(({ command }) => ({
+  // Em dev: base '/' (raiz absoluta) para servidor funcionar
+  // Em build: base './' (relativo) para file:// protocol do IPK
+  base: command === 'serve' ? '/' : './',
   plugins: [
     react(),
-    legacy({
-      // Samsung Tizen 2016-2017 usa Chromium 47-56
-      // LG webOS 3.x usa Chromium 38-53
-      targets: ['chrome >= 47', 'safari >= 10'],
-      additionalLegacyPolyfills: ['regenerator-runtime/runtime'],
-      renderLegacyChunks: true,
-      modernPolyfills: true,
-    }),
+    ...(enableLegacy
+      ? [
+          legacy({
+            targets: ['chrome >= 47', 'safari >= 10'],
+            additionalLegacyPolyfills: ['regenerator-runtime/runtime'],
+            renderLegacyChunks: true,
+            modernPolyfills: true,
+          }),
+        ]
+      : []),
     corsProxyPlugin(),
   ],
   resolve: {
@@ -106,4 +112,4 @@ export default defineConfig({
     port: 3000,
     host: true,
   },
-});
+}));
