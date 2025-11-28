@@ -1,0 +1,255 @@
+/**
+ * Platform Mock para desenvolvimento no browser
+ * Simula APIs de Samsung Tizen e LG webOS
+ */
+
+export type PlatformType = 'browser' | 'tizen' | 'webos' | 'unknown';
+
+// Detecta a plataforma atual
+export function detectPlatform(): PlatformType {
+  if (typeof window === 'undefined') return 'unknown';
+
+  // Samsung Tizen
+  if (typeof (window as WindowWithTizen).tizen !== 'undefined') {
+    return 'tizen';
+  }
+
+  // LG webOS
+  if (typeof (window as WindowWithWebOS).webOS !== 'undefined') {
+    return 'webos';
+  }
+
+  return 'browser';
+}
+
+// Tipos para plataformas
+interface WindowWithTizen extends Window {
+  tizen?: {
+    application: {
+      getCurrentApplication: () => { appInfo: { id: string } };
+    };
+  };
+  webapis?: {
+    avplay: AVPlayAPI;
+    productinfo?: {
+      getModel: () => string;
+      getFirmware: () => string;
+    };
+  };
+}
+
+interface WindowWithWebOS extends Window {
+  webOS?: {
+    platform: {
+      tv: boolean;
+    };
+    service: {
+      request: (uri: string, params: unknown) => void;
+    };
+    deviceInfo: (callback: (info: WebOSDeviceInfo) => void) => void;
+  };
+}
+
+interface WebOSDeviceInfo {
+  modelName: string;
+  version: string;
+  sdkVersion: string;
+}
+
+// Mock do Samsung AVPlay API
+interface AVPlayAPI {
+  open: (url: string) => void;
+  close: () => void;
+  play: () => void;
+  pause: () => void;
+  stop: () => void;
+  jumpForward: (ms: number) => void;
+  jumpBackward: (ms: number) => void;
+  seekTo: (ms: number) => void;
+  getCurrentTime: () => number;
+  getDuration: () => number;
+  getState: () => string;
+  getTotalTrackInfo: () => AVPlayTrackInfo;
+  setSelectTrack: (type: string, index: number) => void;
+  setListener: (listener: AVPlayListener) => void;
+  setDisplayRect: (x: number, y: number, width: number, height: number) => void;
+  setDisplayMethod: (method: string) => void;
+  prepareAsync: (success: () => void, error: (e: Error) => void) => void;
+  setStreamingProperty: (property: string, value: string) => void;
+  suspend: () => void;
+  restore: () => void;
+}
+
+interface AVPlayTrackInfo {
+  AUDIO: Array<{
+    index: number;
+    language: string;
+    extra_info: string;
+  }>;
+  TEXT: Array<{
+    index: number;
+    language: string;
+    extra_info: string;
+  }>;
+  VIDEO: Array<{
+    index: number;
+    extra_info: string;
+  }>;
+}
+
+interface AVPlayListener {
+  onbufferingstart?: () => void;
+  onbufferingprogress?: (percent: number) => void;
+  onbufferingcomplete?: () => void;
+  oncurrentplaytime?: (time: number) => void;
+  onevent?: (eventType: string, eventData: string) => void;
+  onerror?: (error: string) => void;
+  onstreamcompleted?: () => void;
+  onsubtitlechange?: (duration: number, text: string) => void;
+}
+
+// Mock state
+let mockState = {
+  currentTime: 0,
+  duration: 7200000, // 2 hours em ms
+  state: 'IDLE' as 'IDLE' | 'READY' | 'PLAYING' | 'PAUSED' | 'NONE',
+  buffering: false,
+};
+
+// Mock AVPlay
+const mockAVPlay: AVPlayAPI = {
+  open: (url: string) => {
+    console.log('[MOCK AVPlay] open:', url);
+    mockState.state = 'IDLE';
+  },
+  close: () => {
+    console.log('[MOCK AVPlay] close');
+    mockState.state = 'NONE';
+    mockState.currentTime = 0;
+  },
+  play: () => {
+    console.log('[MOCK AVPlay] play');
+    mockState.state = 'PLAYING';
+  },
+  pause: () => {
+    console.log('[MOCK AVPlay] pause');
+    mockState.state = 'PAUSED';
+  },
+  stop: () => {
+    console.log('[MOCK AVPlay] stop');
+    mockState.state = 'IDLE';
+    mockState.currentTime = 0;
+  },
+  jumpForward: (ms: number) => {
+    console.log('[MOCK AVPlay] jumpForward:', ms);
+    mockState.currentTime = Math.min(mockState.currentTime + ms, mockState.duration);
+  },
+  jumpBackward: (ms: number) => {
+    console.log('[MOCK AVPlay] jumpBackward:', ms);
+    mockState.currentTime = Math.max(mockState.currentTime - ms, 0);
+  },
+  seekTo: (ms: number) => {
+    console.log('[MOCK AVPlay] seekTo:', ms);
+    mockState.currentTime = Math.max(0, Math.min(ms, mockState.duration));
+  },
+  getCurrentTime: () => mockState.currentTime,
+  getDuration: () => mockState.duration,
+  getState: () => mockState.state,
+  getTotalTrackInfo: () => ({
+    AUDIO: [
+      { index: 0, language: 'por', extra_info: 'Portugues' },
+      { index: 1, language: 'eng', extra_info: 'English' },
+      { index: 2, language: 'spa', extra_info: 'Espanol' },
+    ],
+    TEXT: [
+      { index: 0, language: 'por', extra_info: 'Portugues' },
+      { index: 1, language: 'eng', extra_info: 'English' },
+    ],
+    VIDEO: [
+      { index: 0, extra_info: '1080p' },
+    ],
+  }),
+  setSelectTrack: (type: string, index: number) => {
+    console.log('[MOCK AVPlay] setSelectTrack:', type, index);
+  },
+  setListener: (listener: AVPlayListener) => {
+    console.log('[MOCK AVPlay] setListener:', listener);
+    // Simula callback de tempo
+    if (listener.oncurrentplaytime && mockState.state === 'PLAYING') {
+      setInterval(() => {
+        if (mockState.state === 'PLAYING') {
+          mockState.currentTime += 1000;
+          listener.oncurrentplaytime?.(mockState.currentTime);
+        }
+      }, 1000);
+    }
+  },
+  setDisplayRect: (x: number, y: number, width: number, height: number) => {
+    console.log('[MOCK AVPlay] setDisplayRect:', x, y, width, height);
+  },
+  setDisplayMethod: (method: string) => {
+    console.log('[MOCK AVPlay] setDisplayMethod:', method);
+  },
+  prepareAsync: (success: () => void, _error: (e: Error) => void) => {
+    console.log('[MOCK AVPlay] prepareAsync');
+    setTimeout(() => {
+      mockState.state = 'READY';
+      success();
+    }, 500);
+  },
+  setStreamingProperty: (property: string, value: string) => {
+    console.log('[MOCK AVPlay] setStreamingProperty:', property, value);
+  },
+  suspend: () => {
+    console.log('[MOCK AVPlay] suspend');
+  },
+  restore: () => {
+    console.log('[MOCK AVPlay] restore');
+  },
+};
+
+// Mock webOS API
+const mockWebOS = {
+  platform: { tv: true },
+  service: {
+    request: (uri: string, params: unknown) => {
+      console.log('[MOCK webOS] service.request:', uri, params);
+    },
+  },
+  deviceInfo: (callback: (info: WebOSDeviceInfo) => void) => {
+    callback({
+      modelName: 'MOCK_LG_TV',
+      version: '1.0.0',
+      sdkVersion: '1.0.0',
+    });
+  },
+};
+
+// Inicializa mocks se estiver no browser
+export function initPlatformMocks(): void {
+  const platform = detectPlatform();
+
+  if (platform === 'browser') {
+    console.log('[AtivePlay] Running in browser mode with mocks');
+
+    // Injeta mock do Samsung AVPlay
+    (window as WindowWithTizen).webapis = {
+      avplay: mockAVPlay,
+      productinfo: {
+        getModel: () => 'MOCK_SAMSUNG_TV',
+        getFirmware: () => '1.0.0',
+      },
+    };
+
+    // Injeta mock do LG webOS
+    (window as WindowWithWebOS).webOS = mockWebOS;
+  }
+}
+
+// Auto-inicializa em modo dev
+if (import.meta.env.DEV) {
+  initPlatformMocks();
+}
+
+export const platform = detectPlatform();
+export { mockAVPlay, mockWebOS };

@@ -1,0 +1,126 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background-color: var(--color-bg-primary);
+  padding: var(--space-2xl);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xl);
+  width: 100%;
+  max-width: 500px;
+}
+
+.title {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.progressContainer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: 100%;
+}
+
+.progressBar {
+  flex: 1;
+  height: 8px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background-color: var(--color-accent);
+  border-radius: var(--radius-full);
+  transition: width 0.3s ease;
+}
+
+.percentage {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  min-width: 50px;
+  text-align: right;
+}
+
+.message {
+  font-size: var(--font-size-md);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.phaseIndicator {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: var(--space-lg);
+}
+
+.phase {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  opacity: 0.4;
+  transition: opacity var(--transition-normal);
+}
+
+.phase.active {
+  opacity: 1;
+}
+
+.phase.completed {
+  opacity: 0.8;
+}
+
+.phaseDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background-color: var(--color-bg-tertiary);
+  transition: all var(--transition-normal);
+}
+
+.phase.active .phaseDot {
+  background-color: var(--color-accent);
+  box-shadow: 0 0 10px var(--color-accent);
+  animation: pulse 1s ease infinite;
+}
+
+.phase.completed .phaseDot {
+  background-color: var(--color-success);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+}
+
+.phaseLabel {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.phase.active .phaseLabel {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.phase.completed .phaseLabel {
+  color: var(--color-success);
+}

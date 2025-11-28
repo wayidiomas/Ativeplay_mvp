@@ -1,0 +1,18 @@
+{
+  "id": "com.ativeapp.ativeplay",
+  "version": "1.0.0",
+  "vendor": "AtiveApp Midias",
+  "type": "web",
+  "main": "index.html",
+  "title": "AtivePlay",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "bgImage": "splash.png",
+  "resolution": "1920x1080",
+  "transparent": false,
+  "disableBackHistoryAPI": false,
+  "requiredPermissions": [
+    "time.query",
+    "media.operation"
+  ]
+}

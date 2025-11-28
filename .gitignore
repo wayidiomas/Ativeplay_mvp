@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# builds / packages
+dist/
+.parcel-cache/
+.cache/
+
+# env / local config
+.env
+.env.*
+
+# system
+.DS_Store
