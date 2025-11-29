@@ -200,6 +200,36 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
   }
 }
 
+// Helper: Save partial meta.json during parsing (early navigation support)
+async function savePartialMeta(hash, url, stats, groups, seriesIndex, status = 'in_progress') {
+  try {
+    const metaFile = path.join(CACHE_DIR, `${hash}.meta.json`);
+
+    const seriesSummary = Array.from(seriesIndex.values()).map((entry) => ({
+      key: entry.key,
+      title: entry.title,
+      logo: entry.logo,
+      totalEpisodes: entry.totalEpisodes,
+      seasons: Array.from(entry.seasons.values()),
+    }));
+
+    const partialMeta = {
+      hash,
+      url,
+      stats: { ...stats, groupCount: groups.size },
+      groups: Array.from(groups.values()),
+      seriesIndex: seriesSummary,
+      parsingStatus: status, // "in_progress" or "completed"
+      createdAt: Date.now(),
+      expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000),
+    };
+
+    await fs.writeFile(metaFile, JSON.stringify(partialMeta, null, 2));
+  } catch (error) {
+    logger.warn('partial_meta_failed', { hash, error: error.message });
+  }
+}
+
 async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
   const hash = hashOverride || hashPlaylist(url);
   const itemsFile = path.join(CACHE_DIR, `${hash}.ndjson`);
@@ -364,6 +394,12 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             progressCb?.({ phase: 'parsing', percentage: pct, processed: stats.totalItems });
           }
 
+          // Flush incremental: save partial meta every 1000 items (early navigation)
+          if (stats.totalItems % 1000 === 0) {
+            await savePartialMeta(hash, url, stats, groupsMap, seriesIndex, 'in_progress');
+            logger.debug('partial_meta_saved', { hash, items: stats.totalItems });
+          }
+
           currentExtinf = null;
         }
       }
@@ -483,6 +519,9 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
       totalEpisodes: entry.totalEpisodes,
       seasons: Array.from(entry.seasons.values()),
     }));
+
+    // Final flush: save complete meta with status "completed"
+    await savePartialMeta(hash, url, stats, groupsMap, seriesIndex, 'completed');
 
     const duration = Date.now() - startTime;
     const memoryDelta = Math.round((process.memoryUsage().heapUsed - startMem) / 1024 / 1024);

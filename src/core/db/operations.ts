@@ -18,7 +18,8 @@ const processingUrls = new Map<string, Promise<string>>();
  */
 async function pollJobUntilComplete(
   jobId: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  hash?: string // Hash da playlist para polling incremental
 ): Promise<{ hash: string; stats: any; groups: any[] }> {
   const pollInterval = 2000; // Poll a cada 2s
   const maxAttempts = 300; // 10 minutos (300 × 2s)
@@ -40,6 +41,13 @@ async function pollJobUntilComplete(
       }
 
       const jobStatus = await response.json();
+
+      // Early Navigation: polling incremental para sincronizar grupos durante parsing
+      if (hash && jobStatus.status === 'active') {
+        pollProgressAndSyncIncremental(hash, onProgress).catch(err =>
+          console.warn('[Early Nav] Erro no polling incremental:', err)
+        );
+      }
 
       // Job completado com sucesso
       if (jobStatus.status === 'completed') {
@@ -91,6 +99,77 @@ async function pollJobUntilComplete(
   }
 
   throw new Error('Timeout ao processar playlist após 10 minutos');
+}
+
+/**
+ * Polling incremental: verifica progresso e sincroniza grupos conforme ficam disponíveis
+ * Permite early navigation enquanto parsing ainda está em andamento
+ */
+async function pollProgressAndSyncIncremental(
+  hash: string,
+  onProgress?: ProgressCallback
+): Promise<{ groups: M3UGroup[]; status: 'in_progress' | 'completed' }> {
+  try {
+    const response = await fetch(`${SERVER_URL}/api/playlist/progress/${hash}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return { groups: [], status: 'in_progress' };
+      }
+      throw new Error(`Erro ao verificar progresso (${response.status})`);
+    }
+
+    const progressData = await response.json();
+
+    // Atualiza progresso na UI
+    const percentage = progressData.status === 'completed'
+      ? 100
+      : Math.min(
+          80,
+          progressData.progress?.percentage ??
+            Math.round((progressData.progress?.totalItems || 0) / 1000)
+        );
+
+    onProgress?.({
+      phase: progressData.status === 'completed' ? 'parsing' : 'downloading',
+      current: percentage,
+      total: 100,
+      percentage,
+      message: progressData.status === 'completed'
+        ? 'Parsing completo! Sincronizando...'
+        : `Parsing em andamento (${progressData.progress?.totalItems || 0} items)...`,
+    });
+
+    // Sincroniza grupos disponíveis no Dexie
+    if (progressData.groups && progressData.groups.length > 0) {
+      const groupsToSync: M3UGroup[] = progressData.groups.map((g: any) => ({
+        id: g.id,
+        playlistId: hash,
+        name: g.name,
+        mediaKind: g.mediaKind as 'live' | 'movie' | 'series' | 'unknown',
+        itemCount: g.itemCount,
+        logo: g.logo,
+        createdAt: Date.now(),
+      }));
+
+      await db.groups.bulkPut(groupsToSync);
+
+      return {
+        groups: groupsToSync,
+        status: progressData.status === 'completed' ? 'completed' : 'in_progress',
+      };
+    }
+
+    return {
+      groups: [],
+      status: progressData.status === 'completed' ? 'completed' : 'in_progress',
+    };
+  } catch (error) {
+    console.warn('[Progress Poll] Erro:', error);
+    return { groups: [], status: 'in_progress' };
+  }
 }
 
 /**
@@ -163,6 +242,7 @@ async function fetchFromServer(
     // Job enfileirado → faz polling até completar
     else if (parseResult.queued) {
       const jobId = parseResult.jobId;
+      hash = parseResult.hash; // Hash disponível imediatamente para early navigation
 
       onProgress?.({
         phase: 'downloading',
@@ -172,10 +252,9 @@ async function fetchFromServer(
         message: 'Processando playlist (aguardando na fila)...',
       });
 
-      // Polling até job completar
-      const jobResult = await pollJobUntilComplete(jobId, onProgress);
+      // Polling até job completar (com early navigation via hash)
+      const jobResult = await pollJobUntilComplete(jobId, onProgress, hash);
 
-      hash = jobResult.hash;
       stats = jobResult.stats;
       groups = jobResult.groups;
 

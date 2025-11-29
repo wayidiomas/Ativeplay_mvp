@@ -160,6 +160,16 @@ class AtivePlayDB extends Dexie {
       favorites: 'id, [playlistId+itemId], playlistId',
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
     });
+
+    // Schema v7 - Mantém índices estáveis; não adiciona campos não populados para evitar migrações vazias
+    this.version(7).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: 'id, playlistId, url, group, mediaKind, titleNormalized, seriesId, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind]',
+      groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      series: 'id, playlistId, [playlistId+group]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    });
   }
 }
 

@@ -1106,6 +1106,74 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
 });
 
 /**
+ * GET /api/playlist/progress/:hash
+ * Retorna status de progresso do parsing (early navigation support)
+ * Status: "in_progress" | "completed" | "not_found"
+ */
+app.get('/api/playlist/progress/:hash', async (req, res) => {
+  const { hash } = req.params;
+
+  try {
+    const metaPath = path.join(CACHE_DIR, `${hash}.meta.json`);
+
+    // Tenta ler meta.json diretamente (pode estar em progresso)
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf8');
+      const meta = JSON.parse(metaContent);
+
+      res.json({
+        hash,
+        status: meta.parsingStatus || 'completed', // fallback para metas antigas
+        progress: {
+          totalItems: meta.stats?.totalItems || 0,
+          liveCount: meta.stats?.liveCount || 0,
+          movieCount: meta.stats?.movieCount || 0,
+          seriesCount: meta.stats?.seriesCount || 0,
+          groupCount: meta.stats?.groupCount || 0,
+        },
+        groups: meta.groups || [],
+        createdAt: meta.createdAt,
+        expiresAt: meta.expiresAt,
+      });
+    } catch (readError) {
+      // Meta não existe ainda - verifica se está na fila
+      const lockJobId = await getProcessingLock(hash);
+      const job = lockJobId ? await parseQueue.getJob(lockJobId) : null;
+
+      if (job) {
+        const jobState = await job.getState();
+        const progress = job.progress || {};
+
+        res.json({
+          hash,
+          status: 'in_progress',
+          progress: {
+            phase: progress.phase || 'queued',
+            percentage: progress.percentage || 0,
+            totalItems: progress.processed || 0,
+            liveCount: 0,
+            movieCount: 0,
+            seriesCount: 0,
+            groupCount: 0,
+          },
+          groups: [],
+          jobState,
+        });
+      } else {
+        res.status(404).json({
+          hash,
+          status: 'not_found',
+          error: 'Playlist não encontrada',
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[Progress] Erro:', error);
+    res.status(500).json({ error: 'Erro ao verificar progresso' });
+  }
+});
+
+/**
  * POST /session/create
  * Cria nova sessão e retorna QR code + sessionId
  */
