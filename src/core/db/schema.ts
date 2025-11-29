@@ -171,12 +171,12 @@ class AtivePlayDB extends Dexie {
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
     });
 
-    // Schema v8 - Remove índices/campos não usados (seriesId/series table) para evitar lixo de índice
-    // Mantém estrutura simples equivalente ao v5 (já utilizada) e reindexa automaticamente
+    // Schema v8 - Reintroduz tabela series e índices para exibição de séries agrupadas
     this.version(8).stores({
       playlists: 'id, url, lastUpdated, isActive',
-      items: 'id, playlistId, url, group, mediaKind, titleNormalized, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind]',
+      items: 'id, playlistId, url, group, mediaKind, titleNormalized, seriesId, seasonNumber, episodeNumber, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind], [seriesId+seasonNumber+episodeNumber]',
       groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      series: 'id, playlistId, [playlistId+group]',
       favorites: 'id, [playlistId+itemId], playlistId',
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
     });

@@ -198,6 +198,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     series: [],
     live: [],
   });
+  const seriesCacheRef = useRef<Record<string, Series[]>>({});
   const nextIndexRef = useRef<Record<NavItem, number>>({
     movies: 0,
     series: 0,
@@ -244,11 +245,16 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
               .filter((item) => !item.seriesId)
               .count();
 
-            // Carrega séries agrupadas deste grupo
-            const seriesInGroup = await db.series
-              .where({ playlistId: activePlaylist!.id, group: group.name })
-              .sortBy('id')
-              .then(arr => arr.slice(0, ITEMS_PER_GROUP));
+            // Carrega séries agrupadas deste grupo (usa cache para evitar requery)
+            const seriesCacheKey = `${activePlaylist!.id}:${group.name}`;
+            let seriesInGroup = seriesCacheRef.current[seriesCacheKey];
+            if (!seriesInGroup) {
+              seriesInGroup = await db.series
+                .where({ playlistId: activePlaylist!.id, group: group.name })
+                .sortBy('id');
+              seriesCacheRef.current[seriesCacheKey] = seriesInGroup;
+            }
+            const seriesSlice = seriesInGroup.slice(0, ITEMS_PER_GROUP);
 
             // Carrega items não agrupados (singleton) deste grupo
             const ungroupedItems = await db.items
@@ -257,15 +263,15 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
               .sortBy('id')
               .then(arr => arr.slice(0, Math.max(0, ITEMS_PER_GROUP - seriesInGroup.length)));
 
-            const hasContent = seriesInGroup.length > 0 || ungroupedItems.length > 0;
+            const hasContent = seriesSlice.length > 0 || ungroupedItems.length > 0;
 
             return hasContent
               ? {
                   group,
                   items: ungroupedItems,
-                  series: seriesInGroup,
+                  series: seriesSlice,
                   isSeries: true,
-                  seriesLoadedCount: seriesInGroup.length,
+                  seriesLoadedCount: seriesSlice.length,
                   itemsLoadedCount: ungroupedItems.length,
                   hasMoreSeries: seriesInGroup.length < totalSeriesCount,
                   hasMoreItems: ungroupedItems.length < totalItemsCount,
@@ -490,10 +496,22 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
       // Carrega mais séries se houver (keyset pagination)
       const moreSeries = row.hasMoreSeries
-        ? await db.series
-            .where({ playlistId: activePlaylist.id, group: row.group.name })
-            .sortBy('id')
-            .then((arr) => arr.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE))
+        ? (() => {
+            const cacheKey = `${activePlaylist.id}:${row.group.name}`;
+            const cachedSeries = seriesCacheRef.current[cacheKey];
+            if (cachedSeries) {
+              return Promise.resolve(
+                cachedSeries.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE)
+              );
+            }
+            return db.series
+              .where({ playlistId: activePlaylist.id, group: row.group.name })
+              .sortBy('id')
+              .then((arr) => {
+                seriesCacheRef.current[cacheKey] = arr;
+                return arr.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE);
+              });
+          })()
         : [];
 
       // Carrega mais items não agrupados se houver (keyset pagination)
