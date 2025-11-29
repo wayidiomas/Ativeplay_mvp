@@ -9,6 +9,9 @@ import type { ProgressCallback } from '../services/m3u';
 const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
 const SERVER_URL = import.meta.env.VITE_BRIDGE_URL;
 
+// ✅ Lock em memória para prevenir race conditions (React StrictMode executa effects 2x)
+const processingUrls = new Map<string, Promise<string>>();
+
 /**
  * Faz polling do status de um job até completar
  */
@@ -545,160 +548,180 @@ export async function addPlaylist(
   name?: string,
   onProgress?: ProgressCallback
 ): Promise<string> {
-  // Verifica limite de playlists
-  const playlistCount = await db.playlists.count();
-  if (playlistCount >= MAX_PLAYLISTS) {
-    throw new Error(`Limite de ${MAX_PLAYLISTS} playlists atingido`);
+  // ✅ LOCK: Previne race conditions (React StrictMode executa effects 2x)
+  const processingPromise = processingUrls.get(url);
+  if (processingPromise) {
+    console.log('[DB DEBUG] ⚠️ URL já está sendo processada, reutilizando Promise existente');
+    return processingPromise;
   }
 
-  // Verifica se URL ja existe
-  const existing = await db.playlists.where('url').equals(url).first();
-  if (existing) {
-    console.log('[DB DEBUG] Playlist já existe:', existing.id);
-
-    // Verifica status de sincronização e items carregados
-    const itemsCount = await db.items.where('playlistId').equals(existing.id).count();
-    const totalItems = existing.itemCount;
-
-    console.log('[DB DEBUG] Items carregados:', itemsCount, '/', totalItems);
-    console.log('[DB DEBUG] Status atual:', existing.lastSyncStatus);
-
-    // Case 1: Items completos mas status ainda 'syncing' → corrige status
-    if (itemsCount >= totalItems && existing.lastSyncStatus === 'syncing') {
-      console.log('[DB DEBUG] Corrigindo status para "success" (items já completos)');
-      await db.playlists.update(existing.id, { lastSyncStatus: 'success' });
-    }
-
-    // Case 2: Items incompletos → reinicia sync (sem reprocessar!)
-    else if (itemsCount < totalItems) {
-      console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
-
-      // Se hash não existe (playlist antiga), busca do servidor
-      let hash = existing.hash;
-      if (!hash) {
-        console.log('[DB DEBUG] Hash não existe, buscando do servidor...');
-        const parsed = await fetchFromServer(existing.url, onProgress);
-        hash = parsed.hash;
-        // Salva hash para próxima vez
-        await db.playlists.update(existing.id, { hash });
-      } else {
-        console.log('[DB DEBUG] Usando hash armazenado:', hash);
+  // Cria Promise e adiciona ao lock
+  const promise = (async () => {
+    try {
+      // Verifica limite de playlists
+      const playlistCount = await db.playlists.count();
+      if (playlistCount >= MAX_PLAYLISTS) {
+        throw new Error(`Limite de ${MAX_PLAYLISTS} playlists atingido`);
       }
 
-      // Atualiza status para syncing
-      await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
+      // Verifica se URL ja existe
+      const existing = await db.playlists.where('url').equals(url).first();
+      if (existing) {
+        console.log('[DB DEBUG] Playlist já existe:', existing.id);
 
-      // Se tem menos de 1000 items, carrega parcial primeiro
-      if (itemsCount < 1000) {
-        console.log('[DB DEBUG] Carregando primeiros 1000 items...');
-        await syncItemsFromServer(hash, existing.id, onProgress, {
-          loadPartial: true,
-          partialLimit: 1000,
-        });
+        // Verifica status de sincronização e items carregados
+        const itemsCount = await db.items.where('playlistId').equals(existing.id).count();
+        const totalItems = existing.itemCount;
+
+        console.log('[DB DEBUG] Items carregados:', itemsCount, '/', totalItems);
+        console.log('[DB DEBUG] Status atual:', existing.lastSyncStatus);
+
+        // Case 1: Items completos mas status ainda 'syncing' → corrige status
+        if (itemsCount >= totalItems && existing.lastSyncStatus === 'syncing') {
+          console.log('[DB DEBUG] Corrigindo status para "success" (items já completos)');
+          await db.playlists.update(existing.id, { lastSyncStatus: 'success' });
+        }
+
+        // Case 2: Items incompletos → reinicia sync (sem reprocessar!)
+        else if (itemsCount < totalItems) {
+          console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
+
+          // Se hash não existe (playlist antiga), busca do servidor
+          let hash = existing.hash;
+          if (!hash) {
+            console.log('[DB DEBUG] Hash não existe, buscando do servidor...');
+            const parsed = await fetchFromServer(existing.url, onProgress);
+            hash = parsed.hash;
+            // Salva hash para próxima vez
+            await db.playlists.update(existing.id, { hash });
+          } else {
+            console.log('[DB DEBUG] Usando hash armazenado:', hash);
+          }
+
+          // Atualiza status para syncing
+          await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
+
+          // Se tem menos de 1000 items, carrega parcial primeiro
+          if (itemsCount < 1000) {
+            console.log('[DB DEBUG] Carregando primeiros 1000 items...');
+            await syncItemsFromServer(hash, existing.id, onProgress, {
+              loadPartial: true,
+              partialLimit: 1000,
+            });
+          }
+
+          // Continua sync completo em background
+          continueBackgroundSync(hash, existing.id).catch((err) => {
+            console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
+          });
+        }
+
+        // Ativa a playlist existente
+        await setActivePlaylist(existing.id);
+
+        return existing.id;
       }
 
-      // Continua sync completo em background
-      continueBackgroundSync(hash, existing.id).catch((err) => {
+      // Gera ID unico
+      const playlistId = `playlist_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+      // APENAS SERVIDOR (sem fallback) - não bloqueia no download de itens
+      const parsed = await fetchFromServer(url, onProgress);
+
+      // Determina se deve ser ativa (primeira playlist = ativa)
+      const isFirst = playlistCount === 0;
+
+      // DEBUG: Log antes de salvar
+      console.log('[DB DEBUG] ===== SALVANDO PLAYLIST =====');
+      console.log('[DB DEBUG] PlaylistId:', playlistId);
+      console.log('[DB DEBUG] Groups a salvar:', parsed.groups.length);
+      console.log('[DB DEBUG] Stats:', parsed.stats);
+
+      // Salva no banco com status 'syncing' (early navigation)
+      await db.transaction('rw', [db.playlists, db.items, db.groups], async () => {
+        // Cria registro da playlist
+        const playlist: Playlist = {
+          id: playlistId,
+          name: name || extractNameFromUrl(url),
+          url,
+          hash: parsed.hash, // Salva hash para reuso futuro
+          isActive: isFirst ? 1 : 0,
+          lastUpdated: Date.now(),
+          lastSyncStatus: 'syncing', // Early navigation: marca como syncing
+          itemCount: parsed.stats.totalItems,
+          liveCount: parsed.stats.liveCount,
+          movieCount: parsed.stats.movieCount,
+          seriesCount: parsed.stats.seriesCount,
+          createdAt: Date.now(),
+        };
+        console.log('[DB DEBUG] Playlist object:', playlist);
+        await db.playlists.add(playlist);
+
+        // Salva grupos (grupos sempre vêm no retorno)
+        const groups: M3UGroup[] = parsed.groups.map((group: any) => ({
+          id: `${playlistId}_${group.id}`,
+          playlistId,
+          name: group.name,
+          mediaKind: group.mediaKind,
+          itemCount: group.itemCount,
+          logo: group.logo,
+          createdAt: Date.now(),
+        }));
+
+        // Grupos podem já ter sido inseridos pelo streaming parser
+        if (groups.length > 0) {
+          try {
+            await db.groups.bulkAdd(groups);
+          } catch (error) {
+            // Se erro de chave duplicada, ignora (grupos já foram inseridos)
+            console.log('[DB DEBUG] Grupos já existem (inseridos pelo streaming parser)');
+          }
+        }
+
+        console.log('[DB DEBUG] Transação completada com sucesso!');
+      });
+
+      // DEBUG: Verifica o que foi salvo
+      const savedPlaylist = await db.playlists.get(playlistId);
+      const savedGroupsCount = await db.groups.where('playlistId').equals(playlistId).count();
+      console.log('[DB DEBUG] ===== VERIFICAÇÃO PÓS-SAVE =====');
+      console.log('[DB DEBUG] Playlist salva:', savedPlaylist);
+      console.log('[DB DEBUG] Groups salvos:', savedGroupsCount);
+
+      // Verifica grupos por mediaKind
+      const movieGroups = await db.groups.where({ playlistId, mediaKind: 'movie' }).count();
+      const seriesGroups = await db.groups.where({ playlistId, mediaKind: 'series' }).count();
+      const liveGroups = await db.groups.where({ playlistId, mediaKind: 'live' }).count();
+      console.log('[DB DEBUG] Movie groups:', movieGroups);
+      console.log('[DB DEBUG] Series groups:', seriesGroups);
+      console.log('[DB DEBUG] Live groups:', liveGroups);
+
+      // EARLY NAVIGATION: Carrega apenas primeiros 1000 items
+      console.log('[DB DEBUG] ===== EARLY NAVIGATION: Carregando primeiros 1000 items =====');
+      await syncItemsFromServer(parsed.hash, playlistId, onProgress, {
+        loadPartial: true,
+        partialLimit: 1000,
+      });
+
+      const savedItemsCount = await db.items.where('playlistId').equals(playlistId).count();
+      console.log('[DB DEBUG] Items salvos (parcial):', savedItemsCount);
+
+      // Continua sincronização completa em background (fire-and-forget)
+      continueBackgroundSync(parsed.hash, playlistId).catch((err) => {
         console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
       });
+
+      return playlistId;
+    } finally {
+      // ✅ Remove lock quando terminar (sucesso ou erro)
+      processingUrls.delete(url);
     }
+  })();
 
-    // Ativa a playlist existente
-    await setActivePlaylist(existing.id);
+  // ✅ Adiciona ao Map antes de executar
+  processingUrls.set(url, promise);
 
-    return existing.id;
-  }
-
-  // Gera ID unico
-  const playlistId = `playlist_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-
-  // APENAS SERVIDOR (sem fallback) - não bloqueia no download de itens
-  const parsed = await fetchFromServer(url, onProgress);
-
-  // Determina se deve ser ativa (primeira playlist = ativa)
-  const isFirst = playlistCount === 0;
-
-  // DEBUG: Log antes de salvar
-  console.log('[DB DEBUG] ===== SALVANDO PLAYLIST =====');
-  console.log('[DB DEBUG] PlaylistId:', playlistId);
-  console.log('[DB DEBUG] Groups a salvar:', parsed.groups.length);
-  console.log('[DB DEBUG] Stats:', parsed.stats);
-
-  // Salva no banco com status 'syncing' (early navigation)
-  await db.transaction('rw', [db.playlists, db.items, db.groups], async () => {
-    // Cria registro da playlist
-    const playlist: Playlist = {
-      id: playlistId,
-      name: name || extractNameFromUrl(url),
-      url,
-      hash: parsed.hash, // Salva hash para reuso futuro
-      isActive: isFirst ? 1 : 0,
-      lastUpdated: Date.now(),
-      lastSyncStatus: 'syncing', // Early navigation: marca como syncing
-      itemCount: parsed.stats.totalItems,
-      liveCount: parsed.stats.liveCount,
-      movieCount: parsed.stats.movieCount,
-      seriesCount: parsed.stats.seriesCount,
-      createdAt: Date.now(),
-    };
-    console.log('[DB DEBUG] Playlist object:', playlist);
-    await db.playlists.add(playlist);
-
-    // Salva grupos (grupos sempre vêm no retorno)
-    const groups: M3UGroup[] = parsed.groups.map((group: any) => ({
-      id: `${playlistId}_${group.id}`,
-      playlistId,
-      name: group.name,
-      mediaKind: group.mediaKind,
-      itemCount: group.itemCount,
-      logo: group.logo,
-      createdAt: Date.now(),
-    }));
-
-    // Grupos podem já ter sido inseridos pelo streaming parser
-    if (groups.length > 0) {
-      try {
-        await db.groups.bulkAdd(groups);
-      } catch (error) {
-        // Se erro de chave duplicada, ignora (grupos já foram inseridos)
-        console.log('[DB DEBUG] Grupos já existem (inseridos pelo streaming parser)');
-      }
-    }
-
-    console.log('[DB DEBUG] Transação completada com sucesso!');
-  });
-
-  // DEBUG: Verifica o que foi salvo
-  const savedPlaylist = await db.playlists.get(playlistId);
-  const savedGroupsCount = await db.groups.where('playlistId').equals(playlistId).count();
-  console.log('[DB DEBUG] ===== VERIFICAÇÃO PÓS-SAVE =====');
-  console.log('[DB DEBUG] Playlist salva:', savedPlaylist);
-  console.log('[DB DEBUG] Groups salvos:', savedGroupsCount);
-
-  // Verifica grupos por mediaKind
-  const movieGroups = await db.groups.where({ playlistId, mediaKind: 'movie' }).count();
-  const seriesGroups = await db.groups.where({ playlistId, mediaKind: 'series' }).count();
-  const liveGroups = await db.groups.where({ playlistId, mediaKind: 'live' }).count();
-  console.log('[DB DEBUG] Movie groups:', movieGroups);
-  console.log('[DB DEBUG] Series groups:', seriesGroups);
-  console.log('[DB DEBUG] Live groups:', liveGroups);
-
-  // EARLY NAVIGATION: Carrega apenas primeiros 1000 items
-  console.log('[DB DEBUG] ===== EARLY NAVIGATION: Carregando primeiros 1000 items =====');
-  await syncItemsFromServer(parsed.hash, playlistId, onProgress, {
-    loadPartial: true,
-    partialLimit: 1000,
-  });
-
-  const savedItemsCount = await db.items.where('playlistId').equals(playlistId).count();
-  console.log('[DB DEBUG] Items salvos (parcial):', savedItemsCount);
-
-  // Continua sincronização completa em background (fire-and-forget)
-  continueBackgroundSync(parsed.hash, playlistId).catch((err) => {
-    console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
-  });
-
-  return playlistId;
+  return promise;
 }
 
 /**
