@@ -129,7 +129,7 @@ async function pollProgressAndSyncIncremental(
       : Math.min(
           80,
           progressData.progress?.percentage ??
-            Math.round((progressData.progress?.totalItems || 0) / 1000)
+            (progressData.progress?.totalItems ? 20 : 5) // fallback conservador
         );
 
     onProgress?.({
