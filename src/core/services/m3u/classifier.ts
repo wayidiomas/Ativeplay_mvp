@@ -18,6 +18,12 @@ const GROUP_PATTERNS = {
   live: [
     /\b(canais?|channels?|tv|live|24\/7|sports?|news|ao vivo|abertos?)\b/i,
     /\b(globo|sbt|record|band|redetv|cultura)\b/i, // Canais BR comuns
+    /SERIES\s*24H/i, // "⭐ SERIES 24H" = canais 24H, não séries!
+    /CANAIS\s*\|/i, // "⭐ Canais | Filmes e Séries" = canais ao vivo
+    /futebol/i, // "⚽ Futebol | Amazon Prime" = canais de futebol
+    /esporte/i, // "⚽ Esporte | Lutas", "⚽ Esporte | NBA" = canais de esporte
+    /M[UÚ]SICAS?\s*24H/i, // "⭐ MÚSICAS 24H" = canais de música 24H
+    /RUNTIME\s*24H/i, // "⭐ RUNTIME 24H" = canais temáticos 24H
   ],
   movie: [
     /\b(filmes?|movies?|cinema|lancamentos?|lançamentos?)\b/i,
@@ -32,7 +38,9 @@ const GROUP_PATTERNS = {
   ],
   series: [
     /\b(series?|shows?|novelas?|animes?|doramas?|k-?dramas?)\b/i,
-    /\b(netflix|hbo|amazon|disney|apple|paramount|star)\b/i, // Plataformas = geralmente séries
+    // REMOVIDO: /\b(netflix|hbo|amazon|disney|apple|paramount|star)\b/i
+    // Motivo: Plataformas têm FILMES e SÉRIES, não devem decidir sozinhas
+    // Usar apenas S • prefix (detectado em classifyByTitle)
     /\btemporadas?\b/i,
     // Padrões com acento e Xtream Codes
     /s[eé]ries?/i, // SÉRIES (com acento)
@@ -50,7 +58,7 @@ const TITLE_PATTERNS = {
   movie: [
     /\(\d{4}\)/, // (2024)
     /\[\d{4}\]/, // [2024]
-    /\b(20[0-2]\d|19\d{2})\b/, // Ano solto: 2024, 2023, 1999 etc (mais flexível)
+    // REMOVIDO: /\b(20[0-2]\d|19\d{2})\b/ - Ano solto muito ambíguo, pode dar match duplo
     /\b(4k|2160p|1080p|720p|480p|bluray|webrip|hdrip|dvdrip|hdcam|web-dl|bdrip|hdts|hd-ts|cam|hdcam)\b/i,
     /\b(dublado|dual|leg|legendado|nacional|dub|sub)\b/i, // Indicadores comuns IPTV BR
     /\b(acao|terror|comedia|drama|suspense|romance|aventura|animacao|ficcao)\b/i, // Gêneros no nome
@@ -95,6 +103,18 @@ export class ContentClassifier {
       return 'live';
     }
 
+    // EXCEÇÕES DE GROUP-TITLE (verificar ANTES de S##E##!)
+
+    // COLETÂNEAS: Franquias de filmes usando S##E## (Harry Potter S01E01-08 são FILMES!)
+    if (group && /coletanea/i.test(group)) {
+      return 'movie';
+    }
+
+    // CINE 24HRS: Canais temáticos contínuos (719+ canais)
+    if (group && /CINE.*24H/i.test(group)) {
+      return 'live';
+    }
+
     // Canal 24H (sempre live, mesmo se tiver ano ou padrão de série)
     if (name && /^24H\s*•/i.test(name)) {
       return 'live';
@@ -117,7 +137,7 @@ export class ContentClassifier {
     }
 
     // 2. Classifica pelo titulo
-    return this.classifyByTitle(name);
+    return this.classifyByTitle(name, group);
   }
 
   /**
@@ -128,7 +148,13 @@ export class ContentClassifier {
 
     const lowerGroup = group.toLowerCase();
 
-    // Series primeiro (mais especifico)
+    // Live/TV primeiro (mais específico: SERIES 24H, CANAIS, FUTEBOL)
+    // IMPORTANTE: "SERIES 24H" tem "series" no nome mas é LIVE!
+    for (const pattern of GROUP_PATTERNS.live) {
+      if (pattern.test(lowerGroup)) return 'live';
+    }
+
+    // Series (depois de live para evitar falsos positivos)
     for (const pattern of GROUP_PATTERNS.series) {
       if (pattern.test(lowerGroup)) return 'series';
     }
@@ -138,26 +164,41 @@ export class ContentClassifier {
       if (pattern.test(lowerGroup)) return 'movie';
     }
 
-    // Live/TV
-    for (const pattern of GROUP_PATTERNS.live) {
-      if (pattern.test(lowerGroup)) return 'live';
-    }
-
     return 'unknown';
   }
 
   /**
-   * Classifica baseado no titulo
+   * Classifica baseado no titulo (e opcionalmente no grupo)
    */
-  static classifyByTitle(name: string): MediaKind {
+  static classifyByTitle(name: string, group: string = ''): MediaKind {
     if (!name) return 'unknown';
+
+    // PREFIXOS EXPLÍCITOS (S • / F •) - Peso ALTO
+    // "S • Netflix", "S • Globoplay" → series
+    if (group && /\bS\s*•/i.test(group)) {
+      return 'series';
+    }
+    // "F • Legendados", "F • Amazon Prime" → movie
+    if (group && /\bF\s*•/i.test(group)) {
+      return 'movie';
+    }
 
     // Series primeiro (patterns mais especificos como S01E01)
     for (const pattern of TITLE_PATTERNS.series) {
       if (pattern.test(name)) return 'series';
     }
 
-    // Filmes - MAIS RESTRITIVO: exige 2+ matches para evitar falsos positivos
+    // Filmes - LÓGICA FLEXÍVEL com group-title
+    // Se group-title indica FILME e NÃO tem S##E## → É filme!
+    // Resolve: "Pasárgada", "Cabrito", "Levante" sem ano/idioma
+    const hasMovieGroup = group && /filme|movie|cinema|lancamento|f\s*•/i.test(group);
+    const hasSeriesPattern = /S\d{1,2}E\d{1,3}/i.test(name);
+
+    if (hasMovieGroup && !hasSeriesPattern) {
+      return 'movie'; // 1 match suficiente quando group-title é claro
+    }
+
+    // Título precisa de MÚLTIPLOS matches (se não tem group-title claro)
     // Exemplos válidos: "Flow (2024) Dublado" (ano + idioma = 2 matches)
     // Exemplos inválidos: "Show (2020)" (só ano = 1 match, classificado como unknown)
     let movieScore = 0;

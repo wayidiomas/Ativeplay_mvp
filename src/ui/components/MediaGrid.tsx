@@ -16,7 +16,7 @@ interface MediaGridProps {
   onSelectItem: (item: M3UItem) => void;
 }
 
-const PAGE_SIZE = 120;
+const PAGE_SIZE = 240; // Increased for smoother loading (2 pages worth)
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -82,7 +82,8 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
     const onScroll = () => {
       if (!hasMore || loadingMoreRef.current) return;
-      const threshold = 300; // threshold de 300px do fim
+      // Smart preloading: trigger at 70% scroll progress (30% remaining)
+      const threshold = el.scrollHeight * 0.3;
       const scrollBottom = el.scrollTop + el.clientHeight;
       const isNearBottom = scrollBottom >= el.scrollHeight - threshold;
 
