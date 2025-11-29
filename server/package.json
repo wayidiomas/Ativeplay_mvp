@@ -6,10 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "pm2-runtime start ecosystem.config.cjs",
-    "start:api": "node --max-old-space-size=300 api-server.js",
+    "start:api": "node --max-old-space-size=1024 api-server.js",
     "start:worker": "node --max-old-space-size=800 --expose-gc worker.js",
     "dev": "pm2 start ecosystem.config.cjs",
-    "dev:api": "node --max-old-space-size=300 --watch api-server.js",
+    "dev:api": "node --max-old-space-size=1024 --watch api-server.js",
     "dev:worker": "node --max-old-space-size=800 --expose-gc --watch worker.js",
     "stop": "pm2 stop ecosystem.config.cjs",
     "logs": "pm2 logs",

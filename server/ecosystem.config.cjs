@@ -17,12 +17,12 @@ module.exports = {
       script: './api-server.js',
       instances: 1,
       exec_mode: 'fork',
-      node_args: '--max-old-space-size=300', // API leve, só 300 MB RAM
+      node_args: '--max-old-space-size=1024', // Increased to 1GB for large meta.json parsing
       env: {
         NODE_ENV: 'production',
         PORT: process.env.PORT || 3001,
       },
-      max_memory_restart: '350M', // Restart se passar de 350 MB
+      max_memory_restart: '1200M', // Restart se passar de 1200 MB
       error_file: './logs/api-error.log',
       out_file: './logs/api-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
