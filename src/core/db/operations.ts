@@ -265,7 +265,8 @@ async function syncItemsFromServer(
     // Insere em batches
     for (let i = 0; i < dbItems.length; i += batchSize) {
       const batch = dbItems.slice(i, i + batchSize);
-      await db.items.bulkAdd(batch);
+      // bulkPut faz upsert (update or insert) - evita erro se item já existe
+      await db.items.bulkPut(batch);
     }
 
     processed = items.length;
@@ -322,7 +323,8 @@ async function syncItemsFromServer(
 
     for (let i = 0; i < dbItems.length; i += batchSize) {
       const batch = dbItems.slice(i, i + batchSize);
-      await db.items.bulkAdd(batch);
+      // bulkPut faz upsert (update or insert) - evita erro se item já existe
+      await db.items.bulkPut(batch);
     }
 
     processed += items.length;

@@ -94,15 +94,23 @@ export async function getProcessingLock(hash) {
 }
 
 /**
- * Define lock de processamento para um hash
+ * Define lock de processamento para um hash (atomic SETNX)
  * TTL de 10 minutos (tempo máximo esperado para parse)
+ * Retorna true se lock foi setado, false se já existia
  */
 export async function setProcessingLock(hash, jobId) {
   try {
     const lockKey = `processing:${hash}`;
-    await redisConnection.set(lockKey, jobId, 'EX', 600); // 10min TTL
-    logger.debug('lock_set', { hash, jobId });
-    return true;
+    // NX = Set if Not Exists (atomic operation para evitar race condition)
+    const result = await redisConnection.set(lockKey, jobId, 'EX', 600, 'NX');
+
+    if (result === 'OK') {
+      logger.debug('lock_set', { hash, jobId });
+      return true;
+    } else {
+      logger.warn('lock_already_exists', { hash, jobId });
+      return false;
+    }
   } catch (error) {
     logger.error('set_lock_error', error, { hash, jobId });
     return false;

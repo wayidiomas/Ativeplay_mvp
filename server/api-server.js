@@ -709,8 +709,26 @@ app.post('/api/playlist/parse', parseRateLimiter, async (req, res) => {
       },
     });
 
-    // Marca hash como "em processamento"
-    await setProcessingLock(hash, job.id);
+    // Marca hash como "em processamento" (atomic SETNX)
+    const lockSet = await setProcessingLock(hash, job.id);
+
+    if (!lockSet) {
+      // Race condition: outro job já está processando este hash
+      // Remove job duplicado que acabamos de criar
+      await job.remove();
+
+      // Retorna jobId do job que está realmente processando
+      const activeJobId = await getProcessingLock(hash);
+      logger.info('parse_race_condition_detected', { hash, duplicateJobId: job.id, activeJobId });
+
+      return res.json({
+        success: true,
+        queued: true,
+        jobId: activeJobId,
+        hash,
+        message: 'Esta playlist já está sendo processada. Use o jobId para acompanhar o progresso.',
+      });
+    }
 
     logJobQueued(job.id, hash);
     recordJobQueued();
