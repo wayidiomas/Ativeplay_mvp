@@ -111,6 +111,31 @@ function classify(name, group) {
   const lowerName = name.toLowerCase();
   const lowerGroup = group.toLowerCase();
 
+  // ✅ DETECÇÃO DE CANAIS (Live TV) - PRIORITY CHECK
+  // Padrão 1: Canais 24h com numeração sequencial (ex: "CINE CATASTROFE 01", "DOIS HOMENS E MEIO 01")
+  const is24hChannel =
+    /\b24h(rs)?\b/i.test(lowerGroup) &&
+    /\s\d{1,2}$/.test(name); // Termina com espaço + 1-2 dígitos
+
+  // Padrão 2: Canais de TV com qualidade no nome (ex: "A&E FHD", "AMC HD", "AXN SD")
+  const isTVChannel =
+    /\b(FHD|HD|SD)\b/i.test(name) || // Qualidade no nome original (case-sensitive)
+    /\[ALT\]/i.test(name); // Canal alternativo
+
+  // Se é canal (24h ou TV), classifica como 'live' IMEDIATAMENTE
+  if (is24hChannel || isTVChannel) {
+    classifyCache.set(cacheKey, 'live');
+    return 'live';
+  }
+
+  // ✅ DETECÇÃO DE FILMES COM PREFIXO "F " (ex: "F NOME 1", "F NOME 2")
+  // Usuário reportou: items começando com "F " são filmes, não séries
+  const hasMoviePrefix = /^F\s+/i.test(name);
+  if (hasMoviePrefix) {
+    classifyCache.set(cacheKey, 'movie');
+    return 'movie';
+  }
+
   // Sinais fortes de série
   const isSeriesTitle =
     /s\d{1,2}e\d{1,3}/i.test(lowerName) ||
