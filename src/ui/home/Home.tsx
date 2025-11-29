@@ -780,6 +780,17 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     }
   }, [rows.length, loadingMoreGroups, loadMoreGroups, selectedNav]);
 
+  // Auto-load batches adicionais para preencher mais categorias sem depender de scroll
+  useEffect(() => {
+    if (!hasMoreRef.current[selectedNav]) return;
+    if (loadingMoreGroups) return;
+    const totalGroups = allGroupsRef.current[selectedNav].length;
+    // Se já temos menos de 18 carrosséis carregados e ainda há grupos, prefetch mais
+    if (rows.length < Math.min(18, totalGroups)) {
+      loadMoreGroups();
+    }
+  }, [rows.length, selectedNav, loadingMoreGroups, loadMoreGroups]);
+
   // Reset flags ao trocar aba
   useEffect(() => {
     setLoadingMoreGroups(false);
