@@ -295,26 +295,31 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       return null;
     }
 
+    const heroImage = selectedNav === 'movies'
+      ? 'https://image.tmdb.org/t/p/original/9Baumh5J9N1nJUYzNkm0xsgjpwY.jpg'
+      : 'https://image.tmdb.org/t/p/original/8YytfMiEum4Wuo2q7b3avcFRe6N.jpg';
+
     return (
       <div className={styles.hero}>
         <div
           className={styles.heroBackground}
-          style={{ backgroundImage: 'url(https://image.tmdb.org/t/p/original/wwemzKWzjKYJFfCeiB57q3r4Bcm.svg)' }} // Placeholder hero
+          style={{ backgroundImage: `url(${heroImage})` }}
         />
+        <div className={styles.heroScrim} />
         <div className={styles.heroContent}>
+          <p className={styles.heroKicker}>{selectedNav === 'movies' ? 'Filmes em Destaque' : 'Séries em Destaque'}</p>
           <h1 className={styles.heroTitle}>
-            {selectedNav === 'movies' ? 'Destaque Filmes' : 'Destaque Séries'}
+            Uma curadoria que combina o que você quer ver agora.
           </h1>
           <p className={styles.heroDescription}>
-            Explore os melhores conteúdos selecionados para você.
-            Uma experiência cinematográfica completa na sua sala de estar.
+            Continue de onde parou, descubra lançamentos e navegue sem fricção. Use o controle ou mouse, tudo responde.
           </p>
           <div className={styles.heroActions}>
             <button className={`${styles.heroButton} ${styles.heroButtonPrimary}`}>
-              <MdPlayArrow size={24} /> Assistir
+              <MdPlayArrow size={24} /> Reproduzir
             </button>
             <button className={`${styles.heroButton} ${styles.heroButtonSecondary}`}>
-              <MdInfoOutline size={24} /> Mais Informações
+              <MdInfoOutline size={24} /> Detalhes
             </button>
           </div>
         </div>
