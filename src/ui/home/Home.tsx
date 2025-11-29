@@ -389,9 +389,18 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
     if (loading) {
       return (
-        <div className={styles.loading}>
-          <div className={styles.spinner} />
-          <span className={styles.loadingText}>Carregando catálogo...</span>
+        <div className={styles.section}>
+          <div className={styles.sectionHeader}>
+            <h2 className={styles.sectionTitle}>Categorias</h2>
+          </div>
+          <div className={styles.skeletonGrid}>
+            {Array.from({ length: 12 }).map((_, idx) => (
+              <div key={idx} className={styles.skeletonCard}>
+                <div className={styles.skeletonBar} />
+                <div className={styles.skeletonSub} />
+              </div>
+            ))}
+          </div>
         </div>
       );
     }

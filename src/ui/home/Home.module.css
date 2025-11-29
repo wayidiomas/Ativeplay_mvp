@@ -353,43 +353,48 @@
 /* Groups Grid */
 .groupsGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 20px;
 }
 
 .groupCard {
-  background: #2f2f2f;
-  border-radius: 4px; /* Netflix style is less rounded */
-  padding: 24px;
+  background: radial-gradient(circle at 20% 20%, rgba(229, 9, 20, 0.15), rgba(255, 255, 255, 0.02));
+  border-radius: 10px;
+  padding: 20px;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-  border: 2px solid transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   position: relative;
   overflow: hidden;
+  min-height: 120px;
 }
 
 .groupCard:focus {
-  border-color: #fff;
-  transform: scale(1.05);
+  border-color: #e50914;
+  transform: scale(1.03);
   outline: none;
   z-index: 2;
-  box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+  box-shadow: 0 14px 32px rgba(0,0,0,0.5),
+              0 0 0 4px rgba(229, 9, 20, 0.2);
 }
 
 .groupCard:hover {
-  background: #3f3f3f;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: radial-gradient(circle at 10% 10%, rgba(229, 9, 20, 0.12), rgba(255, 255, 255, 0.04));
+  transform: translateY(-2px);
 }
 
 .groupName {
   font-size: 18px;
   font-weight: 700;
   color: #fff;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  line-height: 1.2;
 }
 
 .groupCount {
-  font-size: 14px;
-  color: #a3a3a3;
+  font-size: 13px;
+  color: #b3b3b3;
 }
 
 /* Results Grid */
@@ -412,8 +417,8 @@
 }
 
 .resultCard:focus {
-  border-color: #fff;
-  transform: scale(1.1);
+  border-color: #e50914;
+  transform: scale(1.08);
   outline: none;
   z-index: 10;
   box-shadow: 0 10px 30px rgba(0,0,0,0.7);
@@ -596,4 +601,49 @@
   border-radius: 3px;
   transition: width 0.3s ease-out;
   box-shadow: 0 0 10px rgba(229, 9, 20, 0.5);
+}
+
+/* Skeletons for grid */
+.skeletonGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 20px;
+  padding-top: 8px;
+}
+
+.skeletonCard {
+  background: #1f1f1f;
+  border-radius: 10px;
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.skeletonCard::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  animation: shimmer 1.6s infinite;
+}
+
+.skeletonBar {
+  height: 18px;
+  width: 70%;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.skeletonSub {
+  height: 12px;
+  width: 40%;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
