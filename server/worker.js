@@ -24,7 +24,9 @@ const CACHE_DIR = path.join(__dirname, '.parse-cache');
 // Por enquanto, vou duplicar as funções essenciais aqui
 
 import crypto from 'crypto';
-import { createWriteStream, rename } from 'fs';
+import { createWriteStream, rename, createReadStream } from 'fs';
+import { promises as fs } from 'fs';
+import readline from 'readline';
 import { promisify } from 'util';
 
 const renameAsync = promisify(rename);
@@ -326,13 +328,49 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
       logger.warn('parse_no_header', { hash });
     }
 
+    // ===== GERA ÍNDICE DE BYTE OFFSETS =====
+    // Permite seek direto por linha (offset=225k → 50ms ao invés de 800ms)
+    progressCb?.({ phase: 'indexing', percentage: 90, processed: stats.totalItems, total: stats.totalItems });
+
+    try {
+      const indexFile = `${itemsFile}.idx`;
+      const offsets = [];
+
+      const fileStream = createReadStream(itemsFile, { encoding: 'utf8' });
+      const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+      let currentOffset = 0;
+      for await (const line of rl) {
+        offsets.push(currentOffset);
+        currentOffset += Buffer.byteLength(line, 'utf8') + 1; // +1 for \n
+      }
+
+      rl.close();
+
+      // Salva índice como JSON array
+      await fs.writeFile(indexFile, JSON.stringify(offsets));
+
+      const indexSizeMB = (offsets.length * 8) / 1024 / 1024; // 8 bytes por offset (number)
+      logger.info('index_generated', {
+        hash,
+        lines: offsets.length,
+        indexSizeMB: indexSizeMB.toFixed(2),
+      });
+    } catch (indexError) {
+      // Índice é opcional - se falhar, continua funcionando com readline
+      logger.warn('index_generation_failed', {
+        hash,
+        error: indexError.message,
+      });
+    }
+
     stats.groupCount = groupsMap.size;
     const groups = Array.from(groupsMap.values());
 
     const duration = Date.now() - startTime;
     const memoryDelta = Math.round((process.memoryUsage().heapUsed - startMem) / 1024 / 1024);
 
-    progressCb?.({ phase: 'parsed', percentage: 85, processed: stats.totalItems, total: stats.totalItems });
+    progressCb?.({ phase: 'parsed', percentage: 100, processed: stats.totalItems, total: stats.totalItems });
 
     logParseEnd(hash, duration, stats.totalItems, memoryDelta);
 

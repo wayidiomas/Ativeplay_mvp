@@ -834,27 +834,61 @@ async function getQueuePosition(job) {
 
 
 /**
- * GET /api/playlist/items/:hash
- * Retorna itens paginados de uma playlist já parseada
+ * Helper: Lê items do NDJSON usando índice (rápido) ou readline (fallback)
+ * @param {string} itemsPath - Caminho do arquivo .ndjson
+ * @param {number} offset - Linha inicial
+ * @param {number} limit - Quantidade de linhas a ler
+ * @returns {Promise<Array>} Items parseados
  */
-app.get('/api/playlist/items/:hash', async (req, res) => {
-  const { hash } = req.params;
-  const cached = await cacheIndex.get(hash);
+async function readItemsWithIndex(itemsPath, offset, limit) {
+  const indexPath = `${itemsPath}.idx`;
 
-  if (!cached) {
-    return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
-  }
-
-  const limit = Math.min(parseInt(req.query.limit || `${MAX_ITEMS_PAGE}`, 10), MAX_ITEMS_PAGE);
-  const offset = parseInt(req.query.offset || '0', 10);
-  const items = [];
-
+  // Tenta usar índice para seek direto (RÁPIDO: 50ms para offset=225k)
   try {
-    const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
+    const indexData = await fs.readFile(indexPath, 'utf8');
+    const offsets = JSON.parse(indexData);
+
+    // Calcula byte range
+    const startByte = offsets[offset];
+    const endByte = offsets[Math.min(offset + limit, offsets.length - 1)] || offsets[offsets.length - 1];
+
+    if (startByte === undefined) {
+      // Offset maior que total de linhas
+      return [];
+    }
+
+    // Lê apenas os bytes necessários (seek direto!)
+    const fileHandle = await fs.open(itemsPath, 'r');
+    const bytesToRead = endByte - startByte + 1000; // +1000 buffer para última linha completa
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    await fileHandle.read(buffer, 0, bytesToRead, startByte);
+    await fileHandle.close();
+
+    // Parse das linhas
+    const lines = buffer.toString('utf8').split('\n').filter(Boolean);
+    const items = [];
+
+    for (let i = 0; i < Math.min(limit, lines.length); i++) {
+      try {
+        items.push(JSON.parse(lines[i]));
+      } catch (error) {
+        console.warn('[Items] Linha inválida no índice, pulando');
+      }
+    }
+
+    console.log('[Items] Usando índice (RÁPIDO)', { offset, limit, returned: items.length });
+    return items;
+
+  } catch (indexError) {
+    // Fallback: usa readline (LENTO: 800ms para offset=225k)
+    console.log('[Items] Índice não encontrado, usando readline (LENTO)', { offset });
+
     const fileStream = createReadStream(itemsPath, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
+    const items = [];
     let index = 0;
+
     for await (const line of rl) {
       if (index >= offset && items.length < limit) {
         try {
@@ -868,12 +902,34 @@ app.get('/api/playlist/items/:hash', async (req, res) => {
     }
 
     rl.close();
+    return items;
+  }
+}
 
-    console.log('[Items] Página servida', { hash, offset, limit, returned: items.length, total: cached.stats?.totalItems || index });
+/**
+ * GET /api/playlist/items/:hash
+ * Retorna itens paginados de uma playlist já parseada
+ */
+app.get('/api/playlist/items/:hash', async (req, res) => {
+  const { hash } = req.params;
+  const cached = await cacheIndex.get(hash);
+
+  if (!cached) {
+    return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit || `${MAX_ITEMS_PAGE}`, 10), MAX_ITEMS_PAGE);
+  const offset = parseInt(req.query.offset || '0', 10);
+
+  try {
+    const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
+    const items = await readItemsWithIndex(itemsPath, offset, limit);
+
+    console.log('[Items] Página servida', { hash, offset, limit, returned: items.length, total: cached.stats?.totalItems });
 
     res.json({
       items,
-      total: cached.stats?.totalItems || index,
+      total: cached.stats?.totalItems || 0,
       limit,
       offset,
     });
@@ -898,24 +954,10 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
 
   // Limite máximo de 5000 items, padrão 1000
   const limit = Math.min(parseInt(req.query.limit || '1000', 10), 5000);
-  const items = [];
 
   try {
     const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
-    const fileStream = createReadStream(itemsPath, { encoding: 'utf8' });
-    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
-
-    for await (const line of rl) {
-      if (items.length >= limit) break;
-
-      try {
-        items.push(JSON.parse(line));
-      } catch (error) {
-        console.warn('[Items Partial] Linha inválida no cache, pulando');
-      }
-    }
-
-    rl.close();
+    const items = await readItemsWithIndex(itemsPath, 0, limit); // offset=0 para partial
 
     console.log('[Items Partial] Primeiros items servidos', {
       hash,
