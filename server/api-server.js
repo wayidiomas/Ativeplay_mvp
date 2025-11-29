@@ -1158,6 +1158,45 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
 });
 
 /**
+ * GET /api/playlist/items/:hash/preview
+ * Retorna preview (primeiros N itens) mesmo durante parsing em andamento.
+ * Usa leitura sequencial sem índice; ignorará linhas inválidas.
+ */
+app.get('/api/playlist/items/:hash/preview', async (req, res) => {
+  const { hash } = req.params;
+  const limit = Math.min(parseInt(req.query.limit || '500', 10), 2000);
+
+  try {
+    const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
+    await fs.access(itemsPath);
+
+    const fileStream = createReadStream(itemsPath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    const items = [];
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        items.push(JSON.parse(line));
+      } catch (e) {
+        // ignora linha inválida
+      }
+      if (items.length >= limit) break;
+    }
+
+    rl.close();
+
+    res.json({
+      items,
+      hasMore: items.length === limit,
+    });
+  } catch (error) {
+    console.error('[Preview] Erro ao ler preview:', error.message);
+    res.status(404).json({ error: 'Preview não disponível' });
+  }
+});
+
+/**
  * GET /api/playlist/progress/:hash
  * Retorna status de progresso do parsing (early navigation support)
  * Status: "in_progress" | "completed" | "not_found"

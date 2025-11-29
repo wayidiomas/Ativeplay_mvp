@@ -19,13 +19,15 @@ const processingUrls = new Map<string, Promise<string>>();
 async function pollJobUntilComplete(
   jobId: string,
   onProgress?: ProgressCallback,
-  hash?: string // Hash da playlist para polling incremental
+  hash?: string, // Hash da playlist para polling incremental
+  playlistId?: string
 ): Promise<{ hash: string; stats: any; groups: any[] }> {
   const maxAttempts = 300; // Safety limit
   const initialInterval = 2000; // Start at 2s
   const maxInterval = 30000; // Cap at 30s
   const backoffMultiplier = 1.5; // Exponential factor
   let attempts = 0;
+  let previewLoaded = false;
 
   while (attempts < maxAttempts) {
     attempts++;
@@ -52,9 +54,16 @@ async function pollJobUntilComplete(
 
       // Early Navigation: polling incremental para sincronizar grupos durante parsing
       if (hash && jobStatus.status === 'active') {
-        pollProgressAndSyncIncremental(hash, onProgress).catch(err =>
+        pollProgressAndSyncIncremental(hash, playlistId, onProgress).catch(err =>
           console.warn('[Early Nav] Erro no polling incremental:', err)
         );
+        if (!previewLoaded && playlistId) {
+          previewLoaded = true;
+          loadPreviewItems(hash, playlistId).catch(err => {
+            previewLoaded = false; // permite retentar
+            console.warn('[Early Nav] Erro ao carregar preview:', err);
+          });
+        }
       }
 
       // Job completado com sucesso
@@ -115,6 +124,7 @@ async function pollJobUntilComplete(
  */
 async function pollProgressAndSyncIncremental(
   hash: string,
+  playlistId?: string,
   onProgress?: ProgressCallback
 ): Promise<{ groups: M3UGroup[]; status: 'in_progress' | 'completed' }> {
   try {
@@ -154,7 +164,7 @@ async function pollProgressAndSyncIncremental(
     if (progressData.groups && progressData.groups.length > 0) {
       const groupsToSync: M3UGroup[] = progressData.groups.map((g: any) => ({
         id: g.id,
-        playlistId: hash,
+        playlistId: playlistId || hash,
         name: g.name,
         mediaKind: g.mediaKind as 'live' | 'movie' | 'series' | 'unknown',
         itemCount: g.itemCount,
@@ -181,13 +191,52 @@ async function pollProgressAndSyncIncremental(
 }
 
 /**
+ * Carrega preview inicial de itens (primeiros N) mesmo com parsing em andamento.
+ */
+async function loadPreviewItems(hash: string, playlistId: string, limit = 500): Promise<void> {
+  try {
+    const resp = await fetch(`${SERVER_URL}/api/playlist/items/${hash}/preview?limit=${limit}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const items = (data.items || []).map((item: any) => {
+      const title = item.parsedTitle?.title || item.title || item.name;
+      return {
+        id: `${playlistId}_${item.id}`,
+        playlistId,
+        name: item.name,
+        url: item.url,
+        logo: item.logo,
+        group: item.group,
+        mediaKind: item.mediaKind,
+        title,
+        titleNormalized: (title || '').toUpperCase(),
+        year: item.parsedTitle?.year || item.year,
+        season: item.parsedTitle?.season || item.season,
+        episode: item.parsedTitle?.episode || item.episode,
+        quality: item.parsedTitle?.quality || item.quality,
+        epgId: item.epgId,
+        createdAt: Date.now(),
+      } as M3UItem;
+    });
+    if (items.length > 0) {
+      await db.items.bulkPut(items);
+    }
+  } catch (error) {
+    console.warn('[Preview] Falha ao carregar preview:', error);
+  }
+}
+
+/**
  * Processa M3U usando servidor com Worker Pool architecture
  * - Cache hit: retorna imediatamente
  * - Cache miss: faz polling até job completar
  */
 async function fetchFromServer(
   url: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  playlistId?: string
 ): Promise<{ hash: string; stats: any; groups: any[] }> {
   // Validação: servidor deve estar configurado
   if (!SERVER_URL) {
@@ -261,7 +310,7 @@ async function fetchFromServer(
       });
 
       // Polling até job completar (com early navigation via hash)
-      const jobResult = await pollJobUntilComplete(jobId, onProgress, hash);
+      const jobResult = await pollJobUntilComplete(jobId, onProgress, hash, playlistId);
 
       stats = jobResult.stats;
       groups = jobResult.groups;
@@ -876,7 +925,7 @@ export async function addPlaylist(
           let hash = existing.hash;
           if (!hash) {
             console.log('[DB DEBUG] Hash não existe, buscando do servidor...');
-            const parsed = await fetchFromServer(existing.url, onProgress);
+            const parsed = await fetchFromServer(existing.url, onProgress, existing.id);
             hash = parsed.hash;
             // Salva hash para próxima vez
             await db.playlists.update(existing.id, { hash });
@@ -912,7 +961,7 @@ export async function addPlaylist(
       const playlistId = `playlist_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
       // APENAS SERVIDOR (sem fallback) - não bloqueia no download de itens
-      const parsed = await fetchFromServer(url, onProgress);
+      const parsed = await fetchFromServer(url, onProgress, playlistId);
 
       // Determina se deve ser ativa (primeira playlist = ativa)
       const isFirst = playlistCount === 0;
@@ -1029,7 +1078,7 @@ export async function refreshPlaylist(
   }
 
   // Re-processa usando servidor (retorna stats/grupos/hash)
-  const parsed = await fetchFromServer(playlist.url, onProgress);
+  const parsed = await fetchFromServer(playlist.url, onProgress, playlistId);
 
   await db.transaction('rw', [db.playlists, db.items, db.groups], async () => {
     // Remove itens e grupos antigos

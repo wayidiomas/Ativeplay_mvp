@@ -253,7 +253,6 @@ async function savePartialMeta(hash, url, stats, groups, seriesIndex, status = '
 async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
   const hash = hashOverride || hashPlaylist(url);
   const itemsFile = path.join(CACHE_DIR, `${hash}.ndjson`);
-  const tempFile = `${itemsFile}.tmp`;
 
   logParseStart(hash, url);
   const startTime = Date.now();
@@ -280,7 +279,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
 
   if (!response.body) throw new Error('Response body não disponível');
 
-  const writer = createWriteStream(tempFile, { encoding: 'utf8' });
+  // Escreve diretamente no arquivo final para permitir pré-visualização durante o parsing
+  const writer = createWriteStream(itemsFile, { encoding: 'utf8' });
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
 
@@ -485,8 +485,6 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
       writer.on('finish', resolve);
       writer.on('error', reject);
     });
-
-    await renameAsync(tempFile, itemsFile);
 
     if (!foundHeader) {
       logger.warn('parse_no_header', { hash });
