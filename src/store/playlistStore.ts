@@ -25,6 +25,8 @@ interface PlaylistState {
 
   // Cache de grupos visitados (10x faster on revisit)
   groupCache: Map<string, M3UItem[]>;
+  // Cache de telas de grid ("ver todos"): mantém visibleCount/scroll
+  mediaGridCache: Map<string, { visibleCount: number; scrollTop: number }>;
 
   // Actions
   setActivePlaylist: (playlist: Playlist | null) => void;
@@ -35,6 +37,8 @@ interface PlaylistState {
   setSyncProgress: (progress: SyncProgress | null) => void;
   cacheGroupItems: (playlistId: string, group: string, items: M3UItem[]) => void;
   getGroupCache: (playlistId: string, group: string) => M3UItem[] | undefined;
+  setMediaGridCache: (key: string, value: { visibleCount: number; scrollTop: number }) => void;
+  getMediaGridCache: (key: string) => { visibleCount: number; scrollTop: number } | undefined;
   clearGroupCache: () => void;
   reset: () => void;
 }
@@ -47,6 +51,7 @@ const initialState = {
   isSyncing: false,
   syncProgress: null,
   groupCache: new Map<string, M3UItem[]>(),
+  mediaGridCache: new Map<string, { visibleCount: number; scrollTop: number }>(),
 };
 
 export const usePlaylistStore = create<PlaylistState>((set) => ({
@@ -78,8 +83,23 @@ export const usePlaylistStore = create<PlaylistState>((set) => ({
     return state.groupCache.get(key);
   },
 
+  setMediaGridCache: (key, value) =>
+    set((state) => {
+      const next = new Map(state.mediaGridCache);
+      next.set(key, value);
+      return { mediaGridCache: next };
+    }),
+
+  getMediaGridCache: (key) => {
+    const state = usePlaylistStore.getState();
+    return state.mediaGridCache.get(key);
+  },
+
   clearGroupCache: () =>
-    set({ groupCache: new Map<string, M3UItem[]>() }),
+    set({
+      groupCache: new Map<string, M3UItem[]>(),
+      mediaGridCache: new Map<string, { visibleCount: number; scrollTop: number }>(),
+    }),
 
   reset: () => set({ ...initialState, groupCache: new Map<string, M3UItem[]>() }),
 }));

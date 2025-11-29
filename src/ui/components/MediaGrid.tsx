@@ -1,6 +1,7 @@
 /**
  * MediaGrid
  * Grid display of media items with progressive loading
+ * Refactored for Premium/Netflix-like aesthetic (Big Poster Edition)
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react';
@@ -9,6 +10,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
 import { usePlaylistStore } from '@store/playlistStore';
 import { SkeletonCard } from '../shared';
+import { MdArrowBack, MdSearchOff } from 'react-icons/md';
 import styles from './MediaGrid.module.css';
 
 interface MediaGridProps {
@@ -17,10 +19,10 @@ interface MediaGridProps {
   onSelectItem: (item: M3UItem) => void;
 }
 
-const PAGE_SIZE = 240; // Increased for smoother loading (2 pages worth)
-const CARD_WIDTH = 200; // Must match CSS --card-width
-const CARD_GAP = 16; // Must match CSS --card-gap
-const CARD_HEIGHT = 300; // Estimated height (poster ratio ~1.5 + overlay)
+const PAGE_SIZE = 240;
+const MIN_CARD_WIDTH = 280; // BIG POSTER: Matches CSS minmax(280px, 1fr)
+const CARD_GAP = 32; // Matches CSS gap: 32px
+const ASPECT_RATIO = 1.5; // 2:3 ratio
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -28,18 +30,35 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const loadingMoreRef = useRef(false);
+  const cacheKey = `${group.playlistId}:${group.name}:${group.mediaKind}`;
 
-  // Sincroniza ref com state
+  // Sync ref with state
   useEffect(() => {
     loadingMoreRef.current = loadingMore;
   }, [loadingMore]);
 
-  const { cacheGroupItems, getGroupCache } = usePlaylistStore();
+  const { cacheGroupItems, getGroupCache, setMediaGridCache, getMediaGridCache } = usePlaylistStore();
 
-  // Check cache first for instant load on revisit (10x faster)
+  // Check cache first
   const cachedItems = getGroupCache(group.playlistId, group.name);
 
-  // Live query com limit dinâmico - atualiza automaticamente quando novos items chegam
+  // Restore view state if cached
+  useEffect(() => {
+    const cachedView = getMediaGridCache(cacheKey);
+    if (cachedView) {
+      setVisibleCount(Math.max(PAGE_SIZE, cachedView.visibleCount));
+      requestAnimationFrame(() => {
+        if (gridRef.current) {
+          gridRef.current.scrollTop = cachedView.scrollTop;
+        }
+      });
+    } else {
+      setVisibleCount(PAGE_SIZE);
+    }
+    setFocusedIndex(null);
+  }, [cacheKey, getMediaGridCache]);
+
+  // Live query with dynamic limit
   const items = useLiveQuery(
     () =>
       db.items
@@ -47,15 +66,23 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         .limit(visibleCount)
         .toArray(),
     [group.playlistId, group.name, group.mediaKind, visibleCount],
-    cachedItems || [] // Use cache as fallback for instant display
+    cachedItems || []
   );
 
-  // Cache items after they're loaded
+  // Cache items after load
   useEffect(() => {
     if (items && items.length > 0) {
       cacheGroupItems(group.playlistId, group.name, items);
     }
   }, [items, group.playlistId, group.name, cacheGroupItems]);
+
+  // Persist view state on unmount/change
+  useEffect(() => {
+    return () => {
+      const scrollTop = gridRef.current?.scrollTop || 0;
+      setMediaGridCache(cacheKey, { visibleCount, scrollTop });
+    };
+  }, [cacheKey, visibleCount, setMediaGridCache]);
 
   const totalCount = useLiveQuery(
     () => db.items.where({ playlistId: group.playlistId, group: group.name, mediaKind: group.mediaKind }).count(),
@@ -66,21 +93,31 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const loading = items === undefined;
   const hasMore = (items?.length || 0) < (totalCount || 0);
 
-  // Calculate columns per row dynamically based on container width
-  const [columnsPerRow, setColumnsPerRow] = useState(5);
+  // Calculate columns per row dynamically
+  const [columnsPerRow, setColumnsPerRow] = useState(4); // Default fewer columns for big cards
+  const [cardHeight, setCardHeight] = useState(MIN_CARD_WIDTH * ASPECT_RATIO);
+
   useEffect(() => {
-    const updateColumns = () => {
+    const updateLayout = () => {
       if (!gridRef.current) return;
-      const containerWidth = gridRef.current.clientWidth - 48; // Subtract padding
-      const cols = Math.floor(containerWidth / (CARD_WIDTH + CARD_GAP)) || 1;
+      // 112px = padding left + right (56px * 2)
+      const containerWidth = gridRef.current.clientWidth - 112;
+      // Calculate how many cards fit with min width + gap
+      const cols = Math.floor((containerWidth + CARD_GAP) / (MIN_CARD_WIDTH + CARD_GAP)) || 1;
+
+      // Calculate actual card width to determine height
+      const actualCardWidth = (containerWidth - (cols - 1) * CARD_GAP) / cols;
+
       setColumnsPerRow(cols);
+      setCardHeight(actualCardWidth * ASPECT_RATIO);
     };
-    updateColumns();
-    window.addEventListener('resize', updateColumns);
-    return () => window.removeEventListener('resize', updateColumns);
+
+    updateLayout();
+    window.addEventListener('resize', updateLayout);
+    return () => window.removeEventListener('resize', updateLayout);
   }, []);
 
-  // Split items into rows for virtual scrolling
+  // Split items into rows
   const rows = [];
   if (items) {
     for (let i = 0; i < items.length; i += columnsPerRow) {
@@ -88,69 +125,51 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     }
   }
 
-  // Virtual scrolling setup
+  // Virtual scrolling
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => gridRef.current,
-    estimateSize: () => CARD_HEIGHT + CARD_GAP,
-    overscan: 2, // Render 2 extra rows above/below viewport
+    estimateSize: () => cardHeight + CARD_GAP,
+    overscan: 3,
   });
 
-  // Debug log
-  useEffect(() => {
-    if (!loading && items) {
-      console.log(`[MediaGrid] visibleCount=${visibleCount}, loaded=${items.length}, total=${totalCount}, hasMore=${hasMore}, rows=${rows.length}, cols=${columnsPerRow}`);
-    }
-  }, [visibleCount, items?.length, totalCount, hasMore, loading, rows.length, columnsPerRow]);
-
-  // Reset visibleCount quando grupo muda
+  // Reset on group change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     setFocusedIndex(null);
   }, [group]);
 
-  // Infinite scroll: aumenta visibleCount para carregar mais items
+  // Infinite scroll
   useEffect(() => {
     const el = gridRef.current;
     if (!el) return;
 
     const onScroll = () => {
       if (!hasMore || loadingMoreRef.current) return;
-      // Smart preloading: trigger at 70% scroll progress (30% remaining)
-      const threshold = el.scrollHeight * 0.3;
+      const threshold = el.scrollHeight * 0.4; // Trigger earlier (40% remaining)
       const scrollBottom = el.scrollTop + el.clientHeight;
-      const isNearBottom = scrollBottom >= el.scrollHeight - threshold;
 
-      if (isNearBottom) {
-        console.log('[MediaGrid] Infinite scroll triggered');
+      if (scrollBottom >= el.scrollHeight - threshold) {
         setLoadingMore(true);
         setVisibleCount((prev) => prev + PAGE_SIZE);
-        // Debounce visual
         setTimeout(() => setLoadingMore(false), 200);
       }
     };
 
     el.addEventListener('scroll', onScroll);
-    // Dispara um check inicial caso já esteja no fundo
-    onScroll();
+    onScroll(); // Initial check
     return () => el.removeEventListener('scroll', onScroll);
   }, [hasMore]);
 
-  // Pré-carrega mais itens se o conteúdo inicial não criar scroll
+  // Auto-load more if no scroll
   useEffect(() => {
     if (!gridRef.current || loading || !items || loadingMore || !hasMore) return;
-
     const el = gridRef.current;
     const hasScroll = el.scrollHeight > el.clientHeight;
-
-    // Se não tem scroll e ainda há mais itens, carrega mais
-    // Garante que visibleCount está sincronizado com items.length antes de carregar mais
-    // ou que items.length alcançou totalCount
     const isFullyLoaded = items.length >= (totalCount || 0);
     const queryCompleted = visibleCount <= items.length;
 
     if (!hasScroll && !isFullyLoaded && queryCompleted) {
-      console.log('[MediaGrid] Auto-loading more items (no scroll detected)');
       setLoadingMore(true);
       setVisibleCount((prev) => prev + PAGE_SIZE);
       setTimeout(() => setLoadingMore(false), 150);
@@ -160,17 +179,17 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const focusIndex = useCallback(
     (index: number) => {
       if (!items || index < 0 || index >= items.length) return;
-      const el = gridRef.current?.querySelector<HTMLButtonElement>(`[data-index=\"${index}\"]`);
+      const el = gridRef.current?.querySelector<HTMLButtonElement>(`[data-index="${index}"]`);
       if (el) {
         el.focus({ preventScroll: false });
-        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
         setFocusedIndex(index);
       }
     },
     [items]
   );
 
-  // Keyboard navigation for TV/remote (adjusted for dynamic grid columns)
+  // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Backspace') {
@@ -197,11 +216,11 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
             e.preventDefault();
             break;
           case 'PageUp':
-            focusIndex((focusedIndex ?? 0) - (columnsPerRow * 2));
+            focusIndex((focusedIndex ?? 0) - (columnsPerRow * 3));
             e.preventDefault();
             break;
           case 'PageDown':
-            focusIndex((focusedIndex ?? 0) + (columnsPerRow * 2));
+            focusIndex((focusedIndex ?? 0) + (columnsPerRow * 3));
             e.preventDefault();
             break;
         }
@@ -212,26 +231,13 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [focusIndex, focusedIndex, onBack, columnsPerRow]);
 
-  // Auto-focus primeiro card
+  // Auto-focus first card
   useEffect(() => {
     if (!loading && items && items.length > 0 && focusedIndex === null) {
-      focusIndex(0);
+      // Small delay to ensure render
+      setTimeout(() => focusIndex(0), 50);
     }
   }, [loading, items, focusIndex, focusedIndex]);
-
-  // Wheel event listener com { passive: false } para permitir preventDefault
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault(); // Previne scroll default do browser
-      el.scrollBy({ top: e.deltaY });
-    };
-
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
-  }, []);
 
   const getDisplayName = useCallback((item: M3UItem): string => {
     return item.title || item.name;
@@ -241,8 +247,8 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     return (
       <div className={styles.container}>
         <header className={styles.header}>
-          <button className={styles.backButton} onClick={onBack} tabIndex={0}>
-            {'<'}
+          <button className={styles.backButton} onClick={onBack}>
+            <MdArrowBack />
           </button>
           <h1 className={styles.title}>{group.name}</h1>
         </header>
@@ -257,15 +263,15 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     return (
       <div className={styles.container}>
         <header className={styles.header}>
-          <button className={styles.backButton} onClick={onBack} tabIndex={0}>
-            {'<'}
+          <button className={styles.backButton} onClick={onBack}>
+            <MdArrowBack />
           </button>
           <h1 className={styles.title}>{group.name}</h1>
         </header>
         <div className={styles.emptyState}>
-          <div className={styles.emptyIcon}>?</div>
-          <h2 className={styles.emptyTitle}>Nenhum Item</h2>
-          <p className={styles.emptyText}>Esta categoria está vazia</p>
+          <MdSearchOff className={styles.emptyIcon} />
+          <h2 className={styles.emptyTitle}>Nenhum Item Encontrado</h2>
+          <p className={styles.emptyText}>Esta categoria não possui conteúdo disponível no momento.</p>
         </div>
       </div>
     );
@@ -274,25 +280,26 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   return (
     <div className={styles.container}>
       <header className={styles.header}>
-        <button className={styles.backButton} onClick={onBack} autoFocus tabIndex={0}>
-          {'<'}
+        <button
+          className={styles.backButton}
+          onClick={onBack}
+          autoFocus
+          tabIndex={0}
+          aria-label="Voltar"
+        >
+          <MdArrowBack />
         </button>
         <h1 className={styles.title}>{group.name}</h1>
         <span className={styles.itemCount}>
-          {totalCount.toLocaleString()} {totalCount === 1 ? 'item' : 'itens'}
-          {hasMore && <span style={{ opacity: 0.7 }}> (carregando mais)</span>}
+          {totalCount.toLocaleString()} {totalCount === 1 ? 'título' : 'títulos'}
         </span>
       </header>
 
       <div
         ref={gridRef}
         className={styles.grid}
-        style={{
-          height: '100%',
-          overflow: 'auto',
-        }}
+        style={{ height: '100%' }}
       >
-        {/* Virtual scrolling container */}
         <div
           style={{
             height: `${rowVirtualizer.getTotalSize()}px`,
@@ -327,14 +334,8 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
                       className={styles.card}
                       onClick={() => onSelectItem(item)}
                       data-index={globalIdx}
-                      onFocus={(e) => {
-                        e.currentTarget.scrollIntoView({
-                          behavior: 'smooth',
-                          block: 'nearest',
-                          inline: 'nearest',
-                        });
-                        setFocusedIndex(globalIdx);
-                      }}
+                      onFocus={() => setFocusedIndex(globalIdx)}
+                      onMouseEnter={() => setFocusedIndex(globalIdx)}
                       tabIndex={0}
                     >
                       {item.logo ? (
@@ -349,11 +350,12 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
                           }}
                         />
                       ) : null}
+
                       <div
                         className={styles.cardPlaceholder}
                         style={item.logo ? { display: 'none' } : undefined}
                       >
-                        {item.mediaKind === 'live' ? 'TV' : '#'}
+                        {item.mediaKind === 'live' ? 'TV' : item.name.charAt(0).toUpperCase()}
                       </div>
 
                       <div className={styles.cardOverlay}>
@@ -380,7 +382,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       {loadingMore && (
         <div className={styles.loadingMore}>
           <div className={styles.spinner} />
-          <span>Carregando mais...</span>
+          <span>Carregando mais títulos...</span>
         </div>
       )}
     </div>
