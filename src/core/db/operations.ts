@@ -52,7 +52,13 @@ async function pollJobUntilComplete(
       }
 
       // Job ainda processando - atualiza progresso
-      const percentage = Math.min(10 + (jobStatus.progress || 0) * 0.4, 45);
+      const workerProgress = typeof jobStatus.progress === 'object'
+        ? jobStatus.progress?.percentage
+        : typeof jobStatus.progress === 'number'
+          ? jobStatus.progress
+          : 0;
+
+      const percentage = Math.min(80, workerProgress || 0);
       const statusMessages: Record<string, string> = {
         waiting: `Aguardando na fila (posição ${jobStatus.queuePosition || '?'})...`,
         active: 'Processando playlist...',

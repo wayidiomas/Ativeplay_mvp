@@ -142,7 +142,7 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
   }
 }
 
-async function parseM3UStream(url, options = {}, hashOverride) {
+async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
   const hash = hashOverride || hashPlaylist(url);
   const itemsFile = path.join(CACHE_DIR, `${hash}.ndjson`);
   const tempFile = `${itemsFile}.tmp`;
@@ -192,6 +192,8 @@ async function parseM3UStream(url, options = {}, hashOverride) {
   const seenUrls = options.removeDuplicates === false ? null : new Set();
 
   try {
+    progressCb?.({ phase: 'parsing', percentage: 5, processed: 0 });
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -272,6 +274,11 @@ async function parseM3UStream(url, options = {}, hashOverride) {
             });
           }
 
+          if (stats.totalItems % 500 === 0) {
+            const pct = Math.min(80, Math.round(Math.log10(stats.totalItems + 10) * 20));
+            progressCb?.({ phase: 'parsing', percentage: pct, processed: stats.totalItems });
+          }
+
           currentExtinf = null;
         }
       }
@@ -325,6 +332,8 @@ async function parseM3UStream(url, options = {}, hashOverride) {
     const duration = Date.now() - startTime;
     const memoryDelta = Math.round((process.memoryUsage().heapUsed - startMem) / 1024 / 1024);
 
+    progressCb?.({ phase: 'parsed', percentage: 85, processed: stats.totalItems, total: stats.totalItems });
+
     logParseEnd(hash, duration, stats.totalItems, memoryDelta);
 
     return { stats, groups, hash };
@@ -360,7 +369,9 @@ const worker = new Worker(
 
     try {
       // Processa M3U
-      const parsed = await parseM3UStream(url, options, hash);
+      const parsed = await parseM3UStream(url, options, hash, (progress) => {
+        job.updateProgress(progress).catch(() => {});
+      });
 
       // Salva no cache (disco + índice)
       await cacheIndex.set(hash, {
