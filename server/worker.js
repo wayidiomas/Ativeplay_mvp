@@ -136,6 +136,14 @@ function classify(name, group) {
     return 'movie';
   }
 
+  // ✅ DETECÇÃO DE SÉRIES COM PREFIXO "S " (ex: "S NOME 1", "S NOME 2")
+  // Usuário reportou: items começando com "S " são séries
+  const hasSeriesPrefix = /^S\s+/i.test(name);
+  if (hasSeriesPrefix) {
+    classifyCache.set(cacheKey, 'series');
+    return 'series';
+  }
+
   // Sinais fortes de série
   const isSeriesTitle =
     /s\d{1,2}e\d{1,3}/i.test(lowerName) ||
