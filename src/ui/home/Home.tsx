@@ -114,6 +114,10 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const [searchResults, setSearchResults] = useState<M3UItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
 
+  // Infinite scroll de carrosséis
+  const [visibleGroupsCount, setVisibleGroupsCount] = useState(8);
+  const [loadingMoreGroups, setLoadingMoreGroups] = useState(false);
+
   const contentRef = useRef<HTMLDivElement>(null);
   const rowsCacheRef = useRef<Record<NavItem, Row[]>>({
     movies: [],
@@ -156,8 +160,15 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             return;
         }
 
-        // Busca apenas os top 8 grupos direto do DB (84% menos dados)
-        const topGroups = await getPlaylistGroups(activePlaylist.id, mediaKind, 8);
+        // Busca grupos com limit dinâmico (infinite scroll)
+        const topGroups = await getPlaylistGroups(activePlaylist.id, mediaKind, visibleGroupsCount);
+
+        // DEBUG: Verificar quantos grupos foram retornados
+        console.log(`[Home] Grupos retornados: ${topGroups.length} (limit: ${visibleGroupsCount}, mediaKind: ${mediaKind})`);
+
+        // Verifica total de grupos disponíveis sem limit
+        const allGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
+        console.log(`[Home] Total de grupos disponíveis no DB: ${allGroups.length}`);
 
         const rowsLoaded = await Promise.all(
           topGroups.map(async (group) => {
@@ -170,6 +181,11 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         );
 
         const filtered = rowsLoaded.filter(Boolean) as Row[];
+
+        // DEBUG: Mostrar quantos carrosséis foram criados
+        console.log(`[Home] Carrosséis criados: ${filtered.length} (grupos com items)`);
+        console.log(`[Home] Grupos sem items (filtrados): ${topGroups.length - filtered.length}`);
+
         setRows(filtered);
         rowsCacheRef.current[selectedNav] = filtered; // cache para troca de abas
       } catch (error) {
@@ -180,7 +196,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       }
     }
     loadRows();
-  }, [activePlaylist, selectedNav]);
+  }, [activePlaylist, selectedNav, visibleGroupsCount]);
 
   // Monitor sync status
   useEffect(() => {
@@ -286,7 +302,6 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   }, [navigate, setActivePlaylist]);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    e.preventDefault(); // Previne scroll default do browser
     contentRef.current?.scrollBy({ top: e.deltaY });
   }, []);
 
@@ -318,9 +333,50 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   }, []);
 
   useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
+
+  // Função para carregar mais carrosséis
+  const loadMoreGroups = useCallback(() => {
+    if (loadingMoreGroups) return;
+
+    console.log(`[Home] 🔄 loadMoreGroups chamado - incrementando de ${visibleGroupsCount} para ${visibleGroupsCount + 8}`);
+
+    setLoadingMoreGroups(true);
+    setVisibleGroupsCount(prev => prev + 8); // Incrementa +8 grupos por vez
+
+    // Simula delay de carregamento
+    setTimeout(() => {
+      setLoadingMoreGroups(false);
+    }, 500);
+  }, [loadingMoreGroups, visibleGroupsCount]);
+
+  // Infinite scroll: detecta quando usuário chega perto do fim
+  useEffect(() => {
+    const handleScroll = () => {
+      if (!contentRef.current || loadingMoreGroups) return;
+
+      const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
+      const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
+
+      // Trigger quando chegar a 80% da página
+      if (scrollPercentage > 0.8) {
+        console.log(`[Home] 🎯 80% atingido (${Math.round(scrollPercentage * 100)}%) - disparando loadMoreGroups`);
+        loadMoreGroups();
+      }
+    };
+
+    const content = contentRef.current;
+    content?.addEventListener('scroll', handleScroll);
+    return () => content?.removeEventListener('scroll', handleScroll);
+  }, [loadingMoreGroups, loadMoreGroups]);
+
+  // Reset de scroll infinito ao trocar aba
+  useEffect(() => {
+    setVisibleGroupsCount(8);
+    setLoadingMoreGroups(false);
+  }, [selectedNav]);
 
   const renderHero = () => {
     if (searchTerm.trim().length >= 2) return null;
@@ -401,48 +457,58 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       );
     }
 
-    return rows.map((row) => (
-      <div className={styles.section} key={row.group.id}>
-        <div className={styles.sectionHeader}>
-          <h2 className={styles.sectionTitle}>{row.group.name}</h2>
-          <button className={styles.sectionMore} onClick={() => onSelectGroup(row.group)}>
-            Ver tudo <MdNavigateNext />
-          </button>
-        </div>
-        <div className={styles.carousel}>
-          <button
-            className={styles.carouselArrow}
-            aria-label="Anterior"
-            onClick={() => {
-              const container = document.getElementById(`row-${row.group.id}`);
-              container?.scrollBy({ left: -600, behavior: 'smooth' });
-            }}
-          >
-            <MdNavigateBefore />
-          </button>
-          <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
-            {row.items.map((item) => (
-              <MediaCard
-                key={item.id}
-                item={item}
-                groupName={row.group.name}
-                onSelectItem={onSelectItem}
-              />
-            ))}
+    return (
+      <>
+        {rows.map((row) => (
+          <div className={styles.section} key={row.group.id}>
+            <div className={styles.sectionHeader}>
+              <h2 className={styles.sectionTitle}>{row.group.name}</h2>
+              <button className={styles.sectionMore} onClick={() => onSelectGroup(row.group)}>
+                Ver tudo <MdNavigateNext />
+              </button>
+            </div>
+            <div className={styles.carousel}>
+              <button
+                className={styles.carouselArrow}
+                aria-label="Anterior"
+                onClick={() => {
+                  const container = document.getElementById(`row-${row.group.id}`);
+                  container?.scrollBy({ left: -600, behavior: 'smooth' });
+                }}
+              >
+                <MdNavigateBefore />
+              </button>
+              <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
+                {row.items.map((item) => (
+                  <MediaCard
+                    key={item.id}
+                    item={item}
+                    groupName={row.group.name}
+                    onSelectItem={onSelectItem}
+                  />
+                ))}
+              </div>
+              <button
+                className={styles.carouselArrow}
+                aria-label="Próximo"
+                onClick={() => {
+                  const container = document.getElementById(`row-${row.group.id}`);
+                  container?.scrollBy({ left: 600, behavior: 'smooth' });
+                }}
+              >
+                <MdNavigateNext />
+              </button>
+            </div>
           </div>
-          <button
-            className={styles.carouselArrow}
-            aria-label="Próximo"
-            onClick={() => {
-              const container = document.getElementById(`row-${row.group.id}`);
-              container?.scrollBy({ left: 600, behavior: 'smooth' });
-            }}
-          >
-            <MdNavigateNext />
-          </button>
-        </div>
-      </div>
-    ));
+        ))}
+        {loadingMoreGroups && (
+          <div className={styles.loadingMore}>
+            <div className={styles.spinner} />
+            <span>Carregando mais categorias...</span>
+          </div>
+        )}
+      </>
+    );
   };
 
   return (
