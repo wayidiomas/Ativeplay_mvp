@@ -165,12 +165,19 @@ function generateGroupId(groupTitle, mediaKind) {
 
 // Remove emojis/prefixos visuais e normaliza para dedupe de grupos
 function normalizeGroupTitle(raw = '') {
-  return normalizeSpaces(
+  const normalized = normalizeSpaces(
     raw
       .replace(/^[^\w]+/u, '') // remove emoji/prefixo no início
       .replace(/[•◆★⭐⚽🎬🎥📺🎵]+/g, '')
       .replace(/\s{2,}/g, ' ')
   );
+  // Remove sufixos de numeração e 24HRS para dedupe de canais
+  return normalized
+    .replace(/\b24h(rs)?\b/gi, '')
+    .replace(/\b\d{2}\b$/g, '') // CINE COMEDIA 01
+    .replace(/:\s*nacional\s*\d{0,2}$/gi, '') // NACIONAL 01
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function isLoop24h(title = '', group = '') {
@@ -515,13 +522,17 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const existingGroup = groupsMap.get(groupId);
           if (existingGroup) {
             existingGroup.itemCount++;
+            // Mantém um logo canônico: se o grupo não tem logo ainda, usa o primeiro válido
+            if (!existingGroup.logo && tvgLogo) {
+              existingGroup.logo = tvgLogo;
+            }
           } else {
             groupsMap.set(groupId, {
               id: groupId,
               name: groupTitle,
               mediaKind,
               itemCount: 1,
-              logo: tvgLogo,
+              logo: tvgLogo || '',
             });
           }
 
