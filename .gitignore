@@ -12,3 +12,8 @@ dist/
 
 # system
 .DS_Store
+
+# m3u examples
+m3u_example/
+
+.claude
