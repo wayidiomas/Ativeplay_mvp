@@ -762,6 +762,15 @@ async function groupAndSaveSeries(playlistId: string): Promise<void> {
     return;
   }
 
+  // Safeguard: evitar OOM em playlists enormes
+  const MAX_SERIES_GROUPING = 200000; // limite de itens de séries para agrupar
+  if (seriesItems.length > MAX_SERIES_GROUPING) {
+    console.warn(
+      `[DB DEBUG] Séries demais para agrupar (${seriesItems.length}). Pulando agrupamento para evitar OOM.`
+    );
+    return;
+  }
+
   console.log(`[DB DEBUG] Encontrados ${seriesItems.length} itens de séries para agrupar`);
 
   // 2. Agrupa episódios e cria registros de Series
