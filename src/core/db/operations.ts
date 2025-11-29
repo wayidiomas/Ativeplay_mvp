@@ -5,7 +5,7 @@
 
 import { db, type Playlist, type M3UItem, type M3UGroup, type Series } from './schema';
 import type { ProgressCallback } from '../services/m3u';
-import { groupSeriesEpisodes } from '../services/m3u/seriesGrouper';
+import { ContentClassifier } from '../services/m3u/classifier';
 
 const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
 const SERVER_URL = import.meta.env.VITE_BRIDGE_URL;
@@ -752,72 +752,148 @@ async function syncItemsFromServer(
  * Chamado após sincronização completa de itens
  */
 async function groupAndSaveSeries(playlistId: string): Promise<void> {
-  // 1. Busca todos os itens de séries da playlist
-  const seriesItems = await db.items
-    .where({ playlistId, mediaKind: 'series' })
-    .toArray();
+  // Agrupamento streaming/chunked para evitar OOM em playlists grandes
+  const BATCH_SIZE = 5000;
+  let offset = 0;
 
-  if (seriesItems.length === 0) {
+  const seriesMap = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      logo: string;
+      group: string;
+      totalEpisodes: number;
+      seasons: Set<number>;
+      firstEpisode: number;
+      lastEpisode: number;
+      firstSeason: number;
+      lastSeason: number;
+    }
+  >();
+
+  // Helper para criar sérieId/slug
+  const createSeriesId = (seriesName: string) => {
+    const slug = seriesName
+      .toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, '-')
+      .substring(0, 60);
+    return `series_${playlistId}_${slug}`;
+  };
+
+  // Helper para chave de agrupamento (nome base)
+  const normalizeSeriesKey = (name: string) =>
+    name
+      .toLowerCase()
+      .replace(/\s+S\d{1,2}E\d{1,2}.*/i, '')
+      .replace(/\s+\d{1,2}x\d{1,2}.*/i, '')
+      .replace(/\s+T\d{1,2}E\d{1,2}.*/i, '')
+      .replace(/\(\d{4}\)/g, '')
+      .replace(/\[\d{4}\]/g, '')
+      .replace(/\b(1080p|720p|4k|hd|fhd|uhd)\b/gi, '')
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const totalSeriesItems = await db.items
+    .where({ playlistId, mediaKind: 'series' })
+    .count();
+
+  if (totalSeriesItems === 0) {
     console.log('[DB DEBUG] Nenhum item de série encontrado para agrupar');
     return;
   }
 
-  // Safeguard: evitar OOM em playlists enormes
-  const MAX_SERIES_GROUPING = 200000; // limite de itens de séries para agrupar
-  if (seriesItems.length > MAX_SERIES_GROUPING) {
-    console.warn(
-      `[DB DEBUG] Séries demais para agrupar (${seriesItems.length}). Pulando agrupamento para evitar OOM.`
-    );
-    return;
-  }
+  console.log(`[DB DEBUG] Agrupamento chunked de séries: ${totalSeriesItems} items`);
 
-  console.log(`[DB DEBUG] Encontrados ${seriesItems.length} itens de séries para agrupar`);
+  // Processa em chunks
+  while (true) {
+    const batch = await db.items
+      .where({ playlistId, mediaKind: 'series' })
+      .offset(offset)
+      .limit(BATCH_SIZE)
+      .toArray();
 
-  // 2. Agrupa episódios e cria registros de Series
-  // Agora é async e não bloqueia a UI
-  const { series, itemToSeriesMap } = await groupSeriesEpisodes(seriesItems, playlistId);
+    if (batch.length === 0) break;
 
-  console.log(`[DB DEBUG] Criadas ${series.length} séries agrupadas`);
-  console.log(`[DB DEBUG] ${itemToSeriesMap.size} episódios mapeados para séries`);
+    const itemsToUpdate: M3UItem[] = [];
 
-  // 3. Salva séries no banco
-  if (series.length > 0) {
-    await db.transaction('rw', [db.series, db.items], async () => {
-      // Remove séries antigas desta playlist (se houver)
-      await db.series.where('playlistId').equals(playlistId).delete();
+    for (const item of batch) {
+      const info = ContentClassifier.extractSeriesInfo(item.name);
+      const seriesName = info?.seriesName || normalizeSeriesKey(item.name) || item.name;
+      const seriesKey = normalizeSeriesKey(seriesName);
+      const seasonNumber = info?.season ?? 0;
+      const episodeNumber = info?.episode ?? 0;
+      const seriesId = createSeriesId(seriesKey);
 
-      // Insere novas séries (bulkAdd é rápido)
-      await db.series.bulkAdd(series);
-
-      // Atualiza items com seriesId, seasonNumber e episodeNumber
-      // OTIMIZAÇÃO: Usa bulkPut em vez de update individual
-      const itemsToUpdate: M3UItem[] = [];
-      const batchSize = 2000;
-
-      // Cria Map de itens originais para lookup rápido
-      const itemsMap = new Map(seriesItems.map(i => [i.id, i]));
-
-      for (const [itemId, mapping] of itemToSeriesMap.entries()) {
-        const originalItem = itemsMap.get(itemId);
-        if (originalItem) {
-          itemsToUpdate.push({
-            ...originalItem,
-            seriesId: mapping.seriesId,
-            seasonNumber: mapping.seasonNumber,
-            episodeNumber: mapping.episodeNumber,
-          });
-        }
+      // Atualiza agregados
+      const existing = seriesMap.get(seriesKey);
+      if (existing) {
+        existing.totalEpisodes += 1;
+        existing.seasons.add(seasonNumber);
+        existing.firstEpisode = existing.firstEpisode === 0 ? episodeNumber : Math.min(existing.firstEpisode, episodeNumber);
+        existing.lastEpisode = Math.max(existing.lastEpisode, episodeNumber);
+        existing.firstSeason = existing.firstSeason === 0 ? seasonNumber : Math.min(existing.firstSeason, seasonNumber);
+        existing.lastSeason = Math.max(existing.lastSeason, seasonNumber);
+      } else {
+        seriesMap.set(seriesKey, {
+          id: seriesId,
+          name: seriesName,
+          logo: item.logo || '',
+          group: item.group,
+          totalEpisodes: 1,
+          seasons: new Set([seasonNumber]),
+          firstEpisode: episodeNumber,
+          lastEpisode: episodeNumber,
+          firstSeason: seasonNumber,
+          lastSeason: seasonNumber,
+        });
       }
 
-      // Salva em lotes usando bulkPut (upsert)
-      for (let i = 0; i < itemsToUpdate.length; i += batchSize) {
-        const batch = itemsToUpdate.slice(i, i + batchSize);
-        await db.items.bulkPut(batch);
-      }
-    });
+      // Prepara item atualizado
+      itemsToUpdate.push({
+        ...item,
+        seriesId,
+        seasonNumber,
+        episodeNumber,
+      });
+    }
 
-    console.log('[DB DEBUG] Séries e episódios salvos com sucesso!');
+    // Salva itens atualizados em lote
+    if (itemsToUpdate.length > 0) {
+      await db.items.bulkPut(itemsToUpdate);
+    }
+
+    offset += BATCH_SIZE;
+    console.log(`[DB DEBUG] Chunk de séries processado: offset=${offset}`);
   }
+
+  // Converte mapa para array de Series
+  const seriesRecords: Series[] = Array.from(seriesMap.values()).map((entry) => ({
+    id: entry.id,
+    playlistId,
+    name: entry.name,
+    logo: entry.logo,
+    group: entry.group,
+    totalEpisodes: entry.totalEpisodes,
+    totalSeasons: entry.seasons.size,
+    firstEpisode: entry.firstEpisode,
+    lastEpisode: entry.lastEpisode,
+    firstSeason: entry.firstSeason,
+    lastSeason: entry.lastSeason,
+    createdAt: Date.now(),
+  }));
+
+  // Persist series records
+  await db.transaction('rw', [db.series], async () => {
+    await db.series.where('playlistId').equals(playlistId).delete();
+    if (seriesRecords.length > 0) {
+      await db.series.bulkAdd(seriesRecords);
+    }
+  });
+
+  console.log(`[DB DEBUG] Séries salvas (chunked): ${seriesRecords.length}`);
 }
 
 async function continueBackgroundSync(
