@@ -460,7 +460,7 @@ setInterval(async () => {
       heapPercent: Math.round((mem.heapUsed / mem.heapTotal) * 100),
     },
     queue: queueStats,
-    activeJobs: await worker.getQueueEvents().then(() => queueStats.active).catch(() => 0),
+    activeJobs: queueStats.active || 0,
   });
 
   // Alerta se heap > 80%
