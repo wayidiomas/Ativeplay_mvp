@@ -226,6 +226,12 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
       // Lógica especial para séries: carrega séries agrupadas + items não agrupados
       if (mediaKind === 'series') {
+        // Se tabela series não existir (schema simplificado), evita erro e retorna vazio
+        if (!(db as any).series) {
+          console.warn('[HOME DEBUG] Tabela "series" não disponível no Dexie. Pulando carga de séries.');
+          return [];
+        }
+
         const rowsLoaded = await Promise.all(
           batch.map(async (group) => {
             // Conta total de séries e items deste grupo
@@ -315,7 +321,9 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
   // Sincroniza liveGroups → allGroupsRef
   useEffect(() => {
-    if (!liveGroups || liveGroups.length === 0) return;
+    // ✅ SEMPRE atualiza allGroupsRef (não faz early return em liveGroups.length === 0)
+    // Fix race condition: permite que Home monte mesmo antes do useLiveQuery reagir
+    if (!liveGroups) return; // Apenas se undefined (ainda carregando)
 
     // Deduplicate groups by id
     const seen = new Set<string>();
@@ -330,10 +338,16 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     const groupsChanged = JSON.stringify(currentGroups.map(g => g.id)) !== JSON.stringify(uniqueGroups.map(g => g.id));
 
     if (groupsChanged) {
+      console.log('[HOME DEBUG] Grupos sincronizados:', {
+        before: currentGroups.length,
+        after: uniqueGroups.length,
+        nav: selectedNav
+      });
       allGroupsRef.current[selectedNav] = uniqueGroups;
 
       // Trigger reload if we have new groups
       if (uniqueGroups.length > currentGroups.length) {
+        console.log('[HOME DEBUG] Novos grupos detectados, triggering reload...');
         // Reset state to trigger loadRows
         nextIndexRef.current[selectedNav] = 0;
         hasMoreRef.current[selectedNav] = true;
@@ -369,11 +383,15 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         // USE allGroupsRef (populated by liveGroups via useEffect)
         const allGroups = allGroupsRef.current[selectedNav];
 
-        // If no groups yet, wait for liveGroups to populate allGroupsRef
+        // ✅ Se ainda não há grupos, mantém loading e aguarda useLiveQuery
+        // Fix race condition: não exibe tela vazia prematuramente
         if (allGroups.length === 0) {
-          setLoading(false);
+          console.log('[HOME DEBUG] Aguardando grupos do useLiveQuery... (mantém loading)');
+          // Mantém loading=true para indicar que está aguardando dados
+          // O useLiveQuery vai notificar quando os grupos chegarem e re-executar este effect
           return;
         }
+        console.log('[HOME DEBUG] Grupos recebidos, carregando rows:', allGroups.length);
         const startIndex = nextIndexRef.current[selectedNav];
         const batches: Row[] = [];
         let localNextIndex = startIndex;
@@ -460,6 +478,16 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
     // Para séries: carrega mais séries ou items
     if (mediaKind === 'series' && row.isSeries) {
+      if (!(db as any).series) {
+        console.warn('[HOME DEBUG] Tabela "series" não disponível no Dexie. Pulando loadMore séries.');
+        setLoadingCarousels((prev) => {
+          const next = new Set(prev);
+          next.delete(groupId);
+          return next;
+        });
+        return;
+      }
+
       // Carrega mais séries se houver (keyset pagination)
       const moreSeries = row.hasMoreSeries
         ? await (row.lastSeriesId
