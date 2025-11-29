@@ -850,15 +850,9 @@ async function continueBackgroundSync(
 
     await syncItemsFromServer(hash, playlistId, undefined, { loadPartial: false });
 
-    // ✅ NOVO: Agrupa episódios de séries
-    console.log('[DB DEBUG] BACKGROUND SYNC: Agrupando episódios de séries...');
-    try {
-      await groupAndSaveSeries(playlistId);
-      console.log('[DB DEBUG] BACKGROUND SYNC: Séries agrupadas com sucesso!');
-    } catch (seriesError) {
-      console.error('[DB DEBUG] BACKGROUND SYNC: Erro ao agrupar séries (não crítico):', seriesError);
-      // Não interrompe o sync por erro no agrupamento
-    }
+    // ✅ OTIMIZADO: Agrupamento de séries agora é feito no servidor durante parsing
+    // Removido: await groupAndSaveSeries(playlistId) - evita O(n²) no frontend
+    console.log('[DB DEBUG] BACKGROUND SYNC: Series grouping done by server (no frontend processing needed)');
 
     // Atualiza status para 'success'
     await db.playlists.update(playlistId, { lastSyncStatus: 'success' });

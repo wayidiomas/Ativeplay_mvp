@@ -425,7 +425,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       }
     }
     loadRows();
-  }, [activePlaylist, selectedNav, loadBatch, liveGroups?.length]);
+  }, [activePlaylist, selectedNav, loadBatch, liveGroups]); // ✅ Fix: use liveGroups instead of liveGroups?.length
 
   const loadMoreGroups = useCallback(async () => {
     if (loadingMoreGroups) return;
