@@ -16,11 +16,14 @@ interface MediaGridProps {
 }
 
 const INITIAL_LOAD_LIMIT = 1000; // Load first 1000 items, render only visible
+const ITEMS_PER_ROW = 5;
+const ROW_HEIGHT = 260;
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [allItems, setAllItems] = useState<M3UItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [totalCount, setTotalCount] = useState(0);
+  const [focusedIndex, setFocusedIndex] = useState(0);
   const parentRef = useRef<HTMLDivElement>(null);
 
   // Load items for the group - virtual scrolling loads all at once
@@ -57,18 +60,34 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     loadItems();
   }, [group]);
 
-  // Virtual scrolling setup
-  // Estimated row height: 200px (180px card + 20px gap)
-  // Grid has 4-5 columns, so divide by 4 to get row height
-  const ITEMS_PER_ROW = 4;
-  const ROW_HEIGHT = 220;
-
   const rowVirtualizer = useVirtualizer({
     count: Math.ceil(allItems.length / ITEMS_PER_ROW),
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 2, // Render 2 extra rows above/below viewport
   });
+
+  // Focus helper for keyboard/remote
+  const focusIndex = useCallback(
+    (index: number) => {
+      if (index < 0 || index >= allItems.length) return;
+      const tryFocus = () => {
+        const el = parentRef.current?.querySelector<HTMLButtonElement>(
+          `[data-index="${index}"]`
+        );
+        if (el) {
+          el.focus({ preventScroll: false });
+          setFocusedIndex(index);
+        }
+      };
+      // Ensure row is in view for virtualizer
+      const row = Math.floor(index / ITEMS_PER_ROW);
+      const offset = row * ROW_HEIGHT;
+      parentRef.current?.scrollTo({ top: offset, behavior: 'smooth' });
+      requestAnimationFrame(tryFocus);
+    },
+    [allItems.length]
+  );
 
   // Keyboard navigation
   useEffect(() => {
@@ -78,24 +97,30 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         return;
       }
 
-      // Handle grid scroll with arrow keys using virtualizer
       if (parentRef.current && document.activeElement?.closest(`.${styles.grid}`)) {
-        const scrollAmount = ROW_HEIGHT;
         switch (e.key) {
           case 'ArrowUp':
-            parentRef.current.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
+            focusIndex(focusedIndex - ITEMS_PER_ROW);
             e.preventDefault();
             break;
           case 'ArrowDown':
-            parentRef.current.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+            focusIndex(focusedIndex + ITEMS_PER_ROW);
+            e.preventDefault();
+            break;
+          case 'ArrowLeft':
+            focusIndex(focusedIndex - 1);
+            e.preventDefault();
+            break;
+          case 'ArrowRight':
+            focusIndex(focusedIndex + 1);
             e.preventDefault();
             break;
           case 'PageUp':
-            parentRef.current.scrollBy({ top: -parentRef.current.clientHeight, behavior: 'smooth' });
+            focusIndex(focusedIndex - ITEMS_PER_ROW * 2);
             e.preventDefault();
             break;
           case 'PageDown':
-            parentRef.current.scrollBy({ top: parentRef.current.clientHeight, behavior: 'smooth' });
+            focusIndex(focusedIndex + ITEMS_PER_ROW * 2);
             e.preventDefault();
             break;
         }
@@ -104,11 +129,18 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onBack]);
+  }, [focusIndex, focusedIndex, onBack]);
 
   const getDisplayName = useCallback((item: M3UItem): string => {
     return item.title || item.name;
   }, []);
+
+  // Auto-focus first card when items carregados
+  useEffect(() => {
+    if (!loading && allItems.length > 0) {
+      focusIndex(0);
+    }
+  }, [loading, allItems.length, focusIndex]);
 
   if (loading) {
     return (
@@ -119,9 +151,14 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
           </button>
           <h1 className={styles.title}>{group.name}</h1>
         </header>
-        <div className={styles.loading}>
-          <div className={styles.spinner} />
-          <span className={styles.loadingText}>Carregando...</span>
+        <div className={styles.skeletonGrid}>
+          {Array.from({ length: 12 }).map((_, idx) => (
+            <div key={idx} className={styles.skeletonCard}>
+              <div className={styles.skeletonPoster} />
+              <div className={styles.skeletonBar} />
+              <div className={styles.skeletonMeta} />
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -202,6 +239,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
                     key={item.id}
                     className={styles.card}
                     onClick={() => onSelectItem(item)}
+                    data-index={startIdx + rowItems.indexOf(item)}
                     onFocus={(e) => {
                       // Auto scroll to keep focused card visible
                       e.currentTarget.scrollIntoView({
@@ -209,6 +247,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
                         block: 'nearest',
                         inline: 'nearest'
                       });
+                      setFocusedIndex(startIdx + rowItems.indexOf(item));
                     }}
                     tabIndex={0}
                   >
