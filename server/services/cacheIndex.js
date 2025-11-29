@@ -87,14 +87,33 @@ class CacheIndex {
   }
 
   /**
-   * Busca no índice (memória)
+   * Busca no índice (memória + fallback ao disco)
+   * Multi-processo safe: se não encontrar em memória, tenta carregar do disco
    */
-  get(hash) {
-    const entry = this.index.get(hash);
+  async get(hash) {
+    // 1. Tenta memória primeiro (rápido)
+    let entry = this.index.get(hash);
 
-    if (!entry) return null;
+    // 2. Se não encontrou, tenta carregar do disco (outro processo pode ter salvado)
+    if (!entry) {
+      try {
+        const metaPath = path.join(CACHE_DIR, `${hash}.meta.json`);
+        const content = await fs.readFile(metaPath, 'utf8');
+        entry = JSON.parse(content);
 
-    // Verifica expiração
+        // Verifica se arquivo .ndjson existe
+        const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
+        await fs.access(itemsPath);
+
+        // Adiciona ao índice em memória
+        this.index.set(hash, entry);
+        console.log(`[CacheIndex] Carregado do disco: ${hash}`);
+      } catch {
+        return null;
+      }
+    }
+
+    // 3. Verifica expiração
     if (Date.now() > entry.expiresAt) {
       console.log(`[CacheIndex] Cache expirado durante leitura: ${hash}`);
       this.delete(hash); // Cleanup assíncrono

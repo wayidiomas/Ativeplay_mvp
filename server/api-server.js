@@ -660,7 +660,7 @@ app.post('/api/playlist/parse', parseRateLimiter, async (req, res) => {
     const hash = hashPlaylist(url);
 
     // 1. Cache hit → retorna imediatamente
-    const cached = cacheIndex.get(hash);
+    const cached = await cacheIndex.get(hash);
     if (cached) {
       const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
       try {
@@ -821,7 +821,7 @@ async function getQueuePosition(job) {
  */
 app.get('/api/playlist/items/:hash', async (req, res) => {
   const { hash } = req.params;
-  const cached = cacheIndex.get(hash);
+  const cached = await cacheIndex.get(hash);
 
   if (!cached) {
     return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
@@ -872,7 +872,7 @@ app.get('/api/playlist/items/:hash', async (req, res) => {
  */
 app.get('/api/playlist/items/:hash/partial', async (req, res) => {
   const { hash } = req.params;
-  const cached = cacheIndex.get(hash);
+  const cached = await cacheIndex.get(hash);
 
   if (!cached) {
     return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });

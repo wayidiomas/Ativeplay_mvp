@@ -3,6 +3,7 @@
  * Operacoes de alto nivel para gerenciar playlists e conteudo
  */
 
+import { createHash } from 'crypto';
 import { db, type Playlist, type M3UItem, type M3UGroup } from './schema';
 import type { ProgressCallback } from '../services/m3u';
 
@@ -415,27 +416,28 @@ export async function addPlaylist(
       await db.playlists.update(existing.id, { lastSyncStatus: 'success' });
     }
 
-    // Case 2: Items incompletos → reinicia sync
+    // Case 2: Items incompletos → reinicia sync (sem reprocessar!)
     else if (itemsCount < totalItems) {
       console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
+
+      // Calcula hash localmente (mesmo método do servidor)
+      const hash = createHash('sha1').update(existing.url).digest('hex');
+      console.log('[DB DEBUG] Hash calculado:', hash);
 
       // Atualiza status para syncing
       await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
 
-      // Busca hash do servidor novamente
-      const parsed = await fetchFromServer(existing.url, onProgress);
-
       // Se tem menos de 1000 items, carrega parcial primeiro
       if (itemsCount < 1000) {
         console.log('[DB DEBUG] Carregando primeiros 1000 items...');
-        await syncItemsFromServer(parsed.hash, existing.id, onProgress, {
+        await syncItemsFromServer(hash, existing.id, onProgress, {
           loadPartial: true,
           partialLimit: 1000,
         });
       }
 
       // Continua sync completo em background
-      continueBackgroundSync(parsed.hash, existing.id).catch((err) => {
+      continueBackgroundSync(hash, existing.id).catch((err) => {
         console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
       });
     }
