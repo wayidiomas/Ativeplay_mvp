@@ -145,6 +145,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   }, [loading, items, focusIndex, focusedIndex]);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault(); // Previne scroll default do browser
     if (gridRef.current) {
       gridRef.current.scrollBy({ top: e.deltaY });
     }

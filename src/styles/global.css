@@ -20,9 +20,16 @@ body {
   background-color: var(--color-bg-primary);
   color: var(--color-text-primary);
   line-height: var(--line-height-normal);
-  overflow: hidden; /* TVs nao devem ter scroll visivel */
+  overflow: auto; /* Permite scroll quando necessário */
   width: 100vw;
   height: 100vh;
+  /* Esconde scrollbar mas mantém funcionalidade */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+body::-webkit-scrollbar {
+  display: none;
 }
 
 #root {

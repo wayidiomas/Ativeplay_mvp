@@ -286,8 +286,41 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   }, [navigate, setActivePlaylist]);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault(); // Previne scroll default do browser
     contentRef.current?.scrollBy({ top: e.deltaY });
   }, []);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // Só processa se não há elemento focado (evita conflito com inputs)
+    if (document.activeElement?.tagName === 'INPUT') return;
+
+    const scrollAmount = 100; // pixels por tecla
+    const pageScrollAmount = contentRef.current?.clientHeight || 500;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        contentRef.current?.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        contentRef.current?.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
+        break;
+      case 'PageDown':
+        e.preventDefault();
+        contentRef.current?.scrollBy({ top: pageScrollAmount, behavior: 'smooth' });
+        break;
+      case 'PageUp':
+        e.preventDefault();
+        contentRef.current?.scrollBy({ top: -pageScrollAmount, behavior: 'smooth' });
+        break;
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
 
   const renderHero = () => {
     if (searchTerm.trim().length >= 2) return null;
