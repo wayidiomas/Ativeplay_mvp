@@ -5,6 +5,7 @@ export interface Playlist {
   id: string;
   name: string;
   url: string;
+  hash: string; // SHA-1 hash da URL (para reuso do cache do servidor)
   isActive: number; // 0 ou 1 (IndexedDB nao suporta boolean como chave)
   lastUpdated: number;
   lastSyncStatus: 'syncing' | 'success' | 'error';

@@ -3,7 +3,6 @@
  * Operacoes de alto nivel para gerenciar playlists e conteudo
  */
 
-import { createHash } from 'crypto';
 import { db, type Playlist, type M3UItem, type M3UGroup } from './schema';
 import type { ProgressCallback } from '../services/m3u';
 
@@ -420,9 +419,9 @@ export async function addPlaylist(
     else if (itemsCount < totalItems) {
       console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
 
-      // Calcula hash localmente (mesmo método do servidor)
-      const hash = createHash('sha1').update(existing.url).digest('hex');
-      console.log('[DB DEBUG] Hash calculado:', hash);
+      // Usa hash armazenado (já foi calculado pelo servidor)
+      const hash = existing.hash;
+      console.log('[DB DEBUG] Usando hash armazenado:', hash);
 
       // Atualiza status para syncing
       await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
@@ -470,6 +469,7 @@ export async function addPlaylist(
       id: playlistId,
       name: name || extractNameFromUrl(url),
       url,
+      hash: parsed.hash, // Salva hash para reuso futuro
       isActive: isFirst ? 1 : 0,
       lastUpdated: Date.now(),
       lastSyncStatus: 'syncing', // Early navigation: marca como syncing
