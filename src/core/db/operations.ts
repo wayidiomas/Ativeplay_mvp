@@ -208,6 +208,48 @@ async function fetchFromServer(
 }
 
 /**
+ * Aguarda um job completar (versão simplificada para fallback de 404)
+ * Retorna quando job está 'completed' ou lança erro se falhar/timeout
+ */
+async function waitForJobCompletion(jobId: string, maxWait = 180000): Promise<void> {
+  const startTime = Date.now();
+  const pollInterval = 2000; // 2s
+
+  while (Date.now() - startTime < maxWait) {
+    try {
+      const response = await fetch(`${SERVER_URL}/api/jobs/${jobId}`);
+
+      if (!response.ok) {
+        throw new Error(`Erro ao verificar job: ${response.status}`);
+      }
+
+      const job = await response.json();
+
+      if (job.status === 'completed') {
+        console.log('[DB DEBUG] Job completado:', jobId);
+        return;
+      }
+
+      if (job.status === 'failed') {
+        throw new Error('Job falhou no servidor');
+      }
+
+      // Aguarda antes de tentar novamente
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    } catch (error) {
+      // Se for último attempt, lança erro
+      if (Date.now() - startTime >= maxWait) {
+        throw new Error('Timeout aguardando processamento');
+      }
+      // Aguarda antes de retentar
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    }
+  }
+
+  throw new Error('Timeout aguardando processamento');
+}
+
+/**
  * Sincroniza itens paginados do servidor e insere no Dexie
  * Pode ser usado em background (fire-and-forget) ou aguardado em refresh
  *
@@ -236,6 +278,36 @@ async function syncItemsFromServer(
     const itemsResponse = await fetch(
       `${SERVER_URL}/api/playlist/items/${hash}/partial?limit=${partialLimit}`
     );
+
+    // FALLBACK: Cache expirado (404) → reprocessa playlist
+    if (itemsResponse.status === 404) {
+      console.warn(`[DB DEBUG] Cache expirado (404). Reprocessando playlist...`);
+
+      const playlist = await db.playlists.get(playlistId);
+      if (!playlist) throw new Error('Playlist não encontrada');
+
+      // Solicita reprocessamento no servidor
+      const parseResponse = await fetch(`${SERVER_URL}/api/playlist/parse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: playlist.url }),
+      });
+
+      const parseData = await parseResponse.json();
+      const newHash = parseData.hash;
+
+      // Atualiza hash no banco
+      await db.playlists.update(playlistId, { hash: newHash });
+      console.log('[DB DEBUG] Novo hash salvo:', newHash);
+
+      // Aguarda job completar
+      if (parseData.queued) {
+        await waitForJobCompletion(parseData.jobId);
+      }
+
+      // Recomeça sync com novo hash (RECURSÃO)
+      return syncItemsFromServer(newHash, playlistId, onProgress, options);
+    }
 
     if (!itemsResponse.ok) {
       throw new Error(`Erro ao buscar itens parciais: ${itemsResponse.status}`);
@@ -290,6 +362,36 @@ async function syncItemsFromServer(
     const itemsResponse = await fetch(
       `${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=${offset}`
     );
+
+    // FALLBACK: Cache expirado (404) → reprocessa playlist
+    if (itemsResponse.status === 404) {
+      console.warn(`[DB DEBUG] Cache expirado (404). Reprocessando playlist...`);
+
+      const playlist = await db.playlists.get(playlistId);
+      if (!playlist) throw new Error('Playlist não encontrada');
+
+      // Solicita reprocessamento no servidor
+      const parseResponse = await fetch(`${SERVER_URL}/api/playlist/parse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: playlist.url }),
+      });
+
+      const parseData = await parseResponse.json();
+      const newHash = parseData.hash;
+
+      // Atualiza hash no banco
+      await db.playlists.update(playlistId, { hash: newHash });
+      console.log('[DB DEBUG] Novo hash salvo:', newHash);
+
+      // Aguarda job completar
+      if (parseData.queued) {
+        await waitForJobCompletion(parseData.jobId);
+      }
+
+      // Recomeça sync com novo hash (RECURSÃO)
+      return syncItemsFromServer(newHash, playlistId, onProgress, options);
+    }
 
     if (!itemsResponse.ok) {
       throw new Error(`Erro ao buscar itens: ${itemsResponse.status}`);
