@@ -419,9 +419,17 @@ export async function addPlaylist(
     else if (itemsCount < totalItems) {
       console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
 
-      // Usa hash armazenado (já foi calculado pelo servidor)
-      const hash = existing.hash;
-      console.log('[DB DEBUG] Usando hash armazenado:', hash);
+      // Se hash não existe (playlist antiga), busca do servidor
+      let hash = existing.hash;
+      if (!hash) {
+        console.log('[DB DEBUG] Hash não existe, buscando do servidor...');
+        const parsed = await fetchFromServer(existing.url, onProgress);
+        hash = parsed.hash;
+        // Salva hash para próxima vez
+        await db.playlists.update(existing.id, { hash });
+      } else {
+        console.log('[DB DEBUG] Usando hash armazenado:', hash);
+      }
 
       // Atualiza status para syncing
       await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });

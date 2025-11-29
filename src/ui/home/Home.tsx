@@ -109,6 +109,17 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     let cancelled = false;
 
     const pollSyncProgress = async () => {
+      // IMPORTANTE: Verifica se sync está travado (0 items por muito tempo)
+      const loadedCount = await db.items.where('playlistId').equals(activePlaylist.id).count();
+      if (loadedCount === 0) {
+        console.warn('[Home] Sync travado com 0 items! Corrigindo status...');
+        // Corrige status para permitir nova tentativa
+        await db.playlists.update(activePlaylist.id, { lastSyncStatus: 'error' });
+        setSyncing(false);
+        setSyncProgress(null);
+        return;
+      }
+
       while (!cancelled) {
         try {
           // Conta items carregados
