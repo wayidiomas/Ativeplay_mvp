@@ -634,7 +634,7 @@ app.get('/health', async (req, res) => {
   const queueStats = await getQueueStats();
 
   const health = {
-    status: redisOk ? 'ok' : 'unhealthy',
+    status: redisOk ? 'ok' : 'degraded',
     uptime: Math.round(process.uptime()),
     memory: {
       heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
@@ -651,10 +651,7 @@ app.get('/health', async (req, res) => {
   // Atualiza métricas
   updateQueueMetrics(parseQueue);
 
-  if (!redisOk) {
-    return res.status(503).json(health);
-  }
-
+  // Mesmo se Redis estiver indisponível, responder 200 para não derrubar healthcheck
   res.json(health);
 });
 
