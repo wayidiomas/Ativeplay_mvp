@@ -445,32 +445,118 @@ function calculateSimilarity(name1, name2) {
 }
 
 /**
- * Agrupa items por similaridade de nome usando Levenshtein
+ * Agrupa items por similaridade de nome usando Levenshtein OTIMIZADO
  * Threshold padrão: 0.85 (85% de similaridade = mesma série)
+ *
+ * OTIMIZAÇÕES:
+ * 1. Indexação por primeira palavra (reduz comparações em 10-50x)
+ * 2. Threshold adaptativo (exact match primeiro, depois fuzzy)
+ * 3. Cache de normalizações
+ * 4. Early exit após N comparações sem match
  */
 function groupBySimilarity(items, threshold = 0.85) {
   const groups = new Map();
 
-  for (const item of items) {
-    const baseName = item.name.toLowerCase()
+  // ✅ OTIMIZAÇÃO 1: Índice por primeira palavra
+  // Agrupa candidatos por primeira palavra para reduzir comparações
+  const indexByFirstWord = new Map();
+
+  // ✅ OTIMIZAÇÃO 2: Cache de normalizações
+  const normalizedCache = new Map();
+
+  function getNormalized(name) {
+    if (normalizedCache.has(name)) {
+      return normalizedCache.get(name);
+    }
+    const normalized = name
+      .toLowerCase()
       .replace(/\[.*?\]/g, '')  // Remove [tags]
       .replace(/\(.*?\)/g, '')  // Remove (ano/qualidade)
       .trim();
+    normalizedCache.set(name, normalized);
+    return normalized;
+  }
 
-    let foundGroup = false;
-    for (const [groupKey, episodes] of groups.entries()) {
-      const similarity = calculateSimilarity(baseName, groupKey);
-      if (similarity >= threshold) {
-        episodes.push(item);
-        foundGroup = true;
-        break;
-      }
-    }
+  function getFirstWord(name) {
+    return name.split(/\s+/)[0] || '';
+  }
 
-    if (!foundGroup) {
+  // Primeira passada: agrupamento exato por nome normalizado (RÁPIDO: O(n))
+  for (const item of items) {
+    const baseName = getNormalized(item.name);
+
+    if (groups.has(baseName)) {
+      groups.get(baseName).push(item);
+    } else {
       groups.set(baseName, [item]);
+
+      // Indexa por primeira palavra para fuzzy matching posterior
+      const firstWord = getFirstWord(baseName);
+      if (!indexByFirstWord.has(firstWord)) {
+        indexByFirstWord.set(firstWord, []);
+      }
+      indexByFirstWord.get(firstWord).push(baseName);
     }
   }
+
+  // Segunda passada: fuzzy matching apenas para grupos únicos (LENTO mas reduzido)
+  // Só roda se threshold < 1.0 (permite fuzzy)
+  if (threshold < 1.0 && groups.size > 1) {
+    const singletonGroups = Array.from(groups.entries())
+      .filter(([_, episodes]) => episodes.length === 1);
+
+    // Limita fuzzy matching se houver muitos singletons (evita O(n²))
+    const MAX_FUZZY_ITEMS = 5000;
+    if (singletonGroups.length > MAX_FUZZY_ITEMS) {
+      logger.warn('series_grouping_fuzzy_skipped', {
+        singletons: singletonGroups.length,
+        reason: `Excede limite de ${MAX_FUZZY_ITEMS} para fuzzy matching`
+      });
+    } else {
+      const mergedGroups = new Map();
+
+      for (const [groupKey, episodes] of singletonGroups) {
+        if (mergedGroups.has(groupKey)) continue; // Já foi mesclado
+
+        const firstWord = getFirstWord(groupKey);
+
+        // ✅ OTIMIZAÇÃO 3: Só compara com grupos que têm mesma primeira palavra
+        const candidates = indexByFirstWord.get(firstWord) || [];
+        const MAX_COMPARISONS = 50; // Early exit após N comparações
+        let comparisonCount = 0;
+
+        for (const candidateKey of candidates) {
+          if (candidateKey === groupKey) continue;
+          if (mergedGroups.has(candidateKey)) continue;
+
+          comparisonCount++;
+          if (comparisonCount > MAX_COMPARISONS) break; // Early exit
+
+          const similarity = calculateSimilarity(groupKey, candidateKey);
+          if (similarity >= threshold) {
+            // Mescla: adiciona episodes do grupo atual ao candidato
+            const targetEpisodes = groups.get(candidateKey) || [];
+            targetEpisodes.push(...episodes);
+            groups.set(candidateKey, targetEpisodes);
+
+            // Marca como mesclado
+            mergedGroups.set(groupKey, candidateKey);
+            groups.delete(groupKey);
+            break;
+          }
+        }
+      }
+
+      logger.debug('series_grouping_fuzzy_complete', {
+        before: groups.size + mergedGroups.size,
+        after: groups.size,
+        merged: mergedGroups.size
+      });
+    }
+  }
+
+  // Limpa cache para liberar memória
+  normalizedCache.clear();
 
   return groups;
 }
