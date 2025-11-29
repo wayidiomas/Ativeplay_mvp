@@ -53,9 +53,9 @@
 /* Grid */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--card-width), 1fr));
-  gap: var(--card-gap);
-  padding: var(--space-xl);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 24px;
+  padding: var(--space-xl) var(--space-2xl);
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
@@ -89,7 +89,7 @@
 .card {
   position: relative;
   background: #1f1f1f;
-  border-radius: 10px;
+  border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -99,15 +99,15 @@
 
 .card:focus {
   border-color: #e50914;
-  transform: scale(1.04);
+  transform: translateY(-4px);
   outline: none;
   z-index: 2;
   box-shadow: 0 14px 32px rgba(0,0,0,0.5), 0 0 0 4px rgba(229,9,20,0.25);
 }
 
 .card:hover {
-  transform: scale(1.02);
-  border-color: rgba(255,255,255,0.2);
+  transform: translateY(-3px);
+  border-color: rgba(255,255,255,0.3);
 }
 
 .cardPoster {
@@ -123,13 +123,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(
-    135deg,
-    var(--color-bg-tertiary) 0%,
-    var(--color-bg-secondary) 100%
-  );
-  font-size: 48px;
-  color: var(--color-text-muted);
+  background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.08), rgba(0,0,0,0.6));
+  font-size: 64px;
+  color: #fff;
 }
 
 .cardOverlay {
@@ -142,7 +138,7 @@
 }
 
 .cardTitle {
-  font-size: var(--font-size-sm);
+  font-size: 16px;
   font-weight: var(--font-weight-bold);
   color: var(--color-text-primary);
   display: -webkit-box;
@@ -158,8 +154,8 @@
   align-items: center;
   gap: var(--space-sm);
   margin-top: var(--space-xs);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
+  font-size: 13px;
+  color: #e5e5e5;
 }
 
 .cardYear {
