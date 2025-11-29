@@ -106,6 +106,11 @@ export class ContentClassifier {
       return 'live';
     }
 
+    // URLs que terminam em /ts (stream típico IPTV) → live
+    if (/\/ts(\?|$)/i.test(group) || /\/ts(\?|$)/i.test(name)) {
+      return 'live';
+    }
+
     const combined = `${name} ${group || ''}`.toLowerCase();
     if (/\b24h(rs)?\b/.test(combined) || /24\/7/.test(combined)) {
       return 'live';

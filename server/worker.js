@@ -152,8 +152,9 @@ function classify(name, group) {
   return result;
 }
 
-function generateItemId(url, index) {
-  const hash = crypto.createHash('sha256').update(url).digest('hex');
+function generateItemId(url, index, tvgName = '') {
+  const base = tvgName || url;
+  const hash = crypto.createHash('sha256').update(base).digest('hex');
   return `${hash.substring(0, 12)}_${index}`;
 }
 
@@ -454,7 +455,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             ? normalizeGroupTitle(groupTitleRaw)
             : normalizeGroupTitle(groupTitleRaw);
 
-          const mediaKind = classify(name, groupTitle);
+          // URLs /ts → força live
+          const mediaKind = /\/ts(\?|$)/i.test(trimmed) ? 'live' : classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
           const seriesKey =
             mediaKind === 'series' && parsedTitle.titleNormalized
@@ -462,7 +464,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               : null;
 
           const item = {
-            id: generateItemId(trimmed, itemIndex++),
+            id: generateItemId(trimmed, itemIndex++, tvgId || name),
             name,
             url: trimmed,
             logo: tvgLogo,
@@ -548,12 +550,13 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const nameRaw = currentExtinf.title;
           const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
           const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+          const tvgId = currentExtinf.attributes.get('tvg-id');
           const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
           const groupTitle = options.normalize
             ? normalizeGroupTitle(groupTitleRaw)
             : normalizeGroupTitle(groupTitleRaw);
 
-          const mediaKind = classify(name, groupTitle);
+          const mediaKind = /\/ts(\?|$)/i.test(trimmed) ? 'live' : classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
           const seriesKey =
             mediaKind === 'series' && parsedTitle.titleNormalized
@@ -561,7 +564,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               : null;
 
           const item = {
-            id: generateItemId(trimmed, itemIndex++),
+            id: generateItemId(trimmed, itemIndex++, tvgId || name),
             name,
             url: trimmed,
             logo: tvgLogo,
