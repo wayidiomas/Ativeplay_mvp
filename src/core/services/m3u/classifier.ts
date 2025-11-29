@@ -24,6 +24,9 @@ const GROUP_PATTERNS = {
     /esporte/i, // "⚽ Esporte | Lutas", "⚽ Esporte | NBA" = canais de esporte
     /M[UÚ]SICAS?\s*24H/i, // "⭐ MÚSICAS 24H" = canais de música 24H
     /RUNTIME\s*24H/i, // "⭐ RUNTIME 24H" = canais temáticos 24H
+    /24HRS/i, // "CINE FILMES HD 24HRS" → live
+    /24H\b/i, // marca loop 24h
+    /CINE\s+.*24HRS/i, // CINE … 24HRS
   ],
   movie: [
     /\b(filmes?|movies?|cinema|lancamentos?|lançamentos?)\b/i,
@@ -100,6 +103,11 @@ export class ContentClassifier {
 
     // Filtro de conteúdo adulto (classificar como live para ocultar)
     if (group && /xxx|onlyfans|adulto|\+18/i.test(group)) {
+      return 'live';
+    }
+
+    const combined = `${name} ${group || ''}`.toLowerCase();
+    if (/\b24h(rs)?\b/.test(combined) || /24\/7/.test(combined)) {
       return 'live';
     }
 
