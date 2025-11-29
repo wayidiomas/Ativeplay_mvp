@@ -742,22 +742,31 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   // Scroll listener horizontal para cada carrossel (lazy loading de itens)
   useEffect(() => {
     const carouselScrollHandlers = new Map<string, () => void>();
+    const debounceTimers = new Map<string, NodeJS.Timeout>();
 
     rows.forEach((row) => {
       const carouselElement = document.getElementById(`row-${row.group.id}`);
       if (!carouselElement) return;
 
       const handleCarouselScroll = () => {
-        const { scrollLeft, scrollWidth, clientWidth } = carouselElement;
-        const scrollPercentage = (scrollLeft + clientWidth) / scrollWidth;
+        // Debounce para evitar múltiplas chamadas durante scroll rápido
+        const existingTimer = debounceTimers.get(row.group.id);
+        if (existingTimer) clearTimeout(existingTimer);
 
-        // Se chegou a 70% do scroll horizontal, carrega mais
-        if (scrollPercentage > 0.7) {
-          const hasMore = row.hasMoreSeries || row.hasMoreItems;
-          if (hasMore) {
-            loadMoreCarouselItems(row.group.id);
+        const timer = setTimeout(() => {
+          const { scrollLeft, scrollWidth, clientWidth } = carouselElement;
+          const scrollPercentage = (scrollLeft + clientWidth) / scrollWidth;
+
+          // Se chegou a 70% do scroll horizontal, carrega mais
+          if (scrollPercentage > 0.7) {
+            const hasMore = row.hasMoreSeries || row.hasMoreItems;
+            if (hasMore && !loadingCarousels.has(row.group.id)) {
+              loadMoreCarouselItems(row.group.id);
+            }
           }
-        }
+        }, 150); // 150ms debounce
+
+        debounceTimers.set(row.group.id, timer);
       };
 
       carouselScrollHandlers.set(row.group.id, handleCarouselScroll);
@@ -765,6 +774,11 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     });
 
     return () => {
+      // Limpa timers de debounce
+      debounceTimers.forEach((timer) => clearTimeout(timer));
+      debounceTimers.clear();
+
+      // Remove event listeners
       carouselScrollHandlers.forEach((handler, groupId) => {
         const carouselElement = document.getElementById(`row-${groupId}`);
         if (carouselElement) {
@@ -772,7 +786,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         }
       });
     };
-  }, [rows, loadMoreCarouselItems]);
+  }, [rows, loadMoreCarouselItems, loadingCarousels]);
 
   // Se o conteúdo não gera scroll (poucos carrosseis), pré-carrega mais grupos
   useEffect(() => {

@@ -559,6 +559,7 @@ async function syncItemsFromServer(
         episode: item.parsedTitle?.episode || item.episode,
         quality: item.parsedTitle?.quality || item.quality,
         epgId: item.epgId,
+        xuiId: item.xuiId,
         createdAt: Date.now(),
       };
     });
@@ -627,6 +628,7 @@ async function syncItemsFromServer(
         episode: item.parsedTitle?.episode || item.episode,
         quality: item.parsedTitle?.quality || item.quality,
         epgId: item.epgId,
+        xuiId: item.xuiId,
         createdAt: Date.now(),
       };
     });
@@ -753,7 +755,8 @@ async function syncItemsFromServer(
  */
 async function groupAndSaveSeries(playlistId: string): Promise<void> {
   // Agrupamento streaming/chunked para evitar OOM em playlists grandes
-  const BATCH_SIZE = 5000;
+  // Chunk maior: processamento de séries é leve em memória, então aumentamos o batch
+  const BATCH_SIZE = 50000;
   let offset = 0;
 
   const seriesMap = new Map<
@@ -773,13 +776,22 @@ async function groupAndSaveSeries(playlistId: string): Promise<void> {
   >();
 
   // Helper para criar sérieId/slug
+  // Usa hash do nome completo para garantir unicidade mesmo com nomes longos
   const createSeriesId = (seriesName: string) => {
     const slug = seriesName
       .toLowerCase()
       .replace(/[^\w\s]/g, '')
       .replace(/\s+/g, '-')
-      .substring(0, 60);
-    return `series_${playlistId}_${slug}`;
+      .substring(0, 50); // Reduzido para deixar espaço para hash
+
+    // Adiciona hash simples do nome completo para garantir unicidade
+    const hash = Math.abs(
+      seriesName.split('').reduce((acc, char) => {
+        return ((acc << 5) - acc) + char.charCodeAt(0);
+      }, 0)
+    ).toString(36).substring(0, 8);
+
+    return `series_${playlistId}_${slug}_${hash}`;
   };
 
   // Helper para chave de agrupamento (nome base)

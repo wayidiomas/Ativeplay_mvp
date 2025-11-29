@@ -22,6 +22,7 @@ export class BrowserAdapter implements IPlayerAdapter {
   private hls: Hls | null = null;
   private usingHls = false;
   private fallbackAttempted = false;
+  private nativeFallbackDone = false;
   private hlsRecoverAttempts = 0;
   private state: PlayerState = 'idle';
   private currentUrl: string = '';
@@ -79,6 +80,20 @@ export class BrowserAdapter implements IPlayerAdapter {
     if (this.state !== newState) {
       this.state = newState;
       this.emit('statechange', { state: newState });
+    }
+  }
+
+  private async peekContentType(url: string): Promise<string | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      clearTimeout(timeout);
+      if (!resp.ok) return null;
+      return resp.headers.get('content-type');
+    } catch {
+      clearTimeout(timeout);
+      return null;
     }
   }
 
@@ -201,16 +216,28 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.destroyHls();
     this.usingHls = false;
     this.fallbackAttempted = false;
+    this.nativeFallbackDone = false;
     this.hlsRecoverAttempts = 0;
 
     this.currentUrl = url;
     this.options = options;
     this.setState('loading');
 
-    const isHls = url.toLowerCase().includes('.m3u8');
+    const hasExtension = /\.[a-z0-9]{2,4}(\?|$)/i.test(url);
+    let contentType: string | null = null;
+    if (!hasExtension) {
+      contentType = await this.peekContentType(url);
+    }
+
+    const isHls = url.toLowerCase().includes('.m3u8') || (contentType ? /mpegurl/i.test(contentType) : false);
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
     const preferNative = /Safari/i.test(ua) && !/Chrome/i.test(ua); // usa nativo em Safari/iOS
-    const isProbablyHls = isHls || url.toLowerCase().includes('m3u') || url.toLowerCase().includes('playlist') || url.toLowerCase().includes('chunklist');
+    const isProbablyHls =
+      isHls ||
+      url.toLowerCase().includes('m3u') ||
+      url.toLowerCase().includes('playlist') ||
+      url.toLowerCase().includes('chunklist') ||
+      (!hasExtension && !preferNative); // sem extensão: tenta HLS primeiro fora do Safari
 
     if (Hls.isSupported() && isProbablyHls && !preferNative) {
       this.hls = new Hls({
@@ -263,11 +290,13 @@ export class BrowserAdapter implements IPlayerAdapter {
     }
 
     return new Promise((resolve, reject) => {
+      const prepTimeoutMs = 15000;
+
       let timeout = setTimeout(() => {
         video.removeEventListener('canplay', onCanPlay);
         video.removeEventListener('error', onError);
         reject(new Error('Timeout ao preparar video'));
-      }, 8000);
+      }, prepTimeoutMs);
 
       const onCanPlay = () => {
         video.removeEventListener('canplay', onCanPlay);
@@ -301,6 +330,41 @@ export class BrowserAdapter implements IPlayerAdapter {
         const message = err?.message || `Erro ao preparar video (code ${err?.code ?? 'n/a'})`;
 
         // Fallback: se não estamos usando HLS e há suporte, tenta HLS uma vez
+        // Caso estejamos em Hls e houver erro fatal, tentamos recarregar uma vez
+        if (this.usingHls && this.hls && !this.fallbackAttempted) {
+          this.fallbackAttempted = true;
+          this.hlsRecoverAttempts = 0;
+          this.hls.stopLoad();
+          this.hls.startLoad(0);
+          // Re-armar listeners para novo fluxo
+          video.addEventListener('canplay', onCanPlay);
+          video.addEventListener('error', onError);
+          timeout = setTimeout(() => {
+            video.removeEventListener('canplay', onCanPlay);
+            video.removeEventListener('error', onError);
+            reject(new Error('Timeout ao preparar video'));
+          }, prepTimeoutMs);
+          return;
+        }
+
+        // Se HLS seguir falhando, força fallback nativo (útil para URLs sem extensão)
+        if (this.usingHls && !this.nativeFallbackDone) {
+          this.nativeFallbackDone = true;
+          this.destroyHls();
+          this.usingHls = false;
+          this.hlsRecoverAttempts = 0;
+          this.video!.src = this.currentUrl;
+          this.video!.load();
+          video.addEventListener('canplay', onCanPlay);
+          video.addEventListener('error', onError);
+          timeout = setTimeout(() => {
+            video.removeEventListener('canplay', onCanPlay);
+            video.removeEventListener('error', onError);
+            reject(new Error('Timeout ao preparar video'));
+          }, prepTimeoutMs);
+          return;
+        }
+
         if (!this.usingHls && Hls.isSupported() && !this.fallbackAttempted) {
           this.fallbackAttempted = true;
           this.destroyHls();
@@ -317,7 +381,7 @@ export class BrowserAdapter implements IPlayerAdapter {
             video.removeEventListener('canplay', onCanPlay);
             video.removeEventListener('error', onError);
             reject(new Error('Timeout ao preparar video'));
-          }, 8000);
+          }, prepTimeoutMs);
           return;
         }
 

@@ -38,6 +38,8 @@ export interface M3UItem {
   tmdbType?: 'movie' | 'tv';
   // EPG ID para Live TV
   epgId?: string;
+  // IDs extras (Xtream/xui)
+  xuiId?: string;
   // Series grouping (novo)
   seriesId?: string; // Referência à série (se for episódio)
   seasonNumber?: number; // Número da temporada
@@ -175,6 +177,16 @@ class AtivePlayDB extends Dexie {
     this.version(8).stores({
       playlists: 'id, url, lastUpdated, isActive',
       items: 'id, playlistId, url, group, mediaKind, titleNormalized, seriesId, seasonNumber, episodeNumber, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind], [seriesId+seasonNumber+episodeNumber]',
+      groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      series: 'id, playlistId, [playlistId+group]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    });
+
+    // Schema v9 - Armazena xuiId (hash secundário) e índice para dedupe/diagnóstico
+    this.version(9).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: 'id, playlistId, url, group, mediaKind, titleNormalized, seriesId, seasonNumber, episodeNumber, xuiId, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind], [seriesId+seasonNumber+episodeNumber], [playlistId+xuiId]',
       groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
       series: 'id, playlistId, [playlistId+group]',
       favorites: 'id, [playlistId+itemId], playlistId',

@@ -66,6 +66,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     subtitleIndex: -1,
     subtitleEnabled: false,
   };
+  private lastMimeTried: string | null = null;
   private mediaId: string | null = null;
   private isBuffering: boolean = false;
   private lastKnownPosition: number = 0; // ms
@@ -118,6 +119,68 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       this.state = newState;
       this.emit('statechange', { state: newState });
     }
+  }
+
+  private inferMimeFromUrl(url: string): string | null {
+    const lower = url.toLowerCase();
+    if (lower.endsWith('.m3u8')) return 'application/x-mpegURL';
+    if (lower.endsWith('.ts')) return 'video/mp2t';
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    if (lower.endsWith('.mkv')) return 'video/x-matroska';
+    if (lower.endsWith('.avi')) return 'video/x-msvideo';
+    return null;
+  }
+
+  private async peekContentType(url: string): Promise<string | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      clearTimeout(timeout);
+      if (!resp.ok) return null;
+      return resp.headers.get('content-type');
+    } catch {
+      clearTimeout(timeout);
+      return null;
+    }
+  }
+
+  private async resolveMime(url: string): Promise<{ primary: string; fallback: string | null }> {
+    const inferred = this.inferMimeFromUrl(url);
+    if (inferred) {
+      // Se já tem extensão conhecida, define fallback para um tipo alternativo comum
+      const fallback = inferred === 'application/x-mpegURL' ? 'video/mp2t' : 'application/x-mpegURL';
+      return { primary: inferred, fallback };
+    }
+
+    const contentType = await this.peekContentType(url);
+    if (contentType) {
+      if (/mpegurl/i.test(contentType)) return { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
+      if (/mp2t/i.test(contentType)) return { primary: 'video/mp2t', fallback: 'application/x-mpegURL' };
+      if (/mp4/i.test(contentType)) return { primary: 'video/mp4', fallback: 'application/x-mpegURL' };
+    }
+
+    // Sem extensão e sem content-type: começa com HLS, fallback TS
+    return { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
+  }
+
+  private loadViaLuna(url: string, mime: string, onSuccess: () => void, onFailure: (err: unknown) => void): void {
+    this.mediaId = `ativeplay-${Date.now()}`;
+    this.lastMimeTried = mime;
+    this.webOS!.service.request('luna://com.webos.media', {
+      method: 'load',
+      parameters: {
+        mediaId: this.mediaId,
+        uri: url,
+        type: 'media',
+        options: {
+          autoplay: false,
+          mimetype: mime,
+        },
+      },
+      onSuccess: onSuccess,
+      onFailure: onFailure,
+    });
   }
 
   private setupVideoListeners(): void {
@@ -325,30 +388,33 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.setState('loading');
 
     if (this.isWebOS && this.webOS) {
-      // Usa Luna Service para carregar mídia nativa
+      // Usa Luna Service para carregar mídia nativa com detecção de mimetype e fallback
+      const { primary, fallback } = await this.resolveMime(url);
       return new Promise((resolve, reject) => {
-        this.mediaId = `ativeplay-${Date.now()}`;
-        this.webOS!.service.request('luna://com.webos.media', {
-          method: 'load',
-          parameters: {
-            mediaId: this.mediaId,
-            uri: url,
-            type: 'media',
-            options: {
-              autoplay: false,
-              mimetype: url.endsWith('.m3u8') ? 'application/x-mpegURL' : 'video/mp4',
+        const tryLoad = (mimeToUse: string, nextFallback: string | null) => {
+          this.loadViaLuna(
+            url,
+            mimeToUse,
+            () => {
+              this.setState('ready');
+              this.lastKnownPosition = this.options.startPosition || 0;
+              // Atualiza faixas de áudio/legenda após load
+              this.loadTracksViaLuna();
+              resolve();
             },
-          },
-          onSuccess: () => {
-            this.setState('ready');
-            this.lastKnownPosition = this.options.startPosition || 0;
-            resolve();
-          },
-          onFailure: (error) => {
-            this.setState('error');
-            reject(error);
-          },
-        });
+            (error) => {
+              if (nextFallback) {
+                // Tenta fallback alternativo antes de falhar
+                tryLoad(nextFallback, null);
+                return;
+              }
+              this.setState('error');
+              reject(error);
+            }
+          );
+        };
+
+        tryLoad(primary, fallback);
       });
     }
 
@@ -566,7 +632,28 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   setSubtitleTrack(index: number): void {
     if (this.webOS && this.mediaId) {
-      this.setTrackViaLuna('subtitle', index);
+      // Seleciona faixa e ativa/desativa legendas no Luna Service
+      this.webOS.service.request('luna://com.webos.media', {
+        method: 'selectTrack',
+        parameters: {
+          mediaId: this.mediaId,
+          type: 'subtitle',
+          index,
+        },
+        onSuccess: () => {
+          this.webOS!.service.request('luna://com.webos.media', {
+            method: 'setSubtitleEnable',
+            parameters: { mediaId: this.mediaId, enable: index >= 0 },
+          });
+          this.currentTracks.subtitleIndex = index;
+          this.currentTracks.subtitleEnabled = index >= 0;
+          this.emit('subtitletrackchange', {
+            index,
+            enabled: index >= 0,
+            track: index >= 0 ? this.tracks.subtitle[index] : undefined,
+          });
+        },
+      });
     } else {
       if (!this.video) return;
       const textTracks = this.video.textTracks;

@@ -36,19 +36,6 @@ export function PlayerContainer({
   onClose,
   onEnded,
 }: PlayerContainerProps) {
-  const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
-
-  const buildStreamUrl = useCallback(
-    (original: string) => {
-      if (!BRIDGE_URL) return original;
-      if (!/^https?:\/\//i.test(original)) return original;
-      if (original.includes('/api/proxy/hls')) return original;
-      const encoded = encodeURIComponent(original);
-      return `${BRIDGE_URL}/api/proxy/hls?url=${encoded}`;
-    },
-    [BRIDGE_URL]
-  );
-
   const {
     state,
     currentTime,
@@ -97,9 +84,8 @@ export function PlayerContainer({
 
   // Open video on mount
   useEffect(() => {
-    const streamUrl = buildStreamUrl(url);
-    open(streamUrl, { startPosition, autoPlay: true });
-  }, [url, startPosition, open, buildStreamUrl]);
+    open(url, { startPosition, autoPlay: true });
+  }, [url, startPosition, open]);
 
   // Handle ended event
   useEffect(() => {
