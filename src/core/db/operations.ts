@@ -22,7 +22,7 @@ async function pollJobUntilComplete(
   hash?: string, // Hash da playlist para polling incremental
   playlistId?: string
 ): Promise<{ hash: string; stats: any; groups: any[] }> {
-  const maxAttempts = 300; // Safety limit
+  const maxAttempts = 80; // ~30 minutos com backoff até 30s
   const initialInterval = 2000; // Start at 2s
   const maxInterval = 30000; // Cap at 30s
   const backoffMultiplier = 1.5; // Exponential factor
@@ -145,10 +145,10 @@ async function pollProgressAndSyncIncremental(
     const percentage = progressData.status === 'completed'
       ? 100
       : Math.min(
-          80,
-          progressData.progress?.percentage ??
-            (progressData.progress?.totalItems ? 20 : 5) // fallback conservador
-        );
+        80,
+        progressData.progress?.percentage ??
+        (progressData.progress?.totalItems ? 20 : 5) // fallback conservador
+      );
 
     onProgress?.({
       phase: progressData.status === 'completed' ? 'parsing' : 'downloading',
@@ -351,7 +351,7 @@ async function fetchFromServer(
  * Aguarda um job completar (versão simplificada para fallback de 404)
  * Retorna quando job está 'completed' ou lança erro se falhar/timeout
  */
-async function waitForJobCompletion(jobId: string, maxWait = 180000): Promise<void> {
+async function waitForJobCompletion(jobId: string, maxWait = 1800000): Promise<void> { // 30 minutos
   const startTime = Date.now();
   const pollInterval = 2000; // 2s
 
@@ -726,6 +726,10 @@ async function syncItemsFromServer(
  * Agrupa episódios de séries e salva no banco
  * Chamado após sincronização completa de itens
  */
+/**
+ * Agrupa episódios de séries e salva no banco
+ * Chamado após sincronização completa de itens
+ */
 async function groupAndSaveSeries(playlistId: string): Promise<void> {
   // 1. Busca todos os itens de séries da playlist
   const seriesItems = await db.items
@@ -740,7 +744,8 @@ async function groupAndSaveSeries(playlistId: string): Promise<void> {
   console.log(`[DB DEBUG] Encontrados ${seriesItems.length} itens de séries para agrupar`);
 
   // 2. Agrupa episódios e cria registros de Series
-  const { series, itemToSeriesMap } = groupSeriesEpisodes(seriesItems, playlistId);
+  // Agora é async e não bloqueia a UI
+  const { series, itemToSeriesMap } = await groupSeriesEpisodes(seriesItems, playlistId);
 
   console.log(`[DB DEBUG] Criadas ${series.length} séries agrupadas`);
   console.log(`[DB DEBUG] ${itemToSeriesMap.size} episódios mapeados para séries`);
@@ -751,30 +756,33 @@ async function groupAndSaveSeries(playlistId: string): Promise<void> {
       // Remove séries antigas desta playlist (se houver)
       await db.series.where('playlistId').equals(playlistId).delete();
 
-      // Insere novas séries
+      // Insere novas séries (bulkAdd é rápido)
       await db.series.bulkAdd(series);
 
       // Atualiza items com seriesId, seasonNumber e episodeNumber
-      const updates: Array<{ id: string; changes: Partial<M3UItem> }> = [];
+      // OTIMIZAÇÃO: Usa bulkPut em vez de update individual
+      const itemsToUpdate: M3UItem[] = [];
+      const batchSize = 2000;
+
+      // Cria Map de itens originais para lookup rápido
+      const itemsMap = new Map(seriesItems.map(i => [i.id, i]));
 
       for (const [itemId, mapping] of itemToSeriesMap.entries()) {
-        updates.push({
-          id: itemId,
-          changes: {
+        const originalItem = itemsMap.get(itemId);
+        if (originalItem) {
+          itemsToUpdate.push({
+            ...originalItem,
             seriesId: mapping.seriesId,
             seasonNumber: mapping.seasonNumber,
             episodeNumber: mapping.episodeNumber,
-          },
-        });
+          });
+        }
       }
 
-      // Atualiza em lotes de 500 (increased for better performance)
-      const batchSize = 500;
-      for (let i = 0; i < updates.length; i += batchSize) {
-        const batch = updates.slice(i, i + batchSize);
-        for (const update of batch) {
-          await db.items.update(update.id, update.changes);
-        }
+      // Salva em lotes usando bulkPut (upsert)
+      for (let i = 0; i < itemsToUpdate.length; i += batchSize) {
+        const batch = itemsToUpdate.slice(i, i + batchSize);
+        await db.items.bulkPut(batch);
       }
     });
 
