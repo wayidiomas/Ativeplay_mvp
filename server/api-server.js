@@ -943,7 +943,7 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
 app.post('/session/create', async (req, res) => {
   try {
     const sessionId = randomBytes(6).toString('hex'); // 12 caracteres
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutos
+    const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutos
 
     // URL que será aberta no celular
     // Em produção usa BASE_URL (Render), em dev usa IP local
