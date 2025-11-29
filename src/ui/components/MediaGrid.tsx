@@ -1,11 +1,9 @@
 /**
  * MediaGrid
- * Grid display of media items (movies, series, live channels)
- * NOW WITH VIRTUAL SCROLLING for memory optimization
+ * Grid display of media items with progressive loading
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
 import styles from './MediaGrid.module.css';
 
@@ -15,81 +13,84 @@ interface MediaGridProps {
   onSelectItem: (item: M3UItem) => void;
 }
 
-const INITIAL_LOAD_LIMIT = 1000; // Load first 1000 items, render only visible
-const ITEMS_PER_ROW = 5;
-const ROW_HEIGHT = 260;
+const PAGE_SIZE = 120;
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
-  const [allItems, setAllItems] = useState<M3UItem[]>([]);
+  const [items, setItems] = useState<M3UItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
-  const [focusedIndex, setFocusedIndex] = useState(0);
-  const parentRef = useRef<HTMLDivElement>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
-  // Load items for the group - virtual scrolling loads all at once
-  // but only renders visible items
-  useEffect(() => {
-    async function loadItems() {
-      setLoading(true);
+  const loadPage = useCallback(
+    async (offset: number) => {
+      setLoadingMore(true);
       try {
-        // Get total count first
-        const count = await db.items
-          .where({ playlistId: group.playlistId, group: group.name })
-          .count();
+        const collection = db.items.where({ playlistId: group.playlistId, group: group.name });
+        const page = await collection.offset(offset).limit(PAGE_SIZE).toArray();
+        const total = await collection.count();
+        setTotalCount(total);
 
-        setTotalCount(count);
+        if (page.length === 0) {
+          setHasMore(false);
+          return;
+        }
 
-        // Load initial batch (up to 1000 items)
-        // For larger lists, we could implement progressive loading
-        const limit = Math.min(count, INITIAL_LOAD_LIMIT);
-        const loadedItems = await db.items
-          .where({ playlistId: group.playlistId, group: group.name })
-          .limit(limit)
-          .toArray();
-
-        setAllItems(loadedItems);
+        setItems((prev) => [...prev, ...page]);
+        if (offset + page.length >= total) setHasMore(false);
       } catch (error) {
         console.error('Erro ao carregar itens:', error);
-        setAllItems([]);
-        setTotalCount(0);
+        setHasMore(false);
       } finally {
         setLoading(false);
+        setLoadingMore(false);
       }
-    }
-
-    loadItems();
-  }, [group]);
-
-  const rowVirtualizer = useVirtualizer({
-    count: Math.ceil(allItems.length / ITEMS_PER_ROW),
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 2, // Render 2 extra rows above/below viewport
-  });
-
-  // Focus helper for keyboard/remote
-  const focusIndex = useCallback(
-    (index: number) => {
-      if (index < 0 || index >= allItems.length) return;
-      const tryFocus = () => {
-        const el = parentRef.current?.querySelector<HTMLButtonElement>(
-          `[data-index="${index}"]`
-        );
-        if (el) {
-          el.focus({ preventScroll: false });
-          setFocusedIndex(index);
-        }
-      };
-      // Ensure row is in view for virtualizer
-      const row = Math.floor(index / ITEMS_PER_ROW);
-      const offset = row * ROW_HEIGHT;
-      parentRef.current?.scrollTo({ top: offset, behavior: 'smooth' });
-      requestAnimationFrame(tryFocus);
     },
-    [allItems.length]
+    [group.name, group.playlistId]
   );
 
-  // Keyboard navigation
+  useEffect(() => {
+    // reset when group changes
+    setItems([]);
+    setLoading(true);
+    setHasMore(true);
+    setFocusedIndex(null);
+    loadPage(0);
+  }, [group, loadPage]);
+
+  // Infinite scroll trigger
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      if (!hasMore || loadingMore) return;
+      const threshold = 400;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - threshold) {
+        loadPage(items.length);
+      }
+    };
+
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [hasMore, items.length, loadPage, loadingMore]);
+
+  const focusIndex = useCallback(
+    (index: number) => {
+      if (index < 0 || index >= items.length) return;
+      const el = gridRef.current?.querySelector<HTMLButtonElement>(`[data-index=\"${index}\"]`);
+      if (el) {
+        el.focus({ preventScroll: false });
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        setFocusedIndex(index);
+      }
+    },
+    [items.length]
+  );
+
+  // Keyboard navigation for TV/remote
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Backspace') {
@@ -97,30 +98,30 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         return;
       }
 
-      if (parentRef.current && document.activeElement?.closest(`.${styles.grid}`)) {
+      if (gridRef.current && document.activeElement?.closest(`.${styles.grid}`)) {
         switch (e.key) {
           case 'ArrowUp':
-            focusIndex(focusedIndex - ITEMS_PER_ROW);
+            focusIndex((focusedIndex ?? 0) - 5);
             e.preventDefault();
             break;
           case 'ArrowDown':
-            focusIndex(focusedIndex + ITEMS_PER_ROW);
+            focusIndex((focusedIndex ?? 0) + 5);
             e.preventDefault();
             break;
           case 'ArrowLeft':
-            focusIndex(focusedIndex - 1);
+            focusIndex((focusedIndex ?? 0) - 1);
             e.preventDefault();
             break;
           case 'ArrowRight':
-            focusIndex(focusedIndex + 1);
+            focusIndex((focusedIndex ?? 0) + 1);
             e.preventDefault();
             break;
           case 'PageUp':
-            focusIndex(focusedIndex - ITEMS_PER_ROW * 2);
+            focusIndex((focusedIndex ?? 0) - 10);
             e.preventDefault();
             break;
           case 'PageDown':
-            focusIndex(focusedIndex + ITEMS_PER_ROW * 2);
+            focusIndex((focusedIndex ?? 0) + 10);
             e.preventDefault();
             break;
         }
@@ -131,16 +132,16 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [focusIndex, focusedIndex, onBack]);
 
+  // Auto-focus primeiro card
+  useEffect(() => {
+    if (!loading && items.length > 0 && focusedIndex === null) {
+      focusIndex(0);
+    }
+  }, [loading, items.length, focusIndex, focusedIndex]);
+
   const getDisplayName = useCallback((item: M3UItem): string => {
     return item.title || item.name;
   }, []);
-
-  // Auto-focus first card when items carregados
-  useEffect(() => {
-    if (!loading && allItems.length > 0) {
-      focusIndex(0);
-    }
-  }, [loading, allItems.length, focusIndex]);
 
   if (loading) {
     return (
@@ -164,7 +165,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     );
   }
 
-  if (allItems.length === 0 && !loading) {
+  if (items.length === 0) {
     return (
       <div className={styles.container}>
         <header className={styles.header}>
@@ -176,9 +177,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         <div className={styles.emptyState}>
           <div className={styles.emptyIcon}>?</div>
           <h2 className={styles.emptyTitle}>Nenhum Item</h2>
-          <p className={styles.emptyText}>
-            Esta categoria esta vazia
-          </p>
+          <p className={styles.emptyText}>Esta categoria está vazia</p>
         </div>
       </div>
     );
@@ -192,100 +191,76 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         </button>
         <h1 className={styles.title}>{group.name}</h1>
         <span className={styles.itemCount}>
-          {totalCount} {totalCount === 1 ? 'item' : 'itens'}
-          {totalCount > INITIAL_LOAD_LIMIT && (
-            <span style={{ opacity: 0.7 }}> (mostrando {INITIAL_LOAD_LIMIT})</span>
-          )}
+          {totalCount.toLocaleString()} {totalCount === 1 ? 'item' : 'itens'}
+          {hasMore && <span style={{ opacity: 0.7 }}> (carregando mais)</span>}
         </span>
       </header>
 
       <div
-        ref={parentRef}
+        ref={gridRef}
         className={styles.grid}
         style={{
           height: '100%',
           overflow: 'auto',
         }}
       >
-        <div
-          style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            // Each virtual row contains ITEMS_PER_ROW items
-            const startIdx = virtualRow.index * ITEMS_PER_ROW;
-            const rowItems = allItems.slice(startIdx, startIdx + ITEMS_PER_ROW);
-
-            return (
-              <div
-                key={virtualRow.key}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-                  gap: '20px',
+        {items.map((item, idx) => (
+          <button
+            key={item.id}
+            className={styles.card}
+            onClick={() => onSelectItem(item)}
+            data-index={idx}
+            onFocus={(e) => {
+              e.currentTarget.scrollIntoView({
+                behavior: 'smooth',
+                block: 'nearest',
+                inline: 'nearest',
+              });
+              setFocusedIndex(idx);
+            }}
+            tabIndex={0}
+          >
+            {item.logo ? (
+              <img
+                src={item.logo}
+                alt={getDisplayName(item)}
+                className={styles.cardPoster}
+                loading="lazy"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                  (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
                 }}
-              >
-                {rowItems.map((item) => (
-                  <button
-                    key={item.id}
-                    className={styles.card}
-                    onClick={() => onSelectItem(item)}
-                    data-index={startIdx + rowItems.indexOf(item)}
-                    onFocus={(e) => {
-                      // Auto scroll to keep focused card visible
-                      e.currentTarget.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'nearest',
-                        inline: 'nearest'
-                      });
-                      setFocusedIndex(startIdx + rowItems.indexOf(item));
-                    }}
-                    tabIndex={0}
-                  >
-                    {item.logo ? (
-                      <img
-                        src={item.logo}
-                        alt={getDisplayName(item)}
-                        className={styles.cardPoster}
-                        loading="lazy"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = 'none';
-                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
-                        }}
-                      />
-                    ) : null}
-                    <div className={styles.cardPlaceholder} style={item.logo ? { display: 'none' } : undefined}>
-                      {item.mediaKind === 'live' ? 'O' : '#'}
-                    </div>
+              />
+            ) : null}
+            <div
+              className={styles.cardPlaceholder}
+              style={item.logo ? { display: 'none' } : undefined}
+            >
+              {item.mediaKind === 'live' ? 'TV' : '#'}
+            </div>
 
-                    <div className={styles.cardOverlay}>
-                      <div className={styles.cardTitle}>{getDisplayName(item)}</div>
-                      <div className={styles.cardMeta}>
-                        {item.year && <span className={styles.cardYear}>{item.year}</span>}
-                        {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
-                        {item.season && item.episode && (
-                          <span className={styles.cardYear}>
-                            S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                ))}
+            <div className={styles.cardOverlay}>
+              <div className={styles.cardTitle}>{getDisplayName(item)}</div>
+              <div className={styles.cardMeta}>
+                {item.year && <span className={styles.cardYear}>{item.year}</span>}
+                {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
+                {item.season && item.episode && (
+                  <span className={styles.cardYear}>
+                    S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
+                  </span>
+                )}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          </button>
+        ))}
       </div>
+
+      {loadingMore && (
+        <div className={styles.loadingMore}>
+          <div className={styles.spinner} />
+          <span>Carregando mais...</span>
+        </div>
+      )}
     </div>
   );
 }
