@@ -1364,6 +1364,80 @@ app.get('/s/:id', (req, res) => {
   });
 });
 
+/**
+ * POST /admin/clear-all
+ * Limpa todos os jobs do Redis e todo o cache do disco
+ */
+app.post('/admin/clear-all', async (req, res) => {
+  console.log('[Admin] Iniciando limpeza completa...');
+
+  const results = {
+    redis: { success: false, message: '', jobsRemoved: 0 },
+    cache: { success: false, message: '', filesRemoved: 0 },
+  };
+
+  // 1. Limpar Redis (BullMQ)
+  try {
+    const stats = await parseQueue.getJobCounts();
+    const totalJobs = Object.values(stats).reduce((a, b) => a + b, 0);
+
+    await parseQueue.obliterate({ force: true });
+
+    results.redis = {
+      success: true,
+      message: 'Todos os jobs removidos do Redis',
+      jobsRemoved: totalJobs,
+    };
+    console.log('[Admin] ✅ Redis limpo:', totalJobs, 'jobs removidos');
+  } catch (error) {
+    results.redis = {
+      success: false,
+      message: error.message,
+      jobsRemoved: 0,
+    };
+    console.error('[Admin] ❌ Erro ao limpar Redis:', error);
+  }
+
+  // 2. Limpar cache do disco
+  try {
+    const files = await fs.readdir(CACHE_DIR);
+    let removed = 0;
+
+    for (const file of files) {
+      if (file.endsWith('.ndjson') || file.endsWith('.meta.json') || file.endsWith('.idx')) {
+        await fs.rm(path.join(CACHE_DIR, file), { force: true });
+        removed++;
+      }
+    }
+
+    // Limpa índice em memória
+    for (const hash of cacheIndex.index.keys()) {
+      cacheIndex.index.delete(hash);
+    }
+
+    results.cache = {
+      success: true,
+      message: `${removed} arquivos removidos de ${CACHE_DIR}`,
+      filesRemoved: removed,
+    };
+    console.log('[Admin] ✅ Cache limpo:', removed, 'arquivos removidos');
+  } catch (error) {
+    results.cache = {
+      success: false,
+      message: error.message,
+      filesRemoved: 0,
+    };
+    console.error('[Admin] ❌ Erro ao limpar cache:', error);
+  }
+
+  const allSuccess = results.redis.success && results.cache.success;
+  res.status(allSuccess ? 200 : 500).json({
+    success: allSuccess,
+    results,
+    message: allSuccess ? '✨ Limpeza completa!' : '⚠️ Limpeza parcial (veja results)',
+  });
+});
+
 app.listen(PORT, async () => {
   const localIP = getLocalIP();
   console.log(`🚀 AtivePlay Bridge rodando na porta ${PORT}`);
