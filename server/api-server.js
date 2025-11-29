@@ -968,7 +968,8 @@ async function readItemsWithIndex(itemsPath, offset, limit) {
   // Tenta usar índice para seek direto (RÁPIDO: 50ms para offset=225k)
   try {
     const indexData = await fs.readFile(indexPath, 'utf8');
-    const offsets = JSON.parse(indexData);
+    // ✅ Lê formato newline-delimited (economiza RAM no worker)
+    const offsets = indexData.trim().split('\n').map(Number);
 
     // ✅ VALIDAÇÕES
     if (!Array.isArray(offsets)) {

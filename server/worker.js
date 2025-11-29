@@ -617,8 +617,9 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
 
       rl.close();
 
-      // Salva índice como JSON array
-      await fs.writeFile(indexFile, JSON.stringify(offsets));
+      // ✅ Salva índice sem criar JSON gigante na memória
+      // Escreve diretamente como newline-delimited numbers para economizar RAM
+      await fs.writeFile(indexFile, offsets.join('\n'));
 
       const indexSizeMB = (offsets.length * 8) / 1024 / 1024; // 8 bytes por offset (number)
       logger.info('index_generated', {
@@ -638,15 +639,16 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
     const groups = Array.from(groupsMap.values());
 
     // ===== AGRUPAMENTO DE SÉRIES SEM PADRÃO (Levenshtein) =====
-    // Coleta items de série sem padrão SxxExx lendo o arquivo .ndjson
+    // Coleta items de série sem padrão SxxExx usando STREAMING (evita OOM)
     logger.info('series_grouping_start', { hash });
     const itemsWithoutPattern = [];
 
     try {
-      const ndjsonContent = await fs.readFile(itemsFile, 'utf8');
-      const lines = ndjsonContent.trim().split('\n');
+      // ✅ STREAMING ao invés de carregar arquivo inteiro
+      const streamReader = createReadStream(itemsFile, { encoding: 'utf8' });
+      const rlStream = readline.createInterface({ input: streamReader, crlfDelay: Infinity });
 
-      for (const line of lines) {
+      for await (const line of rlStream) {
         if (!line.trim()) continue;
         try {
           const item = JSON.parse(line);
@@ -658,6 +660,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           // Skip linha corrompida
         }
       }
+
+      rlStream.close();
 
       logger.info('series_without_pattern_collected', {
         hash,
