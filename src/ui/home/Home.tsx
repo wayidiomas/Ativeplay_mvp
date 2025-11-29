@@ -1,9 +1,10 @@
 /**
- * Home Screen - Top navigation with carrosséis por categoria
+ * Home Screen - Top navigation with lazy-loaded category carousels
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { usePlaylistStore } from '@store/playlistStore';
 import {
   db,
@@ -29,6 +30,9 @@ import styles from './Home.module.css';
 type NavItem = 'movies' | 'series' | 'live';
 type SearchKind = 'all' | MediaKind;
 
+const GROUP_BATCH_SIZE = 6;
+const ITEMS_PER_GROUP = 24;
+
 interface HomeProps {
   onSelectGroup: (group: M3UGroup) => void;
   onSelectMediaKind: (kind: MediaKind) => void;
@@ -40,19 +44,9 @@ interface Row {
   items: M3UItem[];
 }
 
-// Memoized card component to prevent unnecessary re-renders (63% reduction)
-interface MediaCardProps {
-  item: M3UItem;
-  groupName: string;
-  onSelectItem: (item: M3UItem) => void;
-}
-
-const MediaCard = memo(({ item, groupName, onSelectItem }: MediaCardProps) => {
+const MediaCard = memo(({ item, groupName, onSelectItem }: { item: M3UItem; groupName: string; onSelectItem: (item: M3UItem) => void }) => {
   return (
-    <button
-      className={styles.card}
-      onClick={() => onSelectItem(item)}
-    >
+    <button className={styles.card} onClick={() => onSelectItem(item)}>
       {item.logo ? (
         <img
           src={item.logo}
@@ -74,15 +68,11 @@ const MediaCard = memo(({ item, groupName, onSelectItem }: MediaCardProps) => {
       </div>
     </button>
   );
-}, (prev, next) => prev.item.id === next.item.id); // Only re-render if item changes
+}, (prev, next) => prev.item.id === next.item.id);
 
-// Memoized search result card (simplified version without placeholder)
 const SearchResultCard = memo(({ item, onSelectItem }: { item: M3UItem; onSelectItem: (item: M3UItem) => void }) => {
   return (
-    <button
-      className={styles.card}
-      onClick={() => onSelectItem(item)}
-    >
+    <button className={styles.card} onClick={() => onSelectItem(item)}>
       {item.logo ? (
         <img
           src={item.logo}
@@ -101,10 +91,29 @@ const SearchResultCard = memo(({ item, onSelectItem }: { item: M3UItem; onSelect
 
 export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomeProps) {
   const navigate = useNavigate();
-  const { activePlaylist, isSyncing, syncProgress } = usePlaylistStore();
+  const { activePlaylist: storedPlaylist, isSyncing, syncProgress } = usePlaylistStore();
   const setActivePlaylist = usePlaylistStore((s) => s.setActivePlaylist);
   const setSyncing = usePlaylistStore((s) => s.setSyncing);
   const setSyncProgress = usePlaylistStore((s) => s.setSyncProgress);
+
+  const liveActivePlaylist = useLiveQuery(
+    async () => {
+      if (!storedPlaylist) return null;
+      return await db.playlists.get(storedPlaylist.id);
+    },
+    [storedPlaylist?.id],
+    storedPlaylist
+  );
+
+  useEffect(() => {
+    if (liveActivePlaylist && storedPlaylist && liveActivePlaylist.id === storedPlaylist.id) {
+      if (JSON.stringify(liveActivePlaylist) !== JSON.stringify(storedPlaylist)) {
+        setActivePlaylist(liveActivePlaylist);
+      }
+    }
+  }, [liveActivePlaylist, storedPlaylist, setActivePlaylist]);
+
+  const activePlaylist = liveActivePlaylist;
 
   const [selectedNav, setSelectedNav] = useState<NavItem>('movies');
   const [rows, setRows] = useState<Row[]>([]);
@@ -113,9 +122,6 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const [searchKind, setSearchKind] = useState<SearchKind>('all');
   const [searchResults, setSearchResults] = useState<M3UItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
-
-  // Infinite scroll de carrosséis
-  const [visibleGroupsCount, setVisibleGroupsCount] = useState(8);
   const [loadingMoreGroups, setLoadingMoreGroups] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -124,8 +130,40 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     series: [],
     live: [],
   });
+  const allGroupsRef = useRef<Record<NavItem, M3UGroup[]>>({
+    movies: [],
+    series: [],
+    live: [],
+  });
+  const nextIndexRef = useRef<Record<NavItem, number>>({
+    movies: 0,
+    series: 0,
+    live: 0,
+  });
+  const hasMoreRef = useRef<Record<NavItem, boolean>>({
+    movies: true,
+    series: true,
+    live: true,
+  });
 
-  // Carrega carrosseis (top grupos) para filmes/séries; TV ao vivo mostra grupos completos
+  const loadBatch = useCallback(
+    async (mediaKind: MediaKind, startIndex: number, allGroups: M3UGroup[]) => {
+      const batch = allGroups.slice(startIndex, startIndex + GROUP_BATCH_SIZE);
+      if (batch.length === 0) return [];
+      const rowsLoaded = await Promise.all(
+        batch.map(async (group) => {
+          const items = await db.items
+            .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
+            .limit(ITEMS_PER_GROUP)
+            .toArray();
+          return items.length > 0 ? { group, items } : null;
+        })
+      );
+      return rowsLoaded.filter(Boolean) as Row[];
+    },
+    [activePlaylist]
+  );
+
   useEffect(() => {
     async function loadRows() {
       if (!activePlaylist) {
@@ -133,61 +171,40 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         return;
       }
 
-      // Se já há cache, usa imediatamente
-      const cached = rowsCacheRef.current[selectedNav];
-      if (cached && cached.length > 0) {
-        setRows(cached);
+      const cachedRows = rowsCacheRef.current[selectedNav];
+      const cachedGroups = allGroupsRef.current[selectedNav];
+      if (cachedRows.length > 0 && cachedGroups.length > 0 && !hasMoreRef.current[selectedNav]) {
+        setRows(cachedRows);
         setLoading(false);
-        return; // Early return - não precisa buscar novamente!
+        return;
       }
 
-      setRows([]);
+      setRows(cachedRows);
       setLoading(true);
 
       try {
-        let mediaKind: MediaKind;
-        switch (selectedNav) {
-          case 'movies':
-            mediaKind = 'movie';
-            break;
-          case 'series':
-            mediaKind = 'series';
-            break;
-          case 'live':
-            mediaKind = 'live';
-            break;
-          default:
-            return;
+        const mediaKind: MediaKind =
+          selectedNav === 'movies' ? 'movie' : selectedNav === 'series' ? 'series' : 'live';
+
+        // Carrega todos os grupos apenas uma vez por aba
+        if (cachedGroups.length === 0) {
+          const allGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
+          allGroupsRef.current[selectedNav] = allGroups;
+          nextIndexRef.current[selectedNav] = 0;
+          hasMoreRef.current[selectedNav] = allGroups.length > 0;
         }
 
-        // Busca grupos com limit dinâmico (infinite scroll)
-        const topGroups = await getPlaylistGroups(activePlaylist.id, mediaKind, visibleGroupsCount);
+        const allGroups = allGroupsRef.current[selectedNav];
+        const startIndex = nextIndexRef.current[selectedNav];
+        const batch = await loadBatch(mediaKind, startIndex, allGroups);
+        const newNextIndex = Math.min(startIndex + GROUP_BATCH_SIZE, allGroups.length);
+        const mergedRows = [...cachedRows, ...batch];
 
-        // DEBUG: Verificar quantos grupos foram retornados
-        console.log(`[Home] Grupos retornados: ${topGroups.length} (limit: ${visibleGroupsCount}, mediaKind: ${mediaKind})`);
+        rowsCacheRef.current[selectedNav] = mergedRows;
+        nextIndexRef.current[selectedNav] = newNextIndex;
+        hasMoreRef.current[selectedNav] = newNextIndex < allGroups.length;
 
-        // Verifica total de grupos disponíveis sem limit
-        const allGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
-        console.log(`[Home] Total de grupos disponíveis no DB: ${allGroups.length}`);
-
-        const rowsLoaded = await Promise.all(
-          topGroups.map(async (group) => {
-            const items = await db.items
-              .where({ playlistId: activePlaylist.id, group: group.name, mediaKind })
-              .limit(24)
-              .toArray();
-            return items.length > 0 ? { group, items } : null;
-          })
-        );
-
-        const filtered = rowsLoaded.filter(Boolean) as Row[];
-
-        // DEBUG: Mostrar quantos carrosséis foram criados
-        console.log(`[Home] Carrosséis criados: ${filtered.length} (grupos com items)`);
-        console.log(`[Home] Grupos sem items (filtrados): ${topGroups.length - filtered.length}`);
-
-        setRows(filtered);
-        rowsCacheRef.current[selectedNav] = filtered; // cache para troca de abas
+        setRows(mergedRows);
       } catch (error) {
         console.error('Erro ao carregar carrosseis:', error);
         setRows([]);
@@ -196,7 +213,28 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       }
     }
     loadRows();
-  }, [activePlaylist, selectedNav, visibleGroupsCount]);
+  }, [activePlaylist, selectedNav, loadBatch]);
+
+  const loadMoreGroups = useCallback(async () => {
+    if (loadingMoreGroups) return;
+    if (!hasMoreRef.current[selectedNav]) return;
+    setLoadingMoreGroups(true);
+
+    const mediaKind: MediaKind =
+      selectedNav === 'movies' ? 'movie' : selectedNav === 'series' ? 'series' : 'live';
+    const allGroups = allGroupsRef.current[selectedNav];
+    const startIndex = nextIndexRef.current[selectedNav];
+
+    const batch = await loadBatch(mediaKind, startIndex, allGroups);
+    const newNextIndex = Math.min(startIndex + GROUP_BATCH_SIZE, allGroups.length);
+    const mergedRows = [...rowsCacheRef.current[selectedNav], ...batch];
+
+    rowsCacheRef.current[selectedNav] = mergedRows;
+    nextIndexRef.current[selectedNav] = newNextIndex;
+    hasMoreRef.current[selectedNav] = newNextIndex < allGroups.length;
+    setRows(mergedRows);
+    setLoadingMoreGroups(false);
+  }, [loadingMoreGroups, selectedNav, loadBatch]);
 
   // Monitor sync status
   useEffect(() => {
@@ -221,7 +259,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
           setSyncProgress(null);
           break;
         }
-        await new Promise((r) => setTimeout(r, 5000)); // Reduz polling: 30→12 queries/min
+        await new Promise((r) => setTimeout(r, 2000));
       }
     };
     poll();
@@ -244,56 +282,36 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     }
   }, [selectedNav]);
 
-  // Busca com debounce (300ms) para reduzir queries
+  // Busca (debounce)
   useEffect(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!activePlaylist || term.length < 2) {
       setSearchResults([]);
-      setSearchLoading(false);
       return;
     }
-
     let cancelled = false;
-    setSearchLoading(true); // Mostra loading imediatamente
-
-    // Debounce: aguarda 300ms antes de executar busca
-    const timeoutId = setTimeout(() => {
-      async function runSearch() {
-        try {
-          const playlistId = activePlaylist.id;
-          const searchNormalized = term.toUpperCase();
-
-          // Busca indexada usando B-tree (26x mais rápido que filter)
-          let results = await db.items
-            .where('[playlistId+titleNormalized]')
-            .between(
-              [playlistId, searchNormalized],
-              [playlistId, searchNormalized + '\uffff'],
-              true,
-              true
-            )
-            .limit(120)
-            .toArray();
-
-          // Filtra por mediaKind se necessário (pequeno subset já filtrado)
-          if (searchKind !== 'all') {
-            results = results.filter((item) => item.mediaKind === searchKind);
-          }
-
-          if (!cancelled) setSearchResults(results);
-        } catch (e) {
-          if (!cancelled) setSearchResults([]);
-        } finally {
-          if (!cancelled) setSearchLoading(false);
-        }
+    const timeoutId = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const playlistId = activePlaylist.id;
+        const results = await db.items
+          .where('playlistId')
+          .equals(playlistId)
+          .filter((item) => {
+            if (searchKind !== 'all' && item.mediaKind !== searchKind) return false;
+            const name = (item.title || item.name || '').toLowerCase();
+            return name.includes(term);
+          })
+          .limit(120)
+          .toArray();
+        if (!cancelled) setSearchResults(results);
+      } catch (e) {
+        if (!cancelled) setSearchResults([]);
+      } finally {
+        if (!cancelled) setSearchLoading(false);
       }
-      runSearch();
     }, 300);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    };
+    return () => { cancelled = true; clearTimeout(timeoutId); };
   }, [activePlaylist, searchKind, searchTerm]);
 
   const handleExit = useCallback(() => {
@@ -306,10 +324,9 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   }, []);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    // Só processa se não há elemento focado (evita conflito com inputs)
     if (document.activeElement?.tagName === 'INPUT') return;
 
-    const scrollAmount = 100; // pixels por tecla
+    const scrollAmount = 200;
     const pageScrollAmount = contentRef.current?.clientHeight || 500;
 
     switch (e.key) {
@@ -337,44 +354,23 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
-  // Função para carregar mais carrosséis
-  const loadMoreGroups = useCallback(() => {
-    if (loadingMoreGroups) return;
-
-    console.log(`[Home] 🔄 loadMoreGroups chamado - incrementando de ${visibleGroupsCount} para ${visibleGroupsCount + 8}`);
-
-    setLoadingMoreGroups(true);
-    setVisibleGroupsCount(prev => prev + 8); // Incrementa +8 grupos por vez
-
-    // Simula delay de carregamento
-    setTimeout(() => {
-      setLoadingMoreGroups(false);
-    }, 500);
-  }, [loadingMoreGroups, visibleGroupsCount]);
-
   // Infinite scroll: detecta quando usuário chega perto do fim
   useEffect(() => {
     const handleScroll = () => {
-      if (!contentRef.current || loadingMoreGroups) return;
-
+      if (!contentRef.current) return;
       const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
       const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
-
-      // Trigger quando chegar a 80% da página
-      if (scrollPercentage > 0.8) {
-        console.log(`[Home] 🎯 80% atingido (${Math.round(scrollPercentage * 100)}%) - disparando loadMoreGroups`);
+      if (scrollPercentage > 0.7 && !loadingMoreGroups) {
         loadMoreGroups();
       }
     };
-
     const content = contentRef.current;
     content?.addEventListener('scroll', handleScroll);
     return () => content?.removeEventListener('scroll', handleScroll);
   }, [loadingMoreGroups, loadMoreGroups]);
 
-  // Reset de scroll infinito ao trocar aba
+  // Reset flags ao trocar aba
   useEffect(() => {
-    setVisibleGroupsCount(8);
     setLoadingMoreGroups(false);
   }, [selectedNav]);
 
@@ -420,11 +416,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         </div>
         <div className={styles.carouselTrack} style={{ gap: 16 }}>
           {searchResults.map((item) => (
-            <SearchResultCard
-              key={item.id}
-              item={item}
-              onSelectItem={onSelectItem}
-            />
+            <SearchResultCard key={item.id} item={item} onSelectItem={onSelectItem} />
           ))}
         </div>
       </div>
@@ -432,7 +424,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   };
 
   const renderRows = () => {
-    if (loading) {
+    if (loading && rows.length === 0) {
       return (
         <div className={styles.section}>
           <div className={styles.sectionHeader}>
@@ -480,12 +472,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
               </button>
               <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
                 {row.items.map((item) => (
-                  <MediaCard
-                    key={item.id}
-                    item={item}
-                    groupName={row.group.name}
-                    onSelectItem={onSelectItem}
-                  />
+                  <MediaCard key={item.id} item={item} groupName={row.group.name} onSelectItem={onSelectItem} />
                 ))}
               </div>
               <button
