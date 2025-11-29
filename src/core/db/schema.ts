@@ -119,6 +119,15 @@ class AtivePlayDB extends Dexie {
       });
       console.log(`[DB] Migração v4 completa: ${count} items normalizados`);
     });
+
+    // Schema v5 - Adiciona índice composto triplo para queries de carrosséis
+    this.version(5).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: 'id, playlistId, url, group, mediaKind, titleNormalized, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind]',
+      groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    });
   }
 }
 
