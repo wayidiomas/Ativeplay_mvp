@@ -32,8 +32,8 @@ import { promisify } from 'util';
 const renameAsync = promisify(rename);
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-const MAX_M3U_SIZE_MB = 500;
-const FETCH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+const MAX_M3U_SIZE_MB = 1000;
+const FETCH_TIMEOUT_MS = 30 * 60 * 1000; // 15 minutos (aumentado para playlists grandes)
 
 // ===== Helper Functions (duplicado do index.js) =====
 
@@ -474,14 +474,12 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           // ✅ Declara groupId ANTES de usar
           const groupId = generateGroupId(groupTitle, mediaKind);
 
-          // Usa logo canônico do grupo se disponível (dedupe visual)
-          const groupLogo = groupsMap.get(groupId)?.logo || tvgLogo || '';
-
           const item = {
             id: generateItemId(trimmed, itemIndex++, tvgId || xuiId || name),
             name,
             url: trimmed,
-            logo: groupLogo,
+            // Mantém logo original do item; não força logo canônico
+            logo: tvgLogo || '',
             group: groupTitle,
             mediaKind,
             parsedTitle,
@@ -530,7 +528,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const existingGroup = groupsMap.get(groupId);
           if (existingGroup) {
             existingGroup.itemCount++;
-            // Mantém um logo canônico: se o grupo não tem logo ainda, usa o primeiro válido
+            // Apenas guarda logo se ainda vazio, sem trocar logos existentes
             if (!existingGroup.logo && tvgLogo) {
               existingGroup.logo = tvgLogo;
             }
