@@ -583,6 +583,9 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               ? parsedTitle.titleNormalized
               : null;
 
+          // ✅ Declara groupId ANTES de usar (buffer final)
+          const groupId = generateGroupId(groupTitle, mediaKind);
+
           const item = {
             id: generateItemId(trimmed, itemIndex++, tvgId || xuiId || name),
             name,
