@@ -463,8 +463,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             ? normalizeGroupTitle(groupTitleRaw)
             : normalizeGroupTitle(groupTitleRaw);
 
-          // URLs /ts → força live
-          const mediaKind = /\/ts(\?|$)/i.test(trimmed) ? 'live' : classify(name, groupTitle);
+          const mediaKind = classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
           const seriesKey =
             mediaKind === 'series' && parsedTitle.titleNormalized
@@ -574,7 +573,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             ? normalizeGroupTitle(groupTitleRaw)
             : normalizeGroupTitle(groupTitleRaw);
 
-          const mediaKind = /\/ts(\?|$)/i.test(trimmed) ? 'live' : classify(name, groupTitle);
+          const mediaKind = classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
           const seriesKey =
             mediaKind === 'series' && parsedTitle.titleNormalized
