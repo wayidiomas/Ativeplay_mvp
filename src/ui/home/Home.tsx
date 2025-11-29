@@ -493,7 +493,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         ? await (row.lastSeriesId
             ? db.series
                 .where({ playlistId: activePlaylist.id, group: row.group.name })
-                .and((s) => s.id > row.lastSeriesId!)
+                .filter((s) => s.id !== row.lastSeriesId) // evita repetir última
+                .offset(row.series?.length ?? 0)
                 .limit(ITEMS_LOAD_MORE)
                 .toArray()
             : db.series
@@ -507,21 +508,36 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         ? await (row.lastItemId
             ? db.items
                 .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
-                .filter((item) => !item.seriesId && item.id > row.lastItemId!)
+                .filter((item) => !item.seriesId && item.id !== row.lastItemId!)
+                .offset(row.items.length)
                 .limit(ITEMS_LOAD_MORE)
                 .toArray()
             : db.items
                 .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
                 .filter((item) => !item.seriesId)
+                .offset(row.items.length)
                 .limit(ITEMS_LOAD_MORE)
                 .toArray())
         : [];
 
       // Atualiza a row com os novos itens
+      // Dedup séries e itens por id
+      const seriesSet = new Set([...(row.series || []).map((s) => s.id)]);
+      const dedupSeries = [
+        ...(row.series || []),
+        ...moreSeries.filter((s) => !seriesSet.has(s.id)),
+      ];
+
+      const itemsSet = new Set(row.items.map((i) => i.id));
+      const dedupItems = [
+        ...row.items,
+        ...moreItems.filter((i) => !itemsSet.has(i.id)),
+      ];
+
       const updatedRow: Row = {
         ...row,
-        series: [...(row.series || []), ...moreSeries],
-        items: [...row.items, ...moreItems],
+        series: dedupSeries,
+        items: dedupItems,
         lastSeriesId: moreSeries.length > 0 ? moreSeries[moreSeries.length - 1].id : row.lastSeriesId,
         lastItemId: moreItems.length > 0 ? moreItems[moreItems.length - 1].id : row.lastItemId,
         hasMoreSeries: moreSeries.length === ITEMS_LOAD_MORE,
