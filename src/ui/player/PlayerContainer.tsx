@@ -48,6 +48,7 @@ export function PlayerContainer({
     open,
     play,
     pause,
+    seek,
     seekForward,
     seekBackward,
     setAudioTrack,
@@ -213,6 +214,17 @@ export function PlayerContainer({
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedProgress = duration > 0 ? (bufferedTime / duration) * 100 : 0;
 
+  const handleSeekClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (duration <= 0) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = Math.min(Math.max(0, (e.clientX - rect.left) / rect.width), 1);
+      const newPosition = ratio * duration;
+      seek(newPosition);
+    },
+    [duration, seek]
+  );
+
   // Render loading state
   if (state === 'loading' || state === 'idle') {
     return (
@@ -278,7 +290,7 @@ export function PlayerContainer({
         {/* Bottom Bar */}
         <div className={styles.bottomBar}>
           {/* Progress Bar */}
-          <div className={styles.progressContainer} tabIndex={0}>
+          <div className={styles.progressContainer} tabIndex={0} onClick={handleSeekClick}>
             <div
               className={styles.progressBar}
               role="progressbar"
