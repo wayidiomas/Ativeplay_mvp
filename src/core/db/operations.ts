@@ -397,10 +397,16 @@ export async function addPlaylist(
     throw new Error(`Limite de ${MAX_PLAYLISTS} playlists atingido`);
   }
 
-  // Verifica se URL ja existe
+  // Verifica se URL ja existe - se sim, apenas ativa e retorna
   const existing = await db.playlists.where('url').equals(url).first();
   if (existing) {
-    throw new Error('Esta playlist ja foi adicionada');
+    console.log('[DB DEBUG] Playlist já existe, ativando:', existing.id);
+
+    // Ativa a playlist existente
+    await setActivePlaylist(existing.id);
+
+    // Retorna o ID da playlist existente
+    return existing.id;
   }
 
   // Gera ID unico
