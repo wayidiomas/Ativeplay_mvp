@@ -9,3 +9,7 @@ healthcheckTimeout = 100
 
 [env]
 NODE_ENV = "production"
+
+[[volumes]]
+name = "parse-cache"
+mountPath = "/app/server/.parse-cache"
