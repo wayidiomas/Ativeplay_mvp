@@ -303,6 +303,8 @@ async function syncItemsFromServer(
       // Aguarda job completar
       if (parseData.queued) {
         await waitForJobCompletion(parseData.jobId);
+        // Aguarda 1s adicional para garantir que cache foi salvo no disco
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
       // Recomeça sync com novo hash (RECURSÃO)
@@ -387,6 +389,8 @@ async function syncItemsFromServer(
       // Aguarda job completar
       if (parseData.queued) {
         await waitForJobCompletion(parseData.jobId);
+        // Aguarda 1s adicional para garantir que cache foi salvo no disco
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
       // Recomeça sync com novo hash (RECURSÃO)

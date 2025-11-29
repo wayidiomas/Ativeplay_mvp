@@ -88,34 +88,49 @@ class CacheIndex {
 
   /**
    * Busca no índice (memória + fallback ao disco)
-   * Multi-processo safe: se não encontrar em memória, tenta carregar do disco
+   * Multi-processo safe: se não encontrar em memória OU se estiver expirado, tenta carregar do disco
    */
   async get(hash) {
     // 1. Tenta memória primeiro (rápido)
     let entry = this.index.get(hash);
 
-    // 2. Se não encontrou, tenta carregar do disco (outro processo pode ter salvado)
-    if (!entry) {
+    // 2. Se encontrou em memória mas está expirado → tenta recarregar do disco
+    //    (Worker pode ter salvo versão atualizada do mesmo hash)
+    const needsReload = entry && Date.now() > entry.expiresAt;
+
+    // 3. Se não encontrou OU precisa recarregar → tenta disco
+    if (!entry || needsReload) {
       try {
         const metaPath = path.join(CACHE_DIR, `${hash}.meta.json`);
         const content = await fs.readFile(metaPath, 'utf8');
-        entry = JSON.parse(content);
+        const diskEntry = JSON.parse(content);
 
         // Verifica se arquivo .ndjson existe
         const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
         await fs.access(itemsPath);
 
-        // Adiciona ao índice em memória
-        this.index.set(hash, entry);
-        console.log(`[CacheIndex] Carregado do disco: ${hash}`);
+        // Atualiza em memória
+        this.index.set(hash, diskEntry);
+        entry = diskEntry;
+
+        if (needsReload) {
+          console.log(`[CacheIndex] Recarregado do disco (expirado atualizado): ${hash}`);
+        } else {
+          console.log(`[CacheIndex] Carregado do disco: ${hash}`);
+        }
       } catch {
+        // Disco também não tem ou está expirado
+        if (entry) {
+          console.log(`[CacheIndex] Cache expirado (não atualizado no disco): ${hash}`);
+          this.delete(hash); // Cleanup assíncrono
+        }
         return null;
       }
     }
 
-    // 3. Verifica expiração
+    // 4. Verifica expiração final (após reload)
     if (Date.now() > entry.expiresAt) {
-      console.log(`[CacheIndex] Cache expirado durante leitura: ${hash}`);
+      console.log(`[CacheIndex] Cache expirado após reload: ${hash}`);
       this.delete(hash); // Cleanup assíncrono
       return null;
     }
