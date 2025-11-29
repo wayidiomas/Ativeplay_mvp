@@ -5,6 +5,7 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
 import { usePlaylistStore } from '@store/playlistStore';
 import { SkeletonCard } from '../shared';
@@ -17,6 +18,9 @@ interface MediaGridProps {
 }
 
 const PAGE_SIZE = 240; // Increased for smoother loading (2 pages worth)
+const CARD_WIDTH = 200; // Must match CSS --card-width
+const CARD_GAP = 16; // Must match CSS --card-gap
+const CARD_HEIGHT = 300; // Estimated height (poster ratio ~1.5 + overlay)
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -62,12 +66,42 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const loading = items === undefined;
   const hasMore = (items?.length || 0) < (totalCount || 0);
 
+  // Calculate columns per row dynamically based on container width
+  const [columnsPerRow, setColumnsPerRow] = useState(5);
+  useEffect(() => {
+    const updateColumns = () => {
+      if (!gridRef.current) return;
+      const containerWidth = gridRef.current.clientWidth - 48; // Subtract padding
+      const cols = Math.floor(containerWidth / (CARD_WIDTH + CARD_GAP)) || 1;
+      setColumnsPerRow(cols);
+    };
+    updateColumns();
+    window.addEventListener('resize', updateColumns);
+    return () => window.removeEventListener('resize', updateColumns);
+  }, []);
+
+  // Split items into rows for virtual scrolling
+  const rows = [];
+  if (items) {
+    for (let i = 0; i < items.length; i += columnsPerRow) {
+      rows.push(items.slice(i, i + columnsPerRow));
+    }
+  }
+
+  // Virtual scrolling setup
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => gridRef.current,
+    estimateSize: () => CARD_HEIGHT + CARD_GAP,
+    overscan: 2, // Render 2 extra rows above/below viewport
+  });
+
   // Debug log
   useEffect(() => {
     if (!loading && items) {
-      console.log(`[MediaGrid] visibleCount=${visibleCount}, loaded=${items.length}, total=${totalCount}, hasMore=${hasMore}`);
+      console.log(`[MediaGrid] visibleCount=${visibleCount}, loaded=${items.length}, total=${totalCount}, hasMore=${hasMore}, rows=${rows.length}, cols=${columnsPerRow}`);
     }
-  }, [visibleCount, items?.length, totalCount, hasMore, loading]);
+  }, [visibleCount, items?.length, totalCount, hasMore, loading, rows.length, columnsPerRow]);
 
   // Reset visibleCount quando grupo muda
   useEffect(() => {
@@ -136,7 +170,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     [items]
   );
 
-  // Keyboard navigation for TV/remote
+  // Keyboard navigation for TV/remote (adjusted for dynamic grid columns)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Backspace') {
@@ -147,11 +181,11 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       if (gridRef.current && document.activeElement?.closest(`.${styles.grid}`)) {
         switch (e.key) {
           case 'ArrowUp':
-            focusIndex((focusedIndex ?? 0) - 5);
+            focusIndex((focusedIndex ?? 0) - columnsPerRow);
             e.preventDefault();
             break;
           case 'ArrowDown':
-            focusIndex((focusedIndex ?? 0) + 5);
+            focusIndex((focusedIndex ?? 0) + columnsPerRow);
             e.preventDefault();
             break;
           case 'ArrowLeft':
@@ -163,11 +197,11 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
             e.preventDefault();
             break;
           case 'PageUp':
-            focusIndex((focusedIndex ?? 0) - 10);
+            focusIndex((focusedIndex ?? 0) - (columnsPerRow * 2));
             e.preventDefault();
             break;
           case 'PageDown':
-            focusIndex((focusedIndex ?? 0) + 10);
+            focusIndex((focusedIndex ?? 0) + (columnsPerRow * 2));
             e.preventDefault();
             break;
         }
@@ -176,7 +210,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
     window.addEventListener('keydown', handleKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusIndex, focusedIndex, onBack]);
+  }, [focusIndex, focusedIndex, onBack, columnsPerRow]);
 
   // Auto-focus primeiro card
   useEffect(() => {
@@ -258,55 +292,89 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
           overflow: 'auto',
         }}
       >
-        {items?.map((item: M3UItem, idx: number) => (
-          <button
-            key={item.id}
-            className={styles.card}
-            onClick={() => onSelectItem(item)}
-            data-index={idx}
-            onFocus={(e) => {
-              e.currentTarget.scrollIntoView({
-                behavior: 'smooth',
-                block: 'nearest',
-                inline: 'nearest',
-              });
-              setFocusedIndex(idx);
-            }}
-            tabIndex={0}
-          >
-            {item.logo ? (
-              <img
-                src={item.logo}
-                alt={getDisplayName(item)}
-                className={styles.cardPoster}
-                loading="lazy"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                  (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
-                }}
-              />
-            ) : null}
-            <div
-              className={styles.cardPlaceholder}
-              style={item.logo ? { display: 'none' } : undefined}
-            >
-              {item.mediaKind === 'live' ? 'TV' : '#'}
-            </div>
+        {/* Virtual scrolling container */}
+        <div
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            if (!row) return null;
 
-            <div className={styles.cardOverlay}>
-              <div className={styles.cardTitle}>{getDisplayName(item)}</div>
-              <div className={styles.cardMeta}>
-                {item.year && <span className={styles.cardYear}>{item.year}</span>}
-                {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
-                {item.season && item.episode && (
-                  <span className={styles.cardYear}>
-                    S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
-                  </span>
-                )}
+            return (
+              <div
+                key={virtualRow.key}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${columnsPerRow}, 1fr)`,
+                  gap: `${CARD_GAP}px`,
+                }}
+              >
+                {row.map((item: M3UItem, colIdx: number) => {
+                  const globalIdx = virtualRow.index * columnsPerRow + colIdx;
+                  return (
+                    <button
+                      key={item.id}
+                      className={styles.card}
+                      onClick={() => onSelectItem(item)}
+                      data-index={globalIdx}
+                      onFocus={(e) => {
+                        e.currentTarget.scrollIntoView({
+                          behavior: 'smooth',
+                          block: 'nearest',
+                          inline: 'nearest',
+                        });
+                        setFocusedIndex(globalIdx);
+                      }}
+                      tabIndex={0}
+                    >
+                      {item.logo ? (
+                        <img
+                          src={item.logo}
+                          alt={getDisplayName(item)}
+                          className={styles.cardPoster}
+                          loading="lazy"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                            (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        className={styles.cardPlaceholder}
+                        style={item.logo ? { display: 'none' } : undefined}
+                      >
+                        {item.mediaKind === 'live' ? 'TV' : '#'}
+                      </div>
+
+                      <div className={styles.cardOverlay}>
+                        <div className={styles.cardTitle}>{getDisplayName(item)}</div>
+                        <div className={styles.cardMeta}>
+                          {item.year && <span className={styles.cardYear}>{item.year}</span>}
+                          {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
+                          {item.season && item.episode && (
+                            <span className={styles.cardYear}>
+                              S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
-            </div>
-          </button>
-        ))}
+            );
+          })}
+        </div>
       </div>
 
       {loadingMore && (

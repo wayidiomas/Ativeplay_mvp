@@ -46,8 +46,8 @@ interface Row {
   items: M3UItem[];
   series?: Series[]; // Para aba de séries: contém séries agrupadas
   isSeries?: boolean; // Flag para indicar que é row de séries
-  seriesLoadedCount?: number; // Quantas séries foram carregadas (para lazy loading)
-  itemsLoadedCount?: number; // Quantos items foram carregados (para lazy loading)
+  lastSeriesId?: string; // ID da última série carregada (keyset pagination)
+  lastItemId?: string; // ID do último item carregado (keyset pagination)
   hasMoreSeries?: boolean; // Se há mais séries para carregar
   hasMoreItems?: boolean; // Se há mais items para carregar
 }
@@ -460,26 +460,33 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
     // Para séries: carrega mais séries ou items
     if (mediaKind === 'series' && row.isSeries) {
-      const seriesOffset = row.seriesLoadedCount || 0;
-      const itemsOffset = row.itemsLoadedCount || 0;
-
-      // Carrega mais séries se houver
+      // Carrega mais séries se houver (keyset pagination)
       const moreSeries = row.hasMoreSeries
-        ? await db.series
-            .where({ playlistId: activePlaylist.id, group: row.group.name })
-            .offset(seriesOffset)
-            .limit(ITEMS_LOAD_MORE)
-            .toArray()
+        ? await (row.lastSeriesId
+            ? db.series
+                .where({ playlistId: activePlaylist.id, group: row.group.name })
+                .and((s) => s.id > row.lastSeriesId!)
+                .limit(ITEMS_LOAD_MORE)
+                .toArray()
+            : db.series
+                .where({ playlistId: activePlaylist.id, group: row.group.name })
+                .limit(ITEMS_LOAD_MORE)
+                .toArray())
         : [];
 
-      // Carrega mais items não agrupados se houver
+      // Carrega mais items não agrupados se houver (keyset pagination)
       const moreItems = row.hasMoreItems
-        ? await db.items
-            .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
-            .filter((item) => !item.seriesId)
-            .offset(itemsOffset)
-            .limit(ITEMS_LOAD_MORE)
-            .toArray()
+        ? await (row.lastItemId
+            ? db.items
+                .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+                .filter((item) => !item.seriesId && item.id > row.lastItemId!)
+                .limit(ITEMS_LOAD_MORE)
+                .toArray()
+            : db.items
+                .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+                .filter((item) => !item.seriesId)
+                .limit(ITEMS_LOAD_MORE)
+                .toArray())
         : [];
 
       // Atualiza a row com os novos itens
@@ -487,8 +494,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         ...row,
         series: [...(row.series || []), ...moreSeries],
         items: [...row.items, ...moreItems],
-        seriesLoadedCount: seriesOffset + moreSeries.length,
-        itemsLoadedCount: itemsOffset + moreItems.length,
+        lastSeriesId: moreSeries.length > 0 ? moreSeries[moreSeries.length - 1].id : row.lastSeriesId,
+        lastItemId: moreItems.length > 0 ? moreItems[moreItems.length - 1].id : row.lastItemId,
         hasMoreSeries: moreSeries.length === ITEMS_LOAD_MORE,
         hasMoreItems: moreItems.length === ITEMS_LOAD_MORE,
       };
@@ -508,14 +515,18 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       return;
     }
 
-    // Para movies e live: carrega mais items
-    const itemsOffset = row.itemsLoadedCount || 0;
+    // Para movies e live: carrega mais items (keyset pagination)
     const moreItems = row.hasMoreItems
-      ? await db.items
-          .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
-          .offset(itemsOffset)
-          .limit(ITEMS_LOAD_MORE)
-          .toArray()
+      ? await (row.lastItemId
+          ? db.items
+              .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+              .and((item) => item.id > row.lastItemId!)
+              .limit(ITEMS_LOAD_MORE)
+              .toArray()
+          : db.items
+              .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+              .limit(ITEMS_LOAD_MORE)
+              .toArray())
       : [];
 
     if (moreItems.length === 0) {
@@ -530,7 +541,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     const updatedRow: Row = {
       ...row,
       items: [...row.items, ...moreItems],
-      itemsLoadedCount: itemsOffset + moreItems.length,
+      lastItemId: moreItems.length > 0 ? moreItems[moreItems.length - 1].id : row.lastItemId,
       hasMoreItems: moreItems.length === ITEMS_LOAD_MORE,
     };
 

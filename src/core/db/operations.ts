@@ -21,12 +21,20 @@ async function pollJobUntilComplete(
   onProgress?: ProgressCallback,
   hash?: string // Hash da playlist para polling incremental
 ): Promise<{ hash: string; stats: any; groups: any[] }> {
-  const pollInterval = 2000; // Poll a cada 2s
-  const maxAttempts = 300; // 10 minutos (300 × 2s)
+  const maxAttempts = 300; // Safety limit
+  const initialInterval = 2000; // Start at 2s
+  const maxInterval = 30000; // Cap at 30s
+  const backoffMultiplier = 1.5; // Exponential factor
   let attempts = 0;
 
   while (attempts < maxAttempts) {
     attempts++;
+
+    // Exponential backoff: 2s → 3s → 4.5s → 6.75s → ... → 30s (capped)
+    const pollInterval = Math.min(
+      initialInterval * Math.pow(backoffMultiplier, attempts - 1),
+      maxInterval
+    );
 
     try {
       const response = await fetch(`${SERVER_URL}/api/jobs/${jobId}`, {
@@ -85,7 +93,7 @@ async function pollJobUntilComplete(
         message: statusMessages[jobStatus.status] || 'Processando...',
       });
 
-      // Aguarda antes do próximo poll
+      // Aguarda antes do próximo poll (exponential backoff)
       await new Promise(resolve => setTimeout(resolve, pollInterval));
 
     } catch (error) {
@@ -93,7 +101,7 @@ async function pollJobUntilComplete(
       if (attempts >= maxAttempts) {
         throw new Error('Timeout ao processar playlist. Tente novamente.');
       }
-      // Aguarda antes de retentar
+      // Aguarda antes de retentar (exponential backoff)
       await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
   }
@@ -397,7 +405,7 @@ async function syncItemsFromServer(
     throw new Error('Servidor não configurado. Configure VITE_BRIDGE_URL no .env');
   }
 
-  const batchSize = 100;
+  const batchSize = 500; // Increased from 100 for better performance
   let total = 0;
   let processed = 0;
 
@@ -508,64 +516,19 @@ async function syncItemsFromServer(
     return { partial: true, loaded: processed, total };
   }
 
-  // MODO COMPLETO: Carrega todos os items com paginação
+  // MODO COMPLETO: Carrega todos os items com paginação PARALELA
   const pageSize = 5000;
+  const parallelFetches = 5; // Fetch 5 pages in parallel
   let offset = 0;
 
   // ✅ DEDUP EFÊMERO (liberado ao final da função)
   const seenUrls = new Set<string>();
   let duplicatesSkipped = 0;
 
-  while (true) {
-    // ✅ Usa fetchWithRetry para robustez
-    const itemsResponse = await fetchWithRetry(
-      `${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=${offset}`
-    );
-
-    // FALLBACK: Cache expirado (404) → reprocessa playlist
-    if (itemsResponse.status === 404) {
-      console.warn(`[DB DEBUG] Cache expirado em offset ${offset} (404). Reprocessando e reiniciando do zero...`);
-
-      const playlist = await db.playlists.get(playlistId);
-      if (!playlist) throw new Error('Playlist não encontrada');
-
-      // Solicita reprocessamento no servidor
-      const parseResponse = await fetch(`${SERVER_URL}/api/playlist/parse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: playlist.url }),
-      });
-
-      const parseData = await parseResponse.json();
-      const newHash = parseData.hash;
-
-      // Atualiza hash no banco
-      await db.playlists.update(playlistId, { hash: newHash });
-      console.log('[DB DEBUG] Novo hash salvo:', newHash);
-
-      // Aguarda job completar
-      if (parseData.queued) {
-        await waitForJobCompletion(parseData.jobId);
-        // Aguarda 1s adicional para garantir que cache foi salvo no disco
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-
-      // IMPORTANTE: Recomeça do ZERO (não do offset atual)
-      // Remove options.loadPartial para forçar modo completo desde o início
-      return syncItemsFromServer(newHash, playlistId, onProgress, { loadPartial: false });
-    }
-
-    if (!itemsResponse.ok) {
-      throw new Error(`Erro ao buscar itens: ${itemsResponse.status}`);
-    }
-
-    const page = await itemsResponse.json();
+  // Helper: Process and insert a single page
+  const processPage = (page: any) => {
     const items = page.items || [];
-    total = page.total || total || items.length;
-
-    if (items.length === 0) {
-      break;
-    }
+    if (items.length === 0) return { dbItems: [], itemsCount: 0 };
 
     // ✅ FILTRAR DUPLICATAS ANTES DE INSERIR
     const uniqueItems = items.filter((item: any) => {
@@ -577,14 +540,6 @@ async function syncItemsFromServer(
       return true;
     });
 
-    console.log('[DB DEBUG] Página processada', {
-      total: items.length,
-      unique: uniqueItems.length,
-      duplicates: items.length - uniqueItems.length,
-      totalDuplicatesSkipped: duplicatesSkipped,
-    });
-
-    // Inserir em lotes menores para evitar travar
     const dbItems: M3UItem[] = uniqueItems.map((item: any) => {
       const title = item.parsedTitle?.title || item.title || item.name;
       return {
@@ -596,7 +551,7 @@ async function syncItemsFromServer(
         group: item.group,
         mediaKind: item.mediaKind,
         title,
-        titleNormalized: (title || '').toUpperCase(), // Para busca otimizada
+        titleNormalized: (title || '').toUpperCase(),
         year: item.parsedTitle?.year || item.year,
         season: item.parsedTitle?.season || item.season,
         episode: item.parsedTitle?.episode || item.episode,
@@ -606,23 +561,89 @@ async function syncItemsFromServer(
       };
     });
 
-    for (let i = 0; i < dbItems.length; i += batchSize) {
-      const batch = dbItems.slice(i, i + batchSize);
-      // bulkPut faz upsert (update or insert) - evita erro se item já existe
-      await db.items.bulkPut(batch);
+    return { dbItems, itemsCount: items.length };
+  };
+
+  // Fetch first page to get total count
+  const firstResponse = await fetchWithRetry(
+    `${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=0`
+  );
+
+  if (firstResponse.status === 404) {
+    // Handle cache expiry (same as before)
+    console.warn('[DB DEBUG] Cache expirado. Reprocessando...');
+    const playlist = await db.playlists.get(playlistId);
+    if (!playlist) throw new Error('Playlist não encontrada');
+    const parseResponse = await fetch(`${SERVER_URL}/api/playlist/parse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: playlist.url }),
+    });
+    const parseData = await parseResponse.json();
+    await db.playlists.update(playlistId, { hash: parseData.hash });
+    if (parseData.queued) {
+      await waitForJobCompletion(parseData.jobId);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return syncItemsFromServer(parseData.hash, playlistId, onProgress, { loadPartial: false });
+  }
+
+  if (!firstResponse.ok) {
+    throw new Error(`Erro ao buscar itens: ${firstResponse.status}`);
+  }
+
+  const firstPage = await firstResponse.json();
+  total = firstPage.total || 0;
+
+  // Process and insert first page
+  const { dbItems: firstDbItems, itemsCount: firstCount } = processPage(firstPage);
+  for (let i = 0; i < firstDbItems.length; i += batchSize) {
+    const batch = firstDbItems.slice(i, i + batchSize);
+    await db.items.bulkPut(batch);
+  }
+  processed += firstCount;
+  offset = pageSize;
+
+  // Parallel fetch remaining pages
+  while (offset < total) {
+    // Calculate how many pages to fetch in parallel
+    const fetchPromises = [];
+    for (let i = 0; i < parallelFetches && offset < total; i++) {
+      const currentOffset = offset + (i * pageSize);
+      fetchPromises.push(
+        fetchWithRetry(`${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=${currentOffset}`)
+          .then(res => res.ok ? res.json() : null)
+      );
     }
 
-    processed += items.length;
-    offset += page.limit || pageSize;
+    // Wait for all parallel fetches to complete
+    const pages = await Promise.all(fetchPromises);
 
-    const percentage = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
-    onProgress?.({
-      phase: 'indexing',
-      current: processed,
-      total: total || processed,
-      percentage,
-      message: `Sincronizando itens... (${processed}/${total || '?'})`,
-    });
+    // Insert pages serially (to avoid Dexie lock contention)
+    for (const page of pages) {
+      if (!page) continue;
+
+      const { dbItems, itemsCount } = processPage(page);
+
+      // Insert in sub-batches
+      for (let i = 0; i < dbItems.length; i += batchSize) {
+        const batch = dbItems.slice(i, i + batchSize);
+        await db.items.bulkPut(batch);
+      }
+
+      processed += itemsCount;
+
+      const percentage = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+      onProgress?.({
+        phase: 'indexing',
+        current: processed,
+        total,
+        percentage,
+        message: `Sincronizando itens... (${processed}/${total})`,
+      });
+    }
+
+    offset += parallelFetches * pageSize;
 
     if (processed >= total) break;
   }
@@ -698,8 +719,8 @@ async function groupAndSaveSeries(playlistId: string): Promise<void> {
         });
       }
 
-      // Atualiza em lotes de 100
-      const batchSize = 100;
+      // Atualiza em lotes de 500 (increased for better performance)
+      const batchSize = 500;
       for (let i = 0; i < updates.length; i += batchSize) {
         const batch = updates.slice(i, i + batchSize);
         for (const update of batch) {

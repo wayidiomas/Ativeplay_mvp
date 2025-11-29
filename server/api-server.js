@@ -6,6 +6,7 @@
 
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import QRCode from 'qrcode';
 import { createHash, randomBytes } from 'crypto';
 import { networkInterfaces } from 'os';
@@ -580,6 +581,19 @@ async function deleteSession(sessionId) {
 }
 
 app.use(cors());
+// Gzip compression (skip HLS proxy for video streaming)
+app.use(compression({
+  filter: (req, res) => {
+    // Don't compress HLS video streams
+    if (req.path === '/api/proxy/hls') {
+      return false;
+    }
+    // Compress everything else
+    return compression.filter(req, res);
+  },
+  threshold: 1024, // Only compress responses > 1KB
+  level: 6, // Balance between speed and compression ratio (0-9)
+}));
 app.use(express.json());
 
 // ===== Rate Limiting =====
@@ -1034,8 +1048,17 @@ async function readItemsWithIndex(itemsPath, offset, limit) {
 }
 
 /**
+ * Helper: Generate ETag for cache validation
+ */
+function generateETag(hash, ...extras) {
+  const content = [hash, ...extras].join('-');
+  return `"${createHash('sha1').update(content).digest('hex').substring(0, 16)}"`;
+}
+
+/**
  * GET /api/playlist/items/:hash
  * Retorna itens paginados de uma playlist já parseada
+ * Cache: ETag + Cache-Control (10min)
  */
 app.get('/api/playlist/items/:hash', async (req, res) => {
   const { hash } = req.params;
@@ -1048,11 +1071,25 @@ app.get('/api/playlist/items/:hash', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || `${MAX_ITEMS_PAGE}`, 10), MAX_ITEMS_PAGE);
   const offset = parseInt(req.query.offset || '0', 10);
 
+  // Generate ETag: hash + offset + limit + createdAt
+  const etag = generateETag(hash, offset.toString(), limit.toString(), cached.createdAt.toString());
+
+  // Check If-None-Match (browser cache validation)
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end(); // Not Modified
+  }
+
   try {
     const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
     const items = await readItemsWithIndex(itemsPath, offset, limit);
 
     console.log('[Items] Página servida', { hash, offset, limit, returned: items.length, total: cached.stats?.totalItems });
+
+    // Set cache headers
+    res.set({
+      'Cache-Control': 'public, max-age=600', // 10 minutes
+      'ETag': etag,
+    });
 
     res.json({
       items,
@@ -1070,6 +1107,7 @@ app.get('/api/playlist/items/:hash', async (req, res) => {
  * GET /api/playlist/items/:hash/partial
  * Retorna apenas os primeiros N items de uma playlist (para early navigation)
  * Usado para carregar mínimo viável antes de navegar para /home
+ * Cache: ETag + Cache-Control (10min)
  */
 app.get('/api/playlist/items/:hash/partial', async (req, res) => {
   const { hash } = req.params;
@@ -1082,6 +1120,14 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
   // Limite máximo de 5000 items, padrão 1000
   const limit = Math.min(parseInt(req.query.limit || '1000', 10), 5000);
 
+  // Generate ETag: hash + limit + createdAt
+  const etag = generateETag(hash, 'partial', limit.toString(), cached.createdAt.toString());
+
+  // Check If-None-Match (browser cache validation)
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end(); // Not Modified
+  }
+
   try {
     const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
     const items = await readItemsWithIndex(itemsPath, 0, limit); // offset=0 para partial
@@ -1091,6 +1137,12 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
       limit,
       returned: items.length,
       total: cached.stats?.totalItems || 0
+    });
+
+    // Set cache headers
+    res.set({
+      'Cache-Control': 'public, max-age=600', // 10 minutes
+      'ETag': etag,
     });
 
     res.json({
@@ -1109,6 +1161,7 @@ app.get('/api/playlist/items/:hash/partial', async (req, res) => {
  * GET /api/playlist/progress/:hash
  * Retorna status de progresso do parsing (early navigation support)
  * Status: "in_progress" | "completed" | "not_found"
+ * Cache: Condicional (completed: 10min, in_progress: 30s)
  */
 app.get('/api/playlist/progress/:hash', async (req, res) => {
   const { hash } = req.params;
@@ -1121,9 +1174,26 @@ app.get('/api/playlist/progress/:hash', async (req, res) => {
       const metaContent = await fs.readFile(metaPath, 'utf8');
       const meta = JSON.parse(metaContent);
 
+      const status = meta.parsingStatus || 'completed';
+      const isCompleted = status === 'completed';
+
+      // Generate ETag: hash + status + totalItems + createdAt
+      const etag = generateETag(hash, status, (meta.stats?.totalItems || 0).toString(), meta.createdAt.toString());
+
+      // Check If-None-Match (browser cache validation)
+      if (req.headers['if-none-match'] === etag) {
+        return res.status(304).end(); // Not Modified
+      }
+
+      // Set cache headers (longer for completed, shorter for in_progress)
+      res.set({
+        'Cache-Control': isCompleted ? 'public, max-age=600' : 'public, max-age=30', // 10min vs 30s
+        'ETag': etag,
+      });
+
       res.json({
         hash,
-        status: meta.parsingStatus || 'completed', // fallback para metas antigas
+        status,
         progress: {
           totalItems: meta.stats?.totalItems || 0,
           liveCount: meta.stats?.liveCount || 0,
@@ -1143,6 +1213,9 @@ app.get('/api/playlist/progress/:hash', async (req, res) => {
       if (job) {
         const jobState = await job.getState();
         const progress = job.progress || {};
+
+        // No cache for actively processing jobs (data changes rapidly)
+        res.set('Cache-Control', 'no-cache');
 
         res.json({
           hash,

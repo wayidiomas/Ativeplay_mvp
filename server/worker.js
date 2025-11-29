@@ -97,7 +97,17 @@ function parseTitle(name) {
   };
 }
 
+// Cache for classify() results (LRU-like with max size)
+const classifyCache = new Map();
+const MAX_CLASSIFY_CACHE = 50000; // Limit cache size to avoid memory issues
+
 function classify(name, group) {
+  // Check cache first
+  const cacheKey = `${name}|${group}`;
+  if (classifyCache.has(cacheKey)) {
+    return classifyCache.get(cacheKey);
+  }
+
   const lowerName = name.toLowerCase();
   const lowerGroup = group.toLowerCase();
 
@@ -125,11 +135,21 @@ function classify(name, group) {
   const hasYearMovie = /\b(19|20)\d{2}\b/.test(lowerName);
 
   // Prioridade
-  if (isLoop || isSports || isNews || isLiveKeywords) return 'live';
-  if (isSeriesGroup || isSeriesTitle) return 'series';
-  if (isMovieGroup || hasYearMovie) return 'movie';
+  let result;
+  if (isLoop || isSports || isNews || isLiveKeywords) result = 'live';
+  else if (isSeriesGroup || isSeriesTitle) result = 'series';
+  else if (isMovieGroup || hasYearMovie) result = 'movie';
+  else result = 'unknown';
 
-  return 'unknown';
+  // Cache result (with size limit)
+  if (classifyCache.size >= MAX_CLASSIFY_CACHE) {
+    // Remove oldest entry (first key)
+    const firstKey = classifyCache.keys().next().value;
+    classifyCache.delete(firstKey);
+  }
+  classifyCache.set(cacheKey, result);
+
+  return result;
 }
 
 function generateItemId(url, index) {
