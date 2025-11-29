@@ -260,6 +260,104 @@ async function savePartialMeta(hash, url, stats, groups, seriesIndex, status = '
   }
 }
 
+// ===== Series Grouping Helpers (Levenshtein Similarity) =====
+
+/**
+ * Calcula a distância de Levenshtein entre duas strings
+ * Retorna o número de operações (inserção, deleção, substituição) necessárias
+ */
+function levenshteinDistance(s1, s2) {
+  const len1 = s1.length;
+  const len2 = s2.length;
+  const matrix = [];
+
+  // Inicializa primeira coluna (0 a len1)
+  for (let i = 0; i <= len1; i++) {
+    matrix[i] = [i];
+  }
+
+  // Inicializa primeira linha (0 a len2)
+  for (let j = 0; j <= len2; j++) {
+    matrix[0][j] = j;
+  }
+
+  // Preenche a matriz com custos de operações
+  for (let i = 1; i <= len1; i++) {
+    for (let j = 1; j <= len2; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,      // deletion
+        matrix[i][j - 1] + 1,      // insertion
+        matrix[i - 1][j - 1] + cost // substitution
+      );
+    }
+  }
+
+  return matrix[len1][len2];
+}
+
+/**
+ * Normaliza nome para comparação
+ * Remove pontuação e sufixos de idioma
+ */
+function normalize(name) {
+  return name
+    .toLowerCase()
+    .replace(/\s+(pt-br|pt|br)$/i, '')  // Remove APENAS sufixos de idioma
+    .replace(/[^a-z0-9\s]/g, '')        // Remove pontuação
+    .replace(/\s+/g, ' ')               // Normaliza múltiplos espaços
+    .trim();
+}
+
+/**
+ * Calcula similaridade entre dois nomes (0-1)
+ * 1 = idênticos, 0 = completamente diferentes
+ */
+function calculateSimilarity(name1, name2) {
+  const n1 = normalize(name1);
+  const n2 = normalize(name2);
+
+  if (n1 === n2) return 1.0;
+
+  const distance = levenshteinDistance(n1, n2);
+  const maxLen = Math.max(n1.length, n2.length);
+
+  if (maxLen === 0) return 0;
+
+  return 1 - (distance / maxLen);
+}
+
+/**
+ * Agrupa items por similaridade de nome usando Levenshtein
+ * Threshold padrão: 0.85 (85% de similaridade = mesma série)
+ */
+function groupBySimilarity(items, threshold = 0.85) {
+  const groups = new Map();
+
+  for (const item of items) {
+    const baseName = item.name.toLowerCase()
+      .replace(/\[.*?\]/g, '')  // Remove [tags]
+      .replace(/\(.*?\)/g, '')  // Remove (ano/qualidade)
+      .trim();
+
+    let foundGroup = false;
+    for (const [groupKey, episodes] of groups.entries()) {
+      const similarity = calculateSimilarity(baseName, groupKey);
+      if (similarity >= threshold) {
+        episodes.push(item);
+        foundGroup = true;
+        break;
+      }
+    }
+
+    if (!foundGroup) {
+      groups.set(baseName, [item]);
+    }
+  }
+
+  return groups;
+}
+
 async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
   const hash = hashOverride || hashPlaylist(url);
   const itemsFile = path.join(CACHE_DIR, `${hash}.ndjson`);
@@ -538,6 +636,69 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
 
     stats.groupCount = groupsMap.size;
     const groups = Array.from(groupsMap.values());
+
+    // ===== AGRUPAMENTO DE SÉRIES SEM PADRÃO (Levenshtein) =====
+    // Coleta items de série sem padrão SxxExx lendo o arquivo .ndjson
+    logger.info('series_grouping_start', { hash });
+    const itemsWithoutPattern = [];
+
+    try {
+      const ndjsonContent = await fs.readFile(itemsFile, 'utf8');
+      const lines = ndjsonContent.trim().split('\n');
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const item = JSON.parse(line);
+          // Coleta séries sem seriesKey (sem padrão SxxExx)
+          if (item.mediaKind === 'series' && !item.seriesKey) {
+            itemsWithoutPattern.push(item);
+          }
+        } catch (parseError) {
+          // Skip linha corrompida
+        }
+      }
+
+      logger.info('series_without_pattern_collected', {
+        hash,
+        count: itemsWithoutPattern.length
+      });
+
+      // Agrupa por similaridade (Levenshtein) se houver items
+      if (itemsWithoutPattern.length > 0) {
+        const seriesGroups = groupBySimilarity(itemsWithoutPattern, 0.85);
+
+        logger.info('series_grouping_complete', {
+          hash,
+          originalCount: itemsWithoutPattern.length,
+          groupedCount: seriesGroups.size
+        });
+
+        // Atualiza seriesIndex com grupos encontrados
+        for (const [groupKey, episodes] of seriesGroups.entries()) {
+          const entry = seriesIndex.get(groupKey) || {
+            key: groupKey,
+            title: groupKey,
+            seasons: new Map(),
+            logo: episodes[0]?.logo || '',
+            totalEpisodes: 0,
+          };
+          entry.totalEpisodes += episodes.length;
+          seriesIndex.set(groupKey, entry);
+        }
+
+        logger.info('series_index_updated', {
+          hash,
+          totalSeriesInIndex: seriesIndex.size
+        });
+      }
+    } catch (groupError) {
+      logger.warn('series_grouping_failed', {
+        hash,
+        error: groupError.message
+      });
+      // Continua sem agrupar séries sem padrão
+    }
 
     // ✅ Calculate lightweight series statistics (no need to serialize 400MB)
     const seriesStats = {
