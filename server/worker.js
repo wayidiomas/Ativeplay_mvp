@@ -173,8 +173,14 @@ function normalizeGroupTitle(raw = '') {
 }
 
 function isLoop24h(title = '', group = '') {
-  const t = `${title} ${group}`.toLowerCase();
-  return /\b24h\b/.test(t) || /\b24hrs?\b/.test(t) || /\b24 horas\b/.test(t);
+  const combined = `${title} ${group}`.toLowerCase();
+
+  // ✅ Exceção: Se group-title contém FILMES ou SERIES, não é loop 24H
+  if (/\b(filmes?|movies?|s[eé]ries?|novelas?|desenhos?)\b/i.test(group)) {
+    return false;
+  }
+
+  return /\b24h\b/.test(combined) || /\b24hrs?\b/.test(combined) || /\b24 horas\b/.test(combined);
 }
 
 function parseExtinf(line) {
