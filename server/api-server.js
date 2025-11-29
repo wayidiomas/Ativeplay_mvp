@@ -10,6 +10,7 @@ import QRCode from 'qrcode';
 import { createHash, randomBytes } from 'crypto';
 import { networkInterfaces } from 'os';
 import { createWriteStream, createReadStream, promises as fs } from 'fs';
+import { Readable } from 'stream';
 import path from 'path';
 import readline from 'readline';
 import rateLimit from 'express-rate-limit';
@@ -47,6 +48,7 @@ const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '300000', 10);
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10); // Retry com backoff
 const USER_AGENT = process.env.USER_AGENT || 'AtivePlay-Server/1.0';
 const CACHE_DIR = process.env.PARSE_CACHE_DIR || path.join(process.cwd(), '.parse-cache');
+const HLS_PROXY_TIMEOUT_MS = parseInt(process.env.HLS_PROXY_TIMEOUT_MS || '15000', 10); // 15s para manifesto/segmento
 
 await fs.mkdir(CACHE_DIR, { recursive: true });
 
@@ -666,6 +668,83 @@ app.get('/metrics', async (req, res) => {
   } catch (error) {
     logger.error('metrics_error', error);
     res.status(500).end();
+  }
+});
+
+/**
+ * GET /api/proxy/hls?url=<encoded>&referer=<optional>
+ * Proxy leve para HLS (manifesto/segmentos) com passthrough de headers essenciais.
+ * Objetivo: contornar CORS e garantir Content-Type correto sem armazenar dados em memória/disco.
+ */
+app.get('/api/proxy/hls', async (req, res) => {
+  const targetUrl = req.query.url;
+  const referer = req.query.referer;
+
+  if (!targetUrl || typeof targetUrl !== 'string' || !isHttpUrl(targetUrl)) {
+    return res.status(400).json({ error: 'Parâmetro url inválido' });
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), HLS_PROXY_TIMEOUT_MS);
+
+  try {
+    const upstreamHeaders = {
+      'User-Agent': USER_AGENT,
+      Accept: req.get('accept') || '*/*',
+    };
+
+    if (req.headers.range) upstreamHeaders.Range = req.headers.range;
+    if (referer) upstreamHeaders.Referer = referer;
+
+    const upstream = await fetch(targetUrl, {
+      headers: upstreamHeaders,
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const contentType =
+      upstream.headers.get('content-type') ||
+      (targetUrl.toLowerCase().includes('.m3u8')
+        ? 'application/vnd.apple.mpegurl'
+        : 'video/MP2T');
+
+    res.status(upstream.status);
+    res.set({
+      'Content-Type': contentType,
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Expose-Headers': 'Content-Length, Content-Type, Accept-Ranges',
+    });
+
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength) res.set('Content-Length', contentLength);
+    const acceptRanges = upstream.headers.get('accept-ranges');
+    if (acceptRanges) res.set('Accept-Ranges', acceptRanges);
+    if (upstream.headers.get('etag')) res.set('ETag', upstream.headers.get('etag'));
+    if (upstream.headers.get('last-modified')) res.set('Last-Modified', upstream.headers.get('last-modified'));
+
+    if (!upstream.body) {
+      return res.end();
+    }
+
+    const nodeStream = Readable.fromWeb(upstream.body);
+    nodeStream.on('error', (err) => {
+      console.error('[HLS Proxy] Erro no stream:', err);
+      if (!res.headersSent) res.status(502);
+      res.end();
+    });
+    nodeStream.pipe(res);
+  } catch (error) {
+    clearTimeout(timeoutId);
+    const status = error.name === 'AbortError' ? 504 : 502;
+    console.error('[HLS Proxy] Erro ao buscar', targetUrl, error.message);
+    if (!res.headersSent) {
+      res.status(status).json({ error: 'Falha ao proxyficar HLS', detail: error.message });
+    } else {
+      res.end();
+    }
   }
 });
 

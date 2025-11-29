@@ -4,6 +4,7 @@
  */
 
 import type { IPlayerAdapter } from './IPlayerAdapter';
+import Hls from 'hls.js';
 import type {
   PlayerState,
   TrackInfo,
@@ -18,6 +19,9 @@ import type {
 
 export class BrowserAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
+  private hls: Hls | null = null;
+  private usingHls = false;
+  private fallbackAttempted = false;
   private state: PlayerState = 'idle';
   private currentUrl: string = '';
   private options: PlayerOptions = {};
@@ -38,6 +42,7 @@ export class BrowserAdapter implements IPlayerAdapter {
 
   private createVideoElement(containerId?: string): void {
     this.video = document.createElement('video');
+    this.video.crossOrigin = 'anonymous';
     this.video.style.cssText = `
       position: absolute;
       top: 0;
@@ -138,17 +143,40 @@ export class BrowserAdapter implements IPlayerAdapter {
   private loadTracks(): void {
     if (!this.video) return;
 
-    // Simula tracks para desenvolvimento
-    // No browser real, usaria MediaSource Extensions ou HLS.js
-    this.tracks.audio = [
-      { index: 0, language: 'por', label: 'Portugues', isDefault: true },
-      { index: 1, language: 'eng', label: 'English', isDefault: false },
-    ];
+    // Se HLS.js estiver ativo, usa tracks do manifest
+    if (this.hls) {
+      const audioTracks = this.hls.audioTracks || [];
+      this.tracks.audio = audioTracks.length
+        ? audioTracks.map((t, idx) => ({
+            index: idx,
+            language: t.lang || 'und',
+            label: t.name || `Áudio ${idx + 1}`,
+            isDefault: idx === this.hls!.audioTrack,
+          }))
+        : [{ index: 0, language: 'und', label: 'Padrão', isDefault: true }];
+      this.currentTracks.audioIndex = this.hls.audioTrack ?? 0;
 
-    this.tracks.subtitle = [
-      { index: 0, language: 'por', label: 'Portugues', isDefault: false },
-      { index: 1, language: 'eng', label: 'English', isDefault: false },
-    ];
+      const subtitleTracks = this.hls.subtitleTracks || [];
+      this.tracks.subtitle = subtitleTracks.length
+        ? subtitleTracks.map((t, idx) => ({
+            index: idx,
+            language: t.lang || 'und',
+            label: t.name || `Legenda ${idx + 1}`,
+            isDefault: false,
+          }))
+        : [];
+      this.currentTracks.subtitleIndex = this.hls.subtitleTrack ?? -1;
+      this.currentTracks.subtitleEnabled = (this.hls.subtitleTrack ?? -1) >= 0;
+    } else {
+      // Fallback simples para MP4 / suporte nativo
+      this.tracks.audio = [
+        { index: 0, language: 'und', label: 'Padrão', isDefault: true },
+      ];
+      this.tracks.subtitle = [];
+      this.currentTracks.audioIndex = 0;
+      this.currentTracks.subtitleIndex = -1;
+      this.currentTracks.subtitleEnabled = false;
+    }
 
     this.tracks.video = [
       {
@@ -168,12 +196,43 @@ export class BrowserAdapter implements IPlayerAdapter {
       throw new Error('Video element nao disponivel');
     }
 
+    // Limpa instancias anteriores
+    this.destroyHls();
+    this.usingHls = false;
+    this.fallbackAttempted = false;
+
     this.currentUrl = url;
     this.options = options;
     this.setState('loading');
 
-    this.video.src = url;
-    this.video.load();
+    const isHls = url.toLowerCase().includes('.m3u8');
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const preferNative = /Safari/i.test(ua) && !/Chrome/i.test(ua); // usa nativo em Safari/iOS
+    const isProbablyHls = isHls || url.toLowerCase().includes('m3u') || url.toLowerCase().includes('playlist') || url.toLowerCase().includes('chunklist');
+
+    if (Hls.isSupported() && isProbablyHls && !preferNative) {
+      this.hls = new Hls({
+        lowLatencyMode: true,
+        backBufferLength: 90,
+      });
+      this.usingHls = true;
+      this.hls.attachMedia(this.video);
+      this.hls.on(Hls.Events.ERROR, (_event, data) => {
+        console.error('[BrowserAdapter] HLS error', data);
+        if (data.fatal) {
+          this.setState('error');
+          this.emit('error', { code: 'HLS_FATAL', message: data.details });
+        }
+      });
+      this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        this.loadTracks();
+      });
+      this.hls.loadSource(url);
+    } else {
+      // Uso nativo (Safari ou MP4/TS)
+      this.video.src = url;
+      this.video.load();
+    }
   }
 
   async prepare(): Promise<void> {
@@ -183,9 +242,16 @@ export class BrowserAdapter implements IPlayerAdapter {
     }
 
     return new Promise((resolve, reject) => {
+      let timeout = setTimeout(() => {
+        video.removeEventListener('canplay', onCanPlay);
+        video.removeEventListener('error', onError);
+        reject(new Error('Timeout ao preparar video'));
+      }, 8000);
+
       const onCanPlay = () => {
         video.removeEventListener('canplay', onCanPlay);
         video.removeEventListener('error', onError);
+        clearTimeout(timeout);
 
         if (this.options.startPosition) {
           video.currentTime = this.options.startPosition / 1000;
@@ -209,7 +275,32 @@ export class BrowserAdapter implements IPlayerAdapter {
       const onError = () => {
         video.removeEventListener('canplay', onCanPlay);
         video.removeEventListener('error', onError);
-        reject(new Error('Erro ao preparar video'));
+        clearTimeout(timeout);
+        const err = video.error;
+        const message = err?.message || `Erro ao preparar video (code ${err?.code ?? 'n/a'})`;
+
+        // Fallback: se não estamos usando HLS e há suporte, tenta HLS uma vez
+        if (!this.usingHls && Hls.isSupported() && !this.fallbackAttempted) {
+          this.fallbackAttempted = true;
+          this.destroyHls();
+          this.hls = new Hls({ lowLatencyMode: true, backBufferLength: 90 });
+          this.usingHls = true;
+          this.hls.attachMedia(video);
+          this.hls.on(Hls.Events.MANIFEST_PARSED, () => this.loadTracks());
+          this.hls.loadSource(this.currentUrl);
+
+          // Re-armar listeners para novo fluxo
+          video.addEventListener('canplay', onCanPlay);
+          video.addEventListener('error', onError);
+          timeout = setTimeout(() => {
+            video.removeEventListener('canplay', onCanPlay);
+            video.removeEventListener('error', onError);
+            reject(new Error('Timeout ao preparar video'));
+          }, 8000);
+          return;
+        }
+
+        reject(new Error(message));
       };
 
       video.addEventListener('canplay', onCanPlay);
@@ -218,6 +309,7 @@ export class BrowserAdapter implements IPlayerAdapter {
   }
 
   close(): void {
+    this.destroyHls();
     if (this.video) {
       this.video.pause();
       this.video.src = '';
@@ -292,6 +384,9 @@ export class BrowserAdapter implements IPlayerAdapter {
   setAudioTrack(index: number): void {
     if (index < 0 || index >= this.tracks.audio.length) return;
     this.currentTracks.audioIndex = index;
+    if (this.hls && typeof this.hls.audioTrack === 'number') {
+      this.hls.audioTrack = index;
+    }
     this.emit('audiotrackchange', { index, track: this.tracks.audio[index] });
     console.log('[BrowserAdapter] Audio track changed to:', this.tracks.audio[index]);
   }
@@ -299,6 +394,9 @@ export class BrowserAdapter implements IPlayerAdapter {
   setSubtitleTrack(index: number): void {
     this.currentTracks.subtitleIndex = index;
     this.currentTracks.subtitleEnabled = index >= 0;
+    if (this.hls && typeof this.hls.subtitleTrack === 'number') {
+      this.hls.subtitleTrack = index >= 0 ? index : -1;
+    }
     this.emit('subtitletrackchange', {
       index,
       enabled: index >= 0,
@@ -419,6 +517,13 @@ export class BrowserAdapter implements IPlayerAdapter {
 
   restore(): void {
     // Nada especifico
+  }
+
+  private destroyHls(): void {
+    if (this.hls) {
+      this.hls.destroy();
+      this.hls = null;
+    }
   }
 }
 
