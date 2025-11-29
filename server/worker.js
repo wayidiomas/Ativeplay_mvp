@@ -111,49 +111,110 @@ function classify(name, group) {
   const lowerName = name.toLowerCase();
   const lowerGroup = group.toLowerCase();
 
-  // ✅ DETECÇÃO DE CANAIS (Live TV) - PRIORITY CHECK
-  // Padrão 1: Canais 24h com numeração sequencial (ex: "CINE CATASTROFE 01", "DOIS HOMENS E MEIO 01")
+  // ===================================================================
+  // PRIORITY 1: GROUP-TITLE PREFIX (Primary Classification System)
+  // ===================================================================
+  // Baseado na análise do M3U real: prefixos no group-title são o sistema primário de classificação
+
+  // 1.1. LIVE - Star prefix (⭐)
+  // Todos os grupos começando com "⭐" são canais ao vivo
+  if (group.startsWith('⭐')) {
+    classifyCache.set(cacheKey, 'live');
+    return 'live';
+  }
+
+  // 1.2. SERIES - "S • " prefix
+  // Grupos como "S • Netflix", "S • Legendados", etc.
+  if (group.startsWith('S • ')) {
+    classifyCache.set(cacheKey, 'series');
+    return 'series';
+  }
+
+  // 1.3. SERIES - "Series | " prefix
+  // Formato alternativo: "Series | Netflix", "Series | Legendadas", etc.
+  if (group.startsWith('Series | ')) {
+    classifyCache.set(cacheKey, 'series');
+    return 'series';
+  }
+
+  // 1.4. SERIES - Exact match "Novelas"
+  // Telenovelas brasileiras
+  if (group === 'Novelas') {
+    classifyCache.set(cacheKey, 'series');
+    return 'series';
+  }
+
+  // 1.5. FILMS - "F • " prefix
+  // Grupos como "F • Legendados", "F • Amazon Prime Video", etc.
+  if (group.startsWith('F • ')) {
+    classifyCache.set(cacheKey, 'movie');
+    return 'movie';
+  }
+
+  // 1.6. FILMS - "Filmes | " prefix
+  // Formato alternativo: "Filmes | Drama", "Filmes | Comedia", etc.
+  if (group.startsWith('Filmes | ')) {
+    classifyCache.set(cacheKey, 'movie');
+    return 'movie';
+  }
+
+  // ===================================================================
+  // PRIORITY 2: ITEM NAME PATTERNS (Secondary Classification)
+  // ===================================================================
+  // Apenas se group-title não matched acima
+
+  // 2.1. 24h Loop Channels - "24H • " prefix in NAME
+  // Items como "24H • 18 Outra Vez", "24H • 220 Volts", etc.
+  if (name.startsWith('24H • ')) {
+    classifyCache.set(cacheKey, 'live');
+    return 'live';
+  }
+
+  // 2.2. Canais 24h com numeração sequencial
+  // Ex: "CINE CATASTROFE 01", "DOIS HOMENS E MEIO 01"
   const is24hChannel =
     /\b24h(rs)?\b/i.test(lowerGroup) &&
-    /\s\d{1,2}$/.test(name); // Termina com espaço + 1-2 dígitos
+    /\s\d{1,2}$/.test(name);
 
-  // Padrão 2: Canais de TV com qualidade no nome (ex: "A&E FHD", "AMC HD", "AXN SD")
+  // 2.3. Canais de TV com qualidade no nome
+  // Ex: "A&E FHD", "AMC HD", "AXN SD", "CANAL SONY FHD [ALT]"
   const isTVChannel =
-    /\b(FHD|HD|SD)\b/i.test(name) || // Qualidade no nome original (case-sensitive)
-    /\[ALT\]/i.test(name); // Canal alternativo
+    /\b(FHD|HD|SD)\b/i.test(name) ||
+    /\[ALT\]/i.test(name);
 
-  // Se é canal (24h ou TV), classifica como 'live' IMEDIATAMENTE
+  // Se é canal (24h ou TV), classifica como 'live'
   if (is24hChannel || isTVChannel) {
     classifyCache.set(cacheKey, 'live');
     return 'live';
   }
 
-  // ✅ DETECÇÃO DE FILMES COM PREFIXO "F " (ex: "F NOME 1", "F NOME 2")
-  // Usuário reportou: items começando com "F " são filmes, não séries
-  const hasMoviePrefix = /^F\s+/i.test(name);
-  if (hasMoviePrefix) {
-    classifyCache.set(cacheKey, 'movie');
-    return 'movie';
-  }
-
-  // ✅ DETECÇÃO DE SÉRIES COM PREFIXO "S " (ex: "S NOME 1", "S NOME 2")
-  // Usuário reportou: items começando com "S " são séries
-  const hasSeriesPrefix = /^S\s+/i.test(name);
-  if (hasSeriesPrefix) {
-    classifyCache.set(cacheKey, 'series');
-    return 'series';
-  }
-
-  // Sinais fortes de série
+  // 2.4. Series Episodes - SxxExx pattern
   const isSeriesTitle =
     /s\d{1,2}e\d{1,3}/i.test(lowerName) ||
     /\d{1,2}x\d{1,3}/.test(lowerName) ||
     /\b(temporada|season|epis[oó]dio|episode|ep\.)\b/i.test(lowerName);
+
+  if (isSeriesTitle) {
+    classifyCache.set(cacheKey, 'series');
+    return 'series';
+  }
+
+  // 2.5. Movies with Year - (19xx) or (20xx) in name
+  const hasYearMovie = /\b(19|20)\d{2}\b/.test(lowerName);
+  if (hasYearMovie) {
+    classifyCache.set(cacheKey, 'movie');
+    return 'movie';
+  }
+
+  // ===================================================================
+  // PRIORITY 3: KEYWORD FALLBACK (Last Resort)
+  // ===================================================================
+  // Apenas se nenhum pattern acima matched
+
   const isSeriesGroup =
     /\b(series?|s[eé]ries|novelas?|doramas?|animes?)\b/i.test(lowerGroup) ||
     /\b(netflix|hbo|disney|amazon|paramount|apple|star)\b/i.test(lowerGroup);
 
-  // Canais/loop 24h
   const isLoop = isLoop24h(lowerName, lowerGroup);
   const isSports = /\b(futebol|jogos|sports?|espn|premiere|sportv|copa|libertadores)\b/i.test(lowerGroup);
   const isNews = /\b(news|cnn|bandnews|globonews)\b/i.test(lowerGroup);
@@ -161,17 +222,15 @@ function classify(name, group) {
     /\b(live|ao vivo|tv|canal|canais?)\b/i.test(lowerGroup) ||
     /\b(live|ao vivo|tv)\b/i.test(lowerName);
 
-  // Filmes
   const isMovieGroup =
     /\b(filmes?|movies?|cinema|vod)\b/i.test(lowerGroup) ||
     /\b(acao|terror|comedia|drama|ficcao|aventura|animacao|suspense|romance)\b/i.test(lowerGroup);
-  const hasYearMovie = /\b(19|20)\d{2}\b/.test(lowerName);
 
-  // Prioridade
+  // Priority for fallback
   let result;
-  if (isLoop || isSports || isNews || isLiveKeywords) result = 'live';
-  else if (isSeriesGroup || isSeriesTitle) result = 'series';
-  else if (isMovieGroup || hasYearMovie) result = 'movie';
+  if (isSports || isNews || isLiveKeywords || isLoop) result = 'live';
+  else if (isSeriesGroup) result = 'series';
+  else if (isMovieGroup) result = 'movie';
   else result = 'unknown';
 
   // Cache result (with size limit)
@@ -239,6 +298,15 @@ function parseExtinf(line) {
     attributes.set(match[1], match[2]);
   }
   return { duration, attributes, title };
+}
+
+// Infer media kind using URL path hints (common in cdnp.xyz: /series/... or /movie/...)
+function mediaKindFromUrl(url = '') {
+  const lower = url.toLowerCase();
+  if (lower.includes('/series/')) return 'series';
+  if (lower.includes('/movie/')) return 'movie';
+  if (lower.includes('/live/') || lower.includes('/stream/') || lower.includes('/channel/')) return 'live';
+  return null;
 }
 
 async function fetchWithRetry(url, options = {}, retries = 3) {
@@ -498,7 +566,9 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             ? normalizeGroupTitle(groupTitleRaw)
             : normalizeGroupTitle(groupTitleRaw);
 
-          const mediaKind = classify(name, groupTitle);
+          // Primeiro tenta inferir pelo path (cdnp.xyz usa /series/ e /movie/)
+          const inferredKind = mediaKindFromUrl(trimmed);
+          const mediaKind = inferredKind || classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
           const seriesKey =
             mediaKind === 'series' && parsedTitle.titleNormalized
@@ -608,7 +678,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             ? normalizeGroupTitle(groupTitleRaw)
             : normalizeGroupTitle(groupTitleRaw);
 
-          const mediaKind = classify(name, groupTitle);
+          const inferredKind = mediaKindFromUrl(trimmed);
+          const mediaKind = inferredKind || classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
           const seriesKey =
             mediaKind === 'series' && parsedTitle.titleNormalized
