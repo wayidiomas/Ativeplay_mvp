@@ -935,9 +935,9 @@ async function continueBackgroundSync(
 
     await syncItemsFromServer(hash, playlistId, undefined, { loadPartial: false });
 
-    // ✅ OTIMIZADO: Agrupamento de séries agora é feito no servidor durante parsing
-    // Removido: await groupAndSaveSeries(playlistId) - evita O(n²) no frontend
-    console.log('[DB DEBUG] BACKGROUND SYNC: Series grouping done by server (no frontend processing needed)');
+    // Agrupa séries de forma chunked no frontend (memória controlada)
+    await groupAndSaveSeries(playlistId);
+    console.log('[DB DEBUG] BACKGROUND SYNC: Series grouping done (chunked)');
 
     // Atualiza status para 'success'
     await db.playlists.update(playlistId, { lastSyncStatus: 'success' });
