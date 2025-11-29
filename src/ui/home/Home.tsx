@@ -56,6 +56,11 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const [searchLoading, setSearchLoading] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
+  const rowsCacheRef = useRef<Record<NavItem, Row[]>>({
+    movies: [],
+    series: [],
+    live: [],
+  });
 
   // Carrega carrosseis (top grupos) para filmes/séries; TV ao vivo mostra grupos completos
   useEffect(() => {
@@ -64,7 +69,17 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         setLoading(false);
         return;
       }
-      setLoading(true);
+
+      // Se já há cache, usa imediatamente
+      const cached = rowsCacheRef.current[selectedNav];
+      if (cached && cached.length > 0) {
+        setRows(cached);
+        setLoading(false);
+      } else {
+        setRows([]);
+        setLoading(true);
+      }
+
       try {
         let mediaKind: MediaKind;
         switch (selectedNav) {
@@ -94,7 +109,9 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
           })
         );
 
-        setRows(rowsLoaded.filter(Boolean) as Row[]);
+        const filtered = rowsLoaded.filter(Boolean) as Row[];
+        setRows(filtered);
+        rowsCacheRef.current[selectedNav] = filtered; // cache para troca de abas
       } catch (error) {
         console.error('Erro ao carregar carrosseis:', error);
         setRows([]);
