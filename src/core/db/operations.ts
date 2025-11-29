@@ -397,15 +397,52 @@ export async function addPlaylist(
     throw new Error(`Limite de ${MAX_PLAYLISTS} playlists atingido`);
   }
 
-  // Verifica se URL ja existe - se sim, apenas ativa e retorna
+  // Verifica se URL ja existe
   const existing = await db.playlists.where('url').equals(url).first();
   if (existing) {
-    console.log('[DB DEBUG] Playlist já existe, ativando:', existing.id);
+    console.log('[DB DEBUG] Playlist já existe:', existing.id);
+
+    // Verifica status de sincronização e items carregados
+    const itemsCount = await db.items.where('playlistId').equals(existing.id).count();
+    const totalItems = existing.itemCount;
+
+    console.log('[DB DEBUG] Items carregados:', itemsCount, '/', totalItems);
+    console.log('[DB DEBUG] Status atual:', existing.lastSyncStatus);
+
+    // Case 1: Items completos mas status ainda 'syncing' → corrige status
+    if (itemsCount >= totalItems && existing.lastSyncStatus === 'syncing') {
+      console.log('[DB DEBUG] Corrigindo status para "success" (items já completos)');
+      await db.playlists.update(existing.id, { lastSyncStatus: 'success' });
+    }
+
+    // Case 2: Items incompletos → reinicia sync
+    else if (itemsCount < totalItems) {
+      console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
+
+      // Atualiza status para syncing
+      await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
+
+      // Busca hash do servidor novamente
+      const parsed = await fetchFromServer(existing.url, onProgress);
+
+      // Se tem menos de 1000 items, carrega parcial primeiro
+      if (itemsCount < 1000) {
+        console.log('[DB DEBUG] Carregando primeiros 1000 items...');
+        await syncItemsFromServer(parsed.hash, existing.id, onProgress, {
+          loadPartial: true,
+          partialLimit: 1000,
+        });
+      }
+
+      // Continua sync completo em background
+      continueBackgroundSync(parsed.hash, existing.id).catch((err) => {
+        console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
+      });
+    }
 
     // Ativa a playlist existente
     await setActivePlaylist(existing.id);
 
-    // Retorna o ID da playlist existente
     return existing.id;
   }
 
