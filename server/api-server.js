@@ -1361,6 +1361,7 @@ app.get('/s/:id', (req, res) => {
     </body>
     </html>
   `);
+  });
 });
 
 app.listen(PORT, async () => {
