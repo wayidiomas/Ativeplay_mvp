@@ -39,6 +39,17 @@ class CacheIndex {
         try {
           const metaPath = path.join(CACHE_DIR, file);
           const content = await fs.readFile(metaPath, 'utf8');
+
+          // ✅ Validate file size before parsing (prevent OOM on corrupted/oversized files)
+          const fileSizeMB = Buffer.byteLength(content, 'utf8') / (1024 * 1024);
+          if (fileSizeMB > 50) {
+            // Meta files > 50MB are abnormal (should be ~2-5MB after FASE 2)
+            const hash = file.replace('.meta.json', '');
+            console.warn(`[CacheIndex] Meta oversized: ${file} (${fileSizeMB.toFixed(1)}MB), deleting...`);
+            await this.delete(hash);
+            continue;
+          }
+
           const meta = JSON.parse(content);
 
           // Verifica se expirou
@@ -62,6 +73,17 @@ class CacheIndex {
           }
         } catch (error) {
           console.error(`[CacheIndex] Erro ao ler ${file}:`, error.message);
+
+          // ✅ Auto-cleanup corrupted cache (e.g., JSON parse errors)
+          if (error instanceof SyntaxError) {
+            const hash = file.replace('.meta.json', '');
+            console.warn(`[CacheIndex] Corrupted cache detected: ${hash}, deleting...`);
+            try {
+              await this.delete(hash);
+            } catch (deleteError) {
+              console.error(`[CacheIndex] Failed to delete corrupted cache: ${hash}`, deleteError.message);
+            }
+          }
         }
       }
 

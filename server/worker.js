@@ -221,30 +221,40 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
 }
 
 // Helper: Save partial meta.json during parsing (early navigation support)
+// ✅ OPTIMIZED: Only saves aggregated stats instead of full 400MB seriesIndex
 async function savePartialMeta(hash, url, stats, groups, seriesIndex, status = 'in_progress') {
   try {
     const metaFile = path.join(CACHE_DIR, `${hash}.meta.json`);
 
-    const seriesSummary = Array.from(seriesIndex.values()).map((entry) => ({
-      key: entry.key,
-      title: entry.title,
-      logo: entry.logo,
-      totalEpisodes: entry.totalEpisodes,
-      seasons: Array.from(entry.seasons.values()),
-    }));
+    // ✅ Calculate lightweight series statistics (replaces 400MB seriesIndex)
+    const seriesStats = {
+      totalSeries: seriesIndex.size,
+      totalEpisodes: Array.from(seriesIndex.values())
+        .reduce((sum, s) => sum + s.totalEpisodes, 0),
+      avgEpisodesPerSeries: seriesIndex.size > 0
+        ? Math.round(Array.from(seriesIndex.values())
+            .reduce((sum, s) => sum + s.totalEpisodes, 0) / seriesIndex.size)
+        : 0,
+    };
 
     const partialMeta = {
       hash,
       url,
       stats: { ...stats, groupCount: groups.size },
       groups: Array.from(groups.values()),
-      seriesIndex: seriesSummary,
+      seriesStats, // ✅ Only ~100 bytes vs 400MB
       parsingStatus: status, // "in_progress" or "completed"
       createdAt: Date.now(),
       expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000),
     };
 
-    await fs.writeFile(metaFile, JSON.stringify(partialMeta, null, 2));
+    // ✅ Atomic write to prevent corruption on crashes
+    const tempFile = `${metaFile}.tmp`;
+    await fs.writeFile(tempFile, JSON.stringify(partialMeta, null, 2));
+    await fs.rename(tempFile, metaFile);
+
+    const sizeKB = (JSON.stringify(partialMeta).length / 1024).toFixed(1);
+    logger.debug('partial_meta_saved', { hash, sizeKB, status });
   } catch (error) {
     logger.warn('partial_meta_failed', { hash, error: error.message });
   }
@@ -529,14 +539,16 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
     stats.groupCount = groupsMap.size;
     const groups = Array.from(groupsMap.values());
 
-    // Serializa índice de séries de forma compacta (sem Maps)
-    const seriesSummary = Array.from(seriesIndex.values()).map((entry) => ({
-      key: entry.key,
-      title: entry.title,
-      logo: entry.logo,
-      totalEpisodes: entry.totalEpisodes,
-      seasons: Array.from(entry.seasons.values()),
-    }));
+    // ✅ Calculate lightweight series statistics (no need to serialize 400MB)
+    const seriesStats = {
+      totalSeries: seriesIndex.size,
+      totalEpisodes: Array.from(seriesIndex.values())
+        .reduce((sum, s) => sum + s.totalEpisodes, 0),
+      avgEpisodesPerSeries: seriesIndex.size > 0
+        ? Math.round(Array.from(seriesIndex.values())
+            .reduce((sum, s) => sum + s.totalEpisodes, 0) / seriesIndex.size)
+        : 0,
+    };
 
     // Final flush: save complete meta with status "completed"
     await savePartialMeta(hash, url, stats, groupsMap, seriesIndex, 'completed');
@@ -548,7 +560,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
 
     logParseEnd(hash, duration, stats.totalItems, memoryDelta);
 
-    return { stats, groups, seriesSummary, hash };
+    return { stats, groups, seriesStats, hash };
   } catch (error) {
     writer.end();
     throw error;

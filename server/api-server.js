@@ -1241,6 +1241,7 @@ app.get('/api/playlist/progress/:hash', async (req, res) => {
           groupCount: meta.stats?.groupCount || 0,
         },
         groups: meta.groups || [],
+        seriesStats: meta.seriesStats || null, // ✅ New: lightweight series statistics
         createdAt: meta.createdAt,
         expiresAt: meta.expiresAt,
       });
