@@ -470,11 +470,14 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               ? parsedTitle.titleNormalized
               : null;
 
+          // Usa logo canônico do grupo se disponível (dedupe visual)
+          const groupLogo = groupsMap.get(groupId)?.logo || tvgLogo || '';
+
           const item = {
             id: generateItemId(trimmed, itemIndex++, tvgId || name),
             name,
             url: trimmed,
-            logo: tvgLogo,
+            logo: groupLogo,
             group: groupTitle,
             mediaKind,
             parsedTitle,
@@ -578,7 +581,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             id: generateItemId(trimmed, itemIndex++, tvgId || name),
             name,
             url: trimmed,
-            logo: tvgLogo,
+            logo: groupsMap.get(groupId)?.logo || tvgLogo || '',
             group: groupTitle,
             mediaKind,
             parsedTitle,
