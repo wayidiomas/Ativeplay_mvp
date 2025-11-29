@@ -247,15 +247,15 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             // Carrega séries agrupadas deste grupo
             const seriesInGroup = await db.series
               .where({ playlistId: activePlaylist!.id, group: group.name })
-              .limit(ITEMS_PER_GROUP)
-              .toArray();
+              .sortBy('id')
+              .then(arr => arr.slice(0, ITEMS_PER_GROUP));
 
             // Carrega items não agrupados (singleton) deste grupo
             const ungroupedItems = await db.items
               .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
-              .filter((item) => !item.seriesId) // Apenas items sem seriesId
-              .limit(ITEMS_PER_GROUP - seriesInGroup.length) // Limita para completar até ITEMS_PER_GROUP
-              .toArray();
+              .filter((item) => !item.seriesId)
+              .sortBy('id')
+              .then(arr => arr.slice(0, Math.max(0, ITEMS_PER_GROUP - seriesInGroup.length)));
 
             const hasContent = seriesInGroup.length > 0 || ungroupedItems.length > 0;
 
@@ -285,8 +285,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
           const items = await db.items
             .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
-            .limit(ITEMS_PER_GROUP)
-            .toArray();
+            .sortBy('id')
+            .then(arr => arr.slice(0, ITEMS_PER_GROUP));
 
           return items.length > 0
             ? {
@@ -442,7 +442,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     const newNextIndex = Math.min(startIndex + GROUP_BATCH_SIZE, allGroups.length);
 
     // Deduplica rows por group.id
-    const mergedRows = [...rowsCacheRef.current[selectedNav], ...batch];
+    const mergedRows = [...rowsCacheRef.current[selectedNav], ...batch].filter(Boolean);
     const seenGroupIds = new Set<string>();
     const uniqueRows = mergedRows.filter((row) => {
       if (seenGroupIds.has(row.group.id)) return false;
@@ -490,34 +490,19 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
       // Carrega mais séries se houver (keyset pagination)
       const moreSeries = row.hasMoreSeries
-        ? await (row.lastSeriesId
-            ? db.series
-                .where({ playlistId: activePlaylist.id, group: row.group.name })
-                .filter((s) => s.id !== row.lastSeriesId) // evita repetir última
-                .offset(row.series?.length ?? 0)
-                .limit(ITEMS_LOAD_MORE)
-                .toArray()
-            : db.series
-                .where({ playlistId: activePlaylist.id, group: row.group.name })
-                .limit(ITEMS_LOAD_MORE)
-                .toArray())
+        ? await db.series
+            .where({ playlistId: activePlaylist.id, group: row.group.name })
+            .sortBy('id')
+            .then((arr) => arr.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE))
         : [];
 
       // Carrega mais items não agrupados se houver (keyset pagination)
       const moreItems = row.hasMoreItems
-        ? await (row.lastItemId
-            ? db.items
-                .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
-                .filter((item) => !item.seriesId && item.id !== row.lastItemId!)
-                .offset(row.items.length)
-                .limit(ITEMS_LOAD_MORE)
-                .toArray()
-            : db.items
-                .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
-                .filter((item) => !item.seriesId)
-                .offset(row.items.length)
-                .limit(ITEMS_LOAD_MORE)
-                .toArray())
+        ? await db.items
+            .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+            .filter((item) => !item.seriesId)
+            .sortBy('id')
+            .then((arr) => arr.slice(row.items.length, row.items.length + ITEMS_LOAD_MORE))
         : [];
 
       // Atualiza a row com os novos itens
