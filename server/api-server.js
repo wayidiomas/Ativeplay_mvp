@@ -1381,7 +1381,19 @@ app.post('/admin/clear-all', async (req, res) => {
     const stats = await parseQueue.getJobCounts();
     const totalJobs = Object.values(stats).reduce((a, b) => a + b, 0);
 
+    // Pausa workers antes de obliterar (evita locks órfãos)
+    await parseQueue.pause();
+    console.log('[Admin] Workers pausados');
+
+    // Aguarda 2s para jobs ativos terminarem
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Remove todos os jobs e limpa locks
     await parseQueue.obliterate({ force: true });
+
+    // Despause workers
+    await parseQueue.resume();
+    console.log('[Admin] Workers retomados');
 
     results.redis = {
       success: true,
