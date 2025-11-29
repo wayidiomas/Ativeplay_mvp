@@ -11,5 +11,5 @@ healthcheckTimeout = 100
 NODE_ENV = "production"
 
 [[volumes]]
-name = "parse-cache"
+name = "ativeplay_mvp"
 mountPath = "/app/server/.parse-cache"
