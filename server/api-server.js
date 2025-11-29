@@ -17,7 +17,14 @@ import { finished } from 'stream/promises';
 
 // Worker Pool imports
 import { cacheIndex } from './services/cacheIndex.js';
-import { parseQueue, isRedisConnected, getProcessingLock, setProcessingLock, getQueueStats } from './queue.js';
+import {
+  parseQueue,
+  isRedisConnected,
+  getProcessingLock,
+  setProcessingLock,
+  getQueueStats,
+  redisConnection,
+} from './queue.js';
 import { logger, logCacheHit, logCacheMiss, logJobQueued } from './utils/logger.js';
 import {
   getMetrics,
@@ -532,20 +539,43 @@ async function parseM3UStream(url, options = {}, hashOverride) {
 
 // Cache-First: sem jobs em memória, usa cacheIndex (disco) que sobrevive a restarts
 
-// Armazena sessões ativas (em produção, usar Redis)
-// Estrutura: { sessionId: { url: null, createdAt: timestamp, expiresAt: timestamp } }
-const sessions = new Map();
+// Sessões em Redis (TTL)
+const SESSION_TTL_SECONDS = 15 * 60; // 15 minutos
+const SESSION_PREFIX = 'session:';
 
-// Limpa sessões expiradas a cada minuto
-setInterval(() => {
-  const now = Date.now();
-  for (const [sessionId, session] of sessions.entries()) {
-    if (now > session.expiresAt) {
-      sessions.delete(sessionId);
-      console.log(`[Session] Expirada e removida: ${sessionId}`);
-    }
-  }
-}, 60000);
+async function createSession(sessionId) {
+  const key = `${SESSION_PREFIX}${sessionId}`;
+  await redisConnection.set(
+    key,
+    JSON.stringify({
+      url: null,
+      createdAt: Date.now(),
+    }),
+    'EX',
+    SESSION_TTL_SECONDS
+  );
+}
+
+async function setSessionUrl(sessionId, url) {
+  const key = `${SESSION_PREFIX}${sessionId}`;
+  const value = await redisConnection.get(key);
+  if (!value) return false;
+  const session = JSON.parse(value);
+  session.url = url;
+  await redisConnection.set(key, JSON.stringify(session), 'EX', SESSION_TTL_SECONDS);
+  return true;
+}
+
+async function getSession(sessionId) {
+  const key = `${SESSION_PREFIX}${sessionId}`;
+  const value = await redisConnection.get(key);
+  return value ? JSON.parse(value) : null;
+}
+
+async function deleteSession(sessionId) {
+  const key = `${SESSION_PREFIX}${sessionId}`;
+  await redisConnection.del(key);
+}
 
 app.use(cors());
 app.use(express.json());
@@ -993,12 +1023,8 @@ app.post('/session/create', async (req, res) => {
     const baseUrl = process.env.BASE_URL || `http://${localIP}:${PORT}`;
     const mobileUrl = `${baseUrl}/s/${sessionId}`;
 
-    // Cria sessão
-    sessions.set(sessionId, {
-      url: null,
-      createdAt: Date.now(),
-      expiresAt,
-    });
+    // Cria sessão em Redis
+    await createSession(sessionId);
 
     // Gera QR code como Data URL
     const qrDataUrl = await QRCode.toDataURL(mobileUrl, {
@@ -1030,22 +1056,24 @@ app.post('/session/create', async (req, res) => {
  */
 app.get('/session/:id/poll', (req, res) => {
   const { id } = req.params;
-  const session = sessions.get(id);
+  // Poll síncrono usando Redis
+  getSession(id).then((session) => {
+    if (!session) {
+      return res.status(404).json({ error: 'Sessão não encontrada ou expirada' });
+    }
 
-  if (!session) {
-    return res.status(404).json({ error: 'Sessão não encontrada ou expirada' });
-  }
+    if (session.url) {
+      console.log(`[Session] URL recebida pela TV: ${id}`);
+      const url = session.url;
+      deleteSession(id).catch(() => {});
+      return res.json({ url, received: true });
+    }
 
-  if (session.url) {
-    // URL foi enviada, retorna e limpa sessão
-    console.log(`[Session] URL recebida pela TV: ${id}`);
-    const url = session.url;
-    sessions.delete(id);
-    return res.json({ url, received: true });
-  }
-
-  // Ainda aguardando
-  res.json({ url: null, received: false });
+    return res.json({ url: null, received: false });
+  }).catch((error) => {
+    logger.error('session_poll_error', error, { id });
+    res.status(500).json({ error: 'Erro ao buscar sessão' });
+  });
 });
 
 /**
@@ -1060,17 +1088,18 @@ app.post('/session/:id/send', (req, res) => {
     return res.status(400).json({ error: 'URL inválida' });
   }
 
-  const session = sessions.get(id);
+  getSession(id).then(async (session) => {
+    if (!session) {
+      return res.status(404).json({ error: 'Sessão não encontrada ou expirada' });
+    }
 
-  if (!session) {
-    return res.status(404).json({ error: 'Sessão não encontrada ou expirada' });
-  }
-
-  // Armazena URL na sessão
-  session.url = url;
-  console.log(`[Session] URL enviada pelo celular: ${id}`);
-
-  res.json({ success: true, message: 'URL enviada com sucesso!' });
+    await setSessionUrl(id, url);
+    console.log(`[Session] URL enviada pelo celular: ${id}`);
+    res.json({ success: true, message: 'URL enviada com sucesso!' });
+  }).catch((error) => {
+    logger.error('session_send_error', error, { id });
+    res.status(500).json({ error: 'Erro ao enviar URL' });
+  });
 });
 
 /**
@@ -1079,10 +1108,9 @@ app.post('/session/:id/send', (req, res) => {
  */
 app.get('/s/:id', (req, res) => {
   const { id } = req.params;
-  const session = sessions.get(id);
-
-  if (!session) {
-    return res.send(`
+  getSession(id).then((session) => {
+    if (!session) {
+      return res.send(`
       <!DOCTYPE html>
       <html lang="pt-BR">
       <head>
@@ -1120,7 +1148,7 @@ app.get('/s/:id', (req, res) => {
     `);
   }
 
-  res.send(`
+    res.send(`
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
