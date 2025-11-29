@@ -336,22 +336,26 @@ async function syncItemsFromServer(
       duplicates: items.length - uniqueItems.length,
     });
 
-    const dbItems: M3UItem[] = uniqueItems.map((item: any) => ({
-      id: `${playlistId}_${item.id}`,
-      playlistId,
-      name: item.name,
-      url: item.url,
-      logo: item.logo,
-      group: item.group,
-      mediaKind: item.mediaKind,
-      title: item.parsedTitle?.title || item.title || item.name,
-      year: item.parsedTitle?.year || item.year,
-      season: item.parsedTitle?.season || item.season,
-      episode: item.parsedTitle?.episode || item.episode,
-      quality: item.parsedTitle?.quality || item.quality,
-      epgId: item.epgId,
-      createdAt: Date.now(),
-    }));
+    const dbItems: M3UItem[] = uniqueItems.map((item: any) => {
+      const title = item.parsedTitle?.title || item.title || item.name;
+      return {
+        id: `${playlistId}_${item.id}`,
+        playlistId,
+        name: item.name,
+        url: item.url,
+        logo: item.logo,
+        group: item.group,
+        mediaKind: item.mediaKind,
+        title,
+        titleNormalized: (title || '').toUpperCase(), // Para busca otimizada
+        year: item.parsedTitle?.year || item.year,
+        season: item.parsedTitle?.season || item.season,
+        episode: item.parsedTitle?.episode || item.episode,
+        quality: item.parsedTitle?.quality || item.quality,
+        epgId: item.epgId,
+        createdAt: Date.now(),
+      };
+    });
 
     // Insere em batches
     for (let i = 0; i < dbItems.length; i += batchSize) {
@@ -452,22 +456,26 @@ async function syncItemsFromServer(
     });
 
     // Inserir em lotes menores para evitar travar
-    const dbItems: M3UItem[] = uniqueItems.map((item: any) => ({
-      id: `${playlistId}_${item.id}`,
-      playlistId,
-      name: item.name,
-      url: item.url,
-      logo: item.logo,
-      group: item.group,
-      mediaKind: item.mediaKind,
-      title: item.parsedTitle?.title || item.title || item.name,
-      year: item.parsedTitle?.year || item.year,
-      season: item.parsedTitle?.season || item.season,
-      episode: item.parsedTitle?.episode || item.episode,
-      quality: item.parsedTitle?.quality || item.quality,
-      epgId: item.epgId,
-      createdAt: Date.now(),
-    }));
+    const dbItems: M3UItem[] = uniqueItems.map((item: any) => {
+      const title = item.parsedTitle?.title || item.title || item.name;
+      return {
+        id: `${playlistId}_${item.id}`,
+        playlistId,
+        name: item.name,
+        url: item.url,
+        logo: item.logo,
+        group: item.group,
+        mediaKind: item.mediaKind,
+        title,
+        titleNormalized: (title || '').toUpperCase(), // Para busca otimizada
+        year: item.parsedTitle?.year || item.year,
+        season: item.parsedTitle?.season || item.season,
+        episode: item.parsedTitle?.episode || item.episode,
+        quality: item.parsedTitle?.quality || item.quality,
+        epgId: item.epgId,
+        createdAt: Date.now(),
+      };
+    });
 
     for (let i = 0; i < dbItems.length; i += batchSize) {
       const batch = dbItems.slice(i, i + batchSize);

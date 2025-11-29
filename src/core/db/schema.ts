@@ -28,6 +28,7 @@ export interface M3UItem {
   mediaKind: MediaKind;
   // Metadados extraidos do titulo
   title?: string;
+  titleNormalized?: string; // Uppercase para busca case-insensitive
   year?: number;
   season?: number;
   episode?: number;
@@ -96,6 +97,27 @@ class AtivePlayDB extends Dexie {
       groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
       favorites: 'id, [playlistId+itemId], playlistId',
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt',
+    });
+
+    // Schema v4 - Adiciona titleNormalized para busca case-insensitive otimizada
+    this.version(4).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: 'id, playlistId, url, group, mediaKind, titleNormalized, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind]',
+      groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    }).upgrade(async (tx) => {
+      // Popula titleNormalized para items existentes
+      console.log('[DB] Migrando para v4: normalizando títulos...');
+      let count = 0;
+      await tx.table('items').toCollection().modify((item) => {
+        item.titleNormalized = (item.title || item.name || '').toUpperCase();
+        count++;
+        if (count % 1000 === 0) {
+          console.log(`[DB] Normalizado ${count} items...`);
+        }
+      });
+      console.log(`[DB] Migração v4 completa: ${count} items normalizados`);
     });
   }
 }
