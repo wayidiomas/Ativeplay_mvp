@@ -457,6 +457,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
           const tvgId = currentExtinf.attributes.get('tvg-id');
           const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+          const xuiId = currentExtinf.attributes.get('xui-id');
           const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
           const groupTitle = options.normalize
             ? normalizeGroupTitle(groupTitleRaw)
@@ -470,11 +471,14 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               ? parsedTitle.titleNormalized
               : null;
 
+          // ✅ Declara groupId ANTES de usar
+          const groupId = generateGroupId(groupTitle, mediaKind);
+
           // Usa logo canônico do grupo se disponível (dedupe visual)
           const groupLogo = groupsMap.get(groupId)?.logo || tvgLogo || '';
 
           const item = {
-            id: generateItemId(trimmed, itemIndex++, tvgId || name),
+            id: generateItemId(trimmed, itemIndex++, tvgId || xuiId || name),
             name,
             url: trimmed,
             logo: groupLogo,
@@ -483,6 +487,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             parsedTitle,
             seriesKey,
             epgId: tvgId,
+            xuiId,
           };
 
           writer.write(`${JSON.stringify(item)}\n`);
@@ -521,7 +526,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               stats.unknownCount++;
           }
 
-          const groupId = generateGroupId(groupTitle, mediaKind);
+          // ✅ groupId já declarado acima (linha 474)
           const existingGroup = groupsMap.get(groupId);
           if (existingGroup) {
             existingGroup.itemCount++;
@@ -564,6 +569,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const nameRaw = currentExtinf.title;
           const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
           const tvgLogo = currentExtinf.attributes.get('tvg-logo');
+          const xuiId = currentExtinf.attributes.get('xui-id');
           const tvgId = currentExtinf.attributes.get('tvg-id');
           const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
           const groupTitle = options.normalize
@@ -578,7 +584,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               : null;
 
           const item = {
-            id: generateItemId(trimmed, itemIndex++, tvgId || name),
+            id: generateItemId(trimmed, itemIndex++, tvgId || xuiId || name),
             name,
             url: trimmed,
             logo: groupsMap.get(groupId)?.logo || tvgLogo || '',
@@ -587,6 +593,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             parsedTitle,
             seriesKey,
             epgId: currentExtinf.attributes.get('tvg-id'),
+            xuiId,
           };
 
           writer.write(`${JSON.stringify(item)}\n`);
