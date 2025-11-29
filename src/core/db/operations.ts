@@ -696,10 +696,15 @@ export async function addPlaylist(
       console.log('[DB DEBUG] Playlist salva:', savedPlaylist);
       console.log('[DB DEBUG] Groups salvos:', savedGroupsCount);
 
-      // Verifica grupos por mediaKind
-      const movieGroups = await db.groups.where({ playlistId, mediaKind: 'movie' }).count();
-      const seriesGroups = await db.groups.where({ playlistId, mediaKind: 'series' }).count();
-      const liveGroups = await db.groups.where({ playlistId, mediaKind: 'live' }).count();
+      // Verifica grupos por mediaKind (1 query consolidada vs 3 queries)
+      const allGroups = await db.groups.where('playlistId').equals(playlistId).toArray();
+      const counts = allGroups.reduce((acc, g) => {
+        acc[g.mediaKind] = (acc[g.mediaKind] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      const movieGroups = counts.movie || 0;
+      const seriesGroups = counts.series || 0;
+      const liveGroups = counts.live || 0;
       console.log('[DB DEBUG] Movie groups:', movieGroups);
       console.log('[DB DEBUG] Series groups:', seriesGroups);
       console.log('[DB DEBUG] Live groups:', liveGroups);
