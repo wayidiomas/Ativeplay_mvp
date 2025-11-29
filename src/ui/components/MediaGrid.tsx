@@ -139,6 +139,12 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     }
   }, [loading, items.length, focusIndex, focusedIndex]);
 
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (gridRef.current) {
+      gridRef.current.scrollBy({ top: e.deltaY });
+    }
+  }, []);
+
   const getDisplayName = useCallback((item: M3UItem): string => {
     return item.title || item.name;
   }, []);
@@ -203,6 +209,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
           height: '100%',
           overflow: 'auto',
         }}
+        onWheel={handleWheel}
       >
         {items.map((item, idx) => (
           <button

@@ -477,6 +477,13 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     navigate('/onboarding/input', { replace: true });
   };
 
+  // Mouse wheel fallback (web build): garante scroll mesmo sem focus em TVs/PC
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (contentRef.current) {
+      contentRef.current.scrollBy({ top: e.deltaY });
+    }
+  }, []);
+
   return (
     <div className={styles.container}>
       {/* Sidebar */}
@@ -596,7 +603,11 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
           </div>
         </header>
 
-        <div className={styles.content} ref={contentRef}>
+        <div
+          className={styles.content}
+          ref={contentRef}
+          onWheel={handleWheel}
+        >
           {renderHero()}
           {renderContent()}
         </div>
