@@ -91,7 +91,7 @@ async function pollJobUntilComplete(
 async function fetchFromServer(
   url: string,
   onProgress?: ProgressCallback
-): Promise<{ stats: any; groups: any[]; items: any[] }> {
+): Promise<{ hash: string; stats: any; groups: any[] }> {
   // Validação: servidor deve estar configurado
   if (!SERVER_URL) {
     throw new Error('Servidor não configurado. Configure VITE_BRIDGE_URL no .env');
@@ -146,14 +146,6 @@ async function fetchFromServer(
 
     // Cache hit → dados retornados imediatamente
     if (parseResult.cached) {
-      onProgress?.({
-        phase: 'downloading',
-        current: 30,
-        total: 100,
-        percentage: 30,
-        message: 'Cache hit! Baixando itens...',
-      });
-
       hash = parseResult.hash;
       stats = parseResult.data.stats;
       groups = parseResult.data.groups;
@@ -182,60 +174,12 @@ async function fetchFromServer(
         current: 50,
         total: 100,
         percentage: 50,
-        message: 'Processamento completo! Baixando itens...',
+        message: 'Processamento completo! Sincronizando itens em segundo plano...',
       });
     } else {
       throw new Error('Resposta inesperada do servidor');
     }
-
-    // 2. Busca todos os itens em páginas
-    const allItems: any[] = [];
-    let offset = 0;
-    let total = 0;
-
-    while (true) {
-      const itemsResponse = await fetch(
-        `${SERVER_URL}/api/playlist/items/${hash}?limit=5000&offset=${offset}`
-      );
-
-      if (!itemsResponse.ok) {
-        throw new Error(`Erro ao buscar itens: ${itemsResponse.status}`);
-      }
-
-      const page = await itemsResponse.json();
-      allItems.push(...(page.items || []));
-      total = page.total || allItems.length;
-
-      // Atualiza progresso do download
-      const downloadProgress = 50 + Math.floor((allItems.length / total) * 50);
-      onProgress?.({
-        phase: 'downloading',
-        current: downloadProgress,
-        total: 100,
-        percentage: downloadProgress,
-        message: `Baixando itens... (${allItems.length}/${total})`,
-      });
-
-      if (allItems.length >= total || (page.items || []).length === 0) {
-        break;
-      }
-
-      offset += page.limit || 5000;
-    }
-
-    onProgress?.({
-      phase: 'downloading',
-      current: 100,
-      total: 100,
-      percentage: 100,
-      message: 'Download completo!',
-    });
-
-    return {
-      stats,
-      groups,
-      items: allItems,
-    };
+    return { hash, stats, groups };
 
   } catch (error) {
     // Erro específico: mostra mensagem clara ao usuário
@@ -255,6 +199,89 @@ async function fetchFromServer(
 
     throw new Error(`Falha no servidor: ${errorMessage}`);
   }
+}
+
+/**
+ * Sincroniza itens paginados do servidor e insere no Dexie
+ * Pode ser usado em background (fire-and-forget) ou aguardado em refresh
+ */
+async function syncItemsFromServer(
+  hash: string,
+  playlistId: string,
+  onProgress?: ProgressCallback
+): Promise<void> {
+  if (!SERVER_URL) {
+    throw new Error('Servidor não configurado. Configure VITE_BRIDGE_URL no .env');
+  }
+
+  const pageSize = 5000;
+  const batchSize = 500;
+  let offset = 0;
+  let total = 0;
+  let processed = 0;
+
+  while (true) {
+    const itemsResponse = await fetch(
+      `${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=${offset}`
+    );
+
+    if (!itemsResponse.ok) {
+      throw new Error(`Erro ao buscar itens: ${itemsResponse.status}`);
+    }
+
+    const page = await itemsResponse.json();
+    const items = page.items || [];
+    total = page.total || total || items.length;
+
+    if (items.length === 0) {
+      break;
+    }
+
+    // Inserir em lotes menores para evitar travar
+    const dbItems: M3UItem[] = items.map((item: any) => ({
+      id: `${playlistId}_${item.id}`,
+      playlistId,
+      name: item.name,
+      url: item.url,
+      logo: item.logo,
+      group: item.group,
+      mediaKind: item.mediaKind,
+      title: item.parsedTitle?.title || item.title || item.name,
+      year: item.parsedTitle?.year || item.year,
+      season: item.parsedTitle?.season || item.season,
+      episode: item.parsedTitle?.episode || item.episode,
+      quality: item.parsedTitle?.quality || item.quality,
+      epgId: item.epgId,
+      createdAt: Date.now(),
+    }));
+
+    for (let i = 0; i < dbItems.length; i += batchSize) {
+      const batch = dbItems.slice(i, i + batchSize);
+      await db.items.bulkAdd(batch);
+    }
+
+    processed += items.length;
+    offset += page.limit || pageSize;
+
+    const percentage = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+    onProgress?.({
+      phase: 'indexing',
+      current: processed,
+      total: total || processed,
+      percentage,
+      message: `Sincronizando itens... (${processed}/${total || '?'})`,
+    });
+
+    if (processed >= total) break;
+  }
+
+  onProgress?.({
+    phase: 'complete',
+    current: processed,
+    total: total || processed,
+    percentage: 100,
+    message: 'Itens sincronizados',
+  });
 }
 
 /**
@@ -281,7 +308,7 @@ export async function addPlaylist(
   // Gera ID unico
   const playlistId = `playlist_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-  // APENAS SERVIDOR (sem fallback)
+  // APENAS SERVIDOR (sem fallback) - não bloqueia no download de itens
   const parsed = await fetchFromServer(url, onProgress);
 
   // Determina se deve ser ativa (primeira playlist = ativa)
@@ -290,7 +317,6 @@ export async function addPlaylist(
   // DEBUG: Log antes de salvar
   console.log('[DB DEBUG] ===== SALVANDO PLAYLIST =====');
   console.log('[DB DEBUG] PlaylistId:', playlistId);
-  console.log('[DB DEBUG] Items a salvar:', parsed.items.length);
   console.log('[DB DEBUG] Groups a salvar:', parsed.groups.length);
   console.log('[DB DEBUG] Stats:', parsed.stats);
 
@@ -312,37 +338,6 @@ export async function addPlaylist(
     };
     console.log('[DB DEBUG] Playlist object:', playlist);
     await db.playlists.add(playlist);
-
-    // Se items array está vazio, significa que streaming parser já inseriu no DB
-    // Apenas salvamos grupos nesse caso
-    if (parsed.items.length > 0) {
-      console.log('[DB DEBUG] Inserindo itens no DB');
-      const items: M3UItem[] = parsed.items.map((item: any) => ({
-        id: `${playlistId}_${item.id}`,
-        playlistId,
-        name: item.name,
-        url: item.url,
-        logo: item.logo,
-        group: item.group,
-        mediaKind: item.mediaKind,
-        title: item.parsedTitle?.title || item.title || item.name,
-        year: item.parsedTitle?.year || item.year,
-        season: item.parsedTitle?.season || item.season,
-        episode: item.parsedTitle?.episode || item.episode,
-        quality: item.parsedTitle?.quality || item.quality,
-        epgId: item.epgId,
-        createdAt: Date.now(),
-      }));
-
-      // Insere em lotes de 500
-      const batchSize = 500;
-      for (let i = 0; i < items.length; i += batchSize) {
-        const batch = items.slice(i, i + batchSize);
-        await db.items.bulkAdd(batch);
-      }
-    } else {
-      console.log('[DB DEBUG] Items já inseridos pelo streaming parser');
-    }
 
     // Salva grupos (grupos sempre vêm no retorno)
     const groups: M3UGroup[] = parsed.groups.map((group: any) => ({
@@ -374,7 +369,7 @@ export async function addPlaylist(
   const savedGroupsCount = await db.groups.where('playlistId').equals(playlistId).count();
   console.log('[DB DEBUG] ===== VERIFICAÇÃO PÓS-SAVE =====');
   console.log('[DB DEBUG] Playlist salva:', savedPlaylist);
-  console.log('[DB DEBUG] Items salvos:', savedItemsCount);
+  console.log('[DB DEBUG] Items salvos (parcial):', savedItemsCount);
   console.log('[DB DEBUG] Groups salvos:', savedGroupsCount);
 
   // Verifica grupos por mediaKind
@@ -384,6 +379,11 @@ export async function addPlaylist(
   console.log('[DB DEBUG] Movie groups:', movieGroups);
   console.log('[DB DEBUG] Series groups:', seriesGroups);
   console.log('[DB DEBUG] Live groups:', liveGroups);
+
+  // Sincroniza itens em background (não bloqueia onboarding)
+  syncItemsFromServer(parsed.hash, playlistId, onProgress).catch((err) => {
+    console.error('[DB DEBUG] Erro ao sincronizar itens em background:', err);
+  });
 
   return playlistId;
 }
@@ -401,7 +401,7 @@ export async function refreshPlaylist(
     throw new Error('Playlist nao encontrada');
   }
 
-  // Re-processa usando servidor
+  // Re-processa usando servidor (retorna stats/grupos/hash)
   const parsed = await fetchFromServer(playlist.url, onProgress);
 
   await db.transaction('rw', [db.playlists, db.items, db.groups], async () => {
@@ -419,32 +419,6 @@ export async function refreshPlaylist(
       seriesCount: parsed.stats.seriesCount,
     });
 
-    // Re-insere itens (vindos do servidor)
-    if (parsed.items.length > 0) {
-      const items: M3UItem[] = parsed.items.map((item: any) => ({
-        id: `${playlistId}_${item.id}`,
-        playlistId,
-        name: item.name,
-        url: item.url,
-        logo: item.logo,
-        group: item.group,
-        mediaKind: item.mediaKind,
-        title: item.parsedTitle?.title || item.title || item.name,
-        year: item.parsedTitle?.year || item.year,
-        season: item.parsedTitle?.season || item.season,
-        episode: item.parsedTitle?.episode || item.episode,
-        quality: item.parsedTitle?.quality || item.quality,
-        epgId: item.epgId,
-        createdAt: Date.now(),
-      }));
-
-      const batchSize = 500;
-      for (let i = 0; i < items.length; i += batchSize) {
-        const batch = items.slice(i, i + batchSize);
-        await db.items.bulkAdd(batch);
-      }
-    }
-
     // Re-insere grupos
     const groups: M3UGroup[] = parsed.groups.map((group: any) => ({
       id: `${playlistId}_${group.id}`,
@@ -460,6 +434,9 @@ export async function refreshPlaylist(
       await db.groups.bulkAdd(groups);
     }
   });
+
+  // Sincroniza itens (aqui aguardamos para garantir atualização completa)
+  await syncItemsFromServer(parsed.hash, playlistId, onProgress);
 }
 
 /**
