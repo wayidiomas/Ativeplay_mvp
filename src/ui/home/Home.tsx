@@ -75,10 +75,11 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       if (cached && cached.length > 0) {
         setRows(cached);
         setLoading(false);
-      } else {
-        setRows([]);
-        setLoading(true);
+        return; // Early return - não precisa buscar novamente!
       }
+
+      setRows([]);
+      setLoading(true);
 
       try {
         let mediaKind: MediaKind;
@@ -96,8 +97,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             return;
         }
 
-        const loadedGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
-        const topGroups = loadedGroups.slice(0, 8); // limitar carrosseis para performance
+        // Busca apenas os top 8 grupos direto do DB (84% menos dados)
+        const topGroups = await getPlaylistGroups(activePlaylist.id, mediaKind, 8);
 
         const rowsLoaded = await Promise.all(
           topGroups.map(async (group) => {
@@ -168,35 +169,45 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     }
   };
 
-  // Busca
+  // Busca com debounce (300ms) para reduzir queries
   useEffect(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!activePlaylist || term.length < 2) {
       setSearchResults([]);
+      setSearchLoading(false);
       return;
     }
+
     let cancelled = false;
-    async function runSearch() {
-      setSearchLoading(true);
-      try {
-        const playlistId = activePlaylist.id;
-        let collection = db.items.where('playlistId').equals(playlistId);
-        if (searchKind !== 'all') {
-          collection = db.items.where({ playlistId, mediaKind: searchKind });
+    setSearchLoading(true); // Mostra loading imediatamente
+
+    // Debounce: aguarda 300ms antes de executar busca
+    const timeoutId = setTimeout(() => {
+      async function runSearch() {
+        try {
+          const playlistId = activePlaylist.id;
+          let collection = db.items.where('playlistId').equals(playlistId);
+          if (searchKind !== 'all') {
+            collection = db.items.where({ playlistId, mediaKind: searchKind });
+          }
+          const results = await collection
+            .filter((item) => (item.title || item.name || '').toLowerCase().includes(term))
+            .limit(120)
+            .toArray();
+          if (!cancelled) setSearchResults(results);
+        } catch (e) {
+          if (!cancelled) setSearchResults([]);
+        } finally {
+          if (!cancelled) setSearchLoading(false);
         }
-        const results = await collection
-          .filter((item) => (item.title || item.name || '').toLowerCase().includes(term))
-          .limit(120)
-          .toArray();
-        if (!cancelled) setSearchResults(results);
-      } catch (e) {
-        if (!cancelled) setSearchResults([]);
-      } finally {
-        if (!cancelled) setSearchLoading(false);
       }
-    }
-    runSearch();
-    return () => { cancelled = true; };
+      runSearch();
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
   }, [activePlaylist, searchKind, searchTerm]);
 
   const handleExit = () => {

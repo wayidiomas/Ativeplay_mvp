@@ -129,12 +129,20 @@ export async function getPlaylistItems(
 
 export async function getPlaylistGroups(
   playlistId: string,
-  mediaKind?: MediaKind
+  mediaKind?: MediaKind,
+  limit?: number
 ): Promise<M3UGroup[]> {
+  let query;
   if (mediaKind) {
-    return db.groups.where({ playlistId, mediaKind }).toArray();
+    query = db.groups.where({ playlistId, mediaKind });
+  } else {
+    query = db.groups.where('playlistId').equals(playlistId);
   }
-  return db.groups.where('playlistId').equals(playlistId).toArray();
+
+  if (limit) {
+    return query.limit(limit).toArray();
+  }
+  return query.toArray();
 }
 
 export async function getItemsByGroup(
