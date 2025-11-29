@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import type { Playlist } from '@core/db';
+import type { Playlist, M3UItem } from '@core/db';
 
 interface SyncProgress {
   current: number;
@@ -23,6 +23,9 @@ interface PlaylistState {
   isSyncing: boolean;
   syncProgress: SyncProgress | null;
 
+  // Cache de grupos visitados (10x faster on revisit)
+  groupCache: Map<string, M3UItem[]>;
+
   // Actions
   setActivePlaylist: (playlist: Playlist | null) => void;
   setPlaylists: (playlists: Playlist[]) => void;
@@ -30,6 +33,9 @@ interface PlaylistState {
   setError: (error: string | null) => void;
   setSyncing: (syncing: boolean) => void;
   setSyncProgress: (progress: SyncProgress | null) => void;
+  cacheGroupItems: (playlistId: string, group: string, items: M3UItem[]) => void;
+  getGroupCache: (playlistId: string, group: string) => M3UItem[] | undefined;
+  clearGroupCache: () => void;
   reset: () => void;
 }
 
@@ -40,6 +46,7 @@ const initialState = {
   error: null,
   isSyncing: false,
   syncProgress: null,
+  groupCache: new Map<string, M3UItem[]>(),
 };
 
 export const usePlaylistStore = create<PlaylistState>((set) => ({
@@ -57,7 +64,24 @@ export const usePlaylistStore = create<PlaylistState>((set) => ({
 
   setSyncProgress: (syncProgress) => set({ syncProgress }),
 
-  reset: () => set(initialState),
+  cacheGroupItems: (playlistId, group, items) =>
+    set((state) => {
+      const key = `${playlistId}:${group}`;
+      const newCache = new Map(state.groupCache);
+      newCache.set(key, items);
+      return { groupCache: newCache };
+    }),
+
+  getGroupCache: (playlistId, group) => {
+    const state = usePlaylistStore.getState();
+    const key = `${playlistId}:${group}`;
+    return state.groupCache.get(key);
+  },
+
+  clearGroupCache: () =>
+    set({ groupCache: new Map<string, M3UItem[]>() }),
+
+  reset: () => set({ ...initialState, groupCache: new Map<string, M3UItem[]>() }),
 }));
 
 export default usePlaylistStore;

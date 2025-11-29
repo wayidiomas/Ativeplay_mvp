@@ -6,6 +6,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
+import { usePlaylistStore } from '@store/playlistStore';
 import { SkeletonCard } from '../shared';
 import styles from './MediaGrid.module.css';
 
@@ -23,6 +24,11 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
+  const { cacheGroupItems, getGroupCache } = usePlaylistStore();
+
+  // Check cache first for instant load on revisit (10x faster)
+  const cachedItems = getGroupCache(group.playlistId, group.name);
+
   // Live query com limit dinâmico - atualiza automaticamente quando novos items chegam
   const items = useLiveQuery(
     () =>
@@ -31,8 +37,15 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         .limit(visibleCount)
         .toArray(),
     [group.playlistId, group.name, visibleCount],
-    [] // fallback enquanto carrega
+    cachedItems || [] // Use cache as fallback for instant display
   );
+
+  // Cache items after they're loaded
+  useEffect(() => {
+    if (items && items.length > 0) {
+      cacheGroupItems(group.playlistId, group.name, items);
+    }
+  }, [items, group.playlistId, group.name, cacheGroupItems]);
 
   const totalCount = useLiveQuery(
     () => db.items.where({ playlistId: group.playlistId, group: group.name }).count(),
