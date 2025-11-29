@@ -866,6 +866,59 @@ app.get('/api/playlist/items/:hash', async (req, res) => {
 });
 
 /**
+ * GET /api/playlist/items/:hash/partial
+ * Retorna apenas os primeiros N items de uma playlist (para early navigation)
+ * Usado para carregar mínimo viável antes de navegar para /home
+ */
+app.get('/api/playlist/items/:hash/partial', async (req, res) => {
+  const { hash } = req.params;
+  const cached = cacheIndex.get(hash);
+
+  if (!cached) {
+    return res.status(404).json({ error: 'Playlist não encontrada ou cache expirado' });
+  }
+
+  // Limite máximo de 5000 items, padrão 1000
+  const limit = Math.min(parseInt(req.query.limit || '1000', 10), 5000);
+  const items = [];
+
+  try {
+    const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
+    const fileStream = createReadStream(itemsPath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    for await (const line of rl) {
+      if (items.length >= limit) break;
+
+      try {
+        items.push(JSON.parse(line));
+      } catch (error) {
+        console.warn('[Items Partial] Linha inválida no cache, pulando');
+      }
+    }
+
+    rl.close();
+
+    console.log('[Items Partial] Primeiros items servidos', {
+      hash,
+      limit,
+      returned: items.length,
+      total: cached.stats?.totalItems || 0
+    });
+
+    res.json({
+      items,
+      total: cached.stats?.totalItems || 0,
+      loaded: items.length,
+      partial: true,
+    });
+  } catch (error) {
+    console.error('[Items Partial] Erro ao ler cache:', error);
+    res.status(500).json({ error: 'Erro ao ler cache de itens' });
+  }
+});
+
+/**
  * POST /session/create
  * Cria nova sessão e retorna QR code + sessionId
  */

@@ -6,6 +6,12 @@
 import { create } from 'zustand';
 import type { Playlist } from '@core/db';
 
+interface SyncProgress {
+  current: number;
+  total: number;
+  percentage: number;
+}
+
 interface PlaylistState {
   // Estado
   activePlaylist: Playlist | null;
@@ -13,11 +19,17 @@ interface PlaylistState {
   isLoading: boolean;
   error: string | null;
 
+  // Estado de sincronização (early navigation)
+  isSyncing: boolean;
+  syncProgress: SyncProgress | null;
+
   // Actions
   setActivePlaylist: (playlist: Playlist | null) => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
+  setSyncing: (syncing: boolean) => void;
+  setSyncProgress: (progress: SyncProgress | null) => void;
   reset: () => void;
 }
 
@@ -26,6 +38,8 @@ const initialState = {
   playlists: [],
   isLoading: false,
   error: null,
+  isSyncing: false,
+  syncProgress: null,
 };
 
 export const usePlaylistStore = create<PlaylistState>((set) => ({
@@ -38,6 +52,10 @@ export const usePlaylistStore = create<PlaylistState>((set) => ({
   setLoading: (isLoading) => set({ isLoading }),
 
   setError: (error) => set({ error }),
+
+  setSyncing: (isSyncing) => set({ isSyncing }),
+
+  setSyncProgress: (syncProgress) => set({ syncProgress }),
 
   reset: () => set(initialState),
 }));

@@ -24,7 +24,8 @@ import {
   MdPlayArrow,
   MdInfoOutline,
   MdErrorOutline,
-  MdHelpOutline
+  MdHelpOutline,
+  MdCloudDownload
 } from 'react-icons/md';
 import styles from './Home.module.css';
 
@@ -38,8 +39,10 @@ type NavItem = 'movies' | 'series' | 'live' | 'favorites' | 'settings';
 type SearchKind = 'all' | MediaKind;
 
 export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomeProps) {
-  const { activePlaylist } = usePlaylistStore();
+  const { activePlaylist, isSyncing, syncProgress } = usePlaylistStore();
   const setActivePlaylist = usePlaylistStore((s) => s.setActivePlaylist);
+  const setSyncing = usePlaylistStore((s) => s.setSyncing);
+  const setSyncProgress = usePlaylistStore((s) => s.setSyncProgress);
   const navigate = useNavigate();
   const [selectedNav, setSelectedNav] = useState<NavItem>('movies');
   const [groups, setGroups] = useState<M3UGroup[]>([]);
@@ -92,6 +95,56 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
     loadGroups();
   }, [activePlaylist, selectedNav]);
+
+  // Monitor sync status (early navigation)
+  useEffect(() => {
+    if (!activePlaylist || activePlaylist.lastSyncStatus !== 'syncing') {
+      setSyncing(false);
+      setSyncProgress(null);
+      return;
+    }
+
+    // Playlist está sincronizando - iniciar polling
+    setSyncing(true);
+    let cancelled = false;
+
+    const pollSyncProgress = async () => {
+      while (!cancelled) {
+        try {
+          // Conta items carregados
+          const loadedCount = await db.items.where('playlistId').equals(activePlaylist.id).count();
+          const total = activePlaylist.itemCount;
+          const percentage = total > 0 ? Math.round((loadedCount / total) * 100) : 0;
+
+          setSyncProgress({
+            current: loadedCount,
+            total,
+            percentage,
+          });
+
+          // Para quando sincronização completa
+          const updated = await db.playlists.get(activePlaylist.id);
+          if (updated?.lastSyncStatus !== 'syncing') {
+            setSyncing(false);
+            setSyncProgress(null);
+            break;
+          }
+
+          // Poll a cada 2 segundos
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } catch (error) {
+          console.error('[Home] Erro ao monitorar sincronização:', error);
+          break;
+        }
+      }
+    };
+
+    pollSyncProgress();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePlaylist, setSyncing, setSyncProgress]);
 
   // Keyboard navigation for sidebar and scroll
   useEffect(() => {
@@ -475,6 +528,24 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
           Sair
         </button>
       </aside>
+
+      {/* Sync Banner (Early Navigation) */}
+      {isSyncing && syncProgress && (
+        <div className={styles.syncBanner}>
+          <div className={styles.syncIcon}>
+            <MdCloudDownload size={24} className={styles.syncIconRotate} />
+          </div>
+          <div className={styles.syncText}>
+            Carregando itens... {syncProgress.percentage}% ({syncProgress.current.toLocaleString()}/{syncProgress.total.toLocaleString()})
+          </div>
+          <div className={styles.syncProgressBarContainer}>
+            <div
+              className={styles.syncProgressBar}
+              style={{ width: `${syncProgress.percentage}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className={styles.main}>

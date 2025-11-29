@@ -7,7 +7,7 @@ export interface Playlist {
   url: string;
   isActive: number; // 0 ou 1 (IndexedDB nao suporta boolean como chave)
   lastUpdated: number;
-  lastSyncStatus: 'success' | 'error' | 'pending';
+  lastSyncStatus: 'syncing' | 'success' | 'error';
   itemCount: number;
   liveCount: number;
   movieCount: number;

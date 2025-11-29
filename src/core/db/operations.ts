@@ -210,21 +210,80 @@ async function fetchFromServer(
 /**
  * Sincroniza itens paginados do servidor e insere no Dexie
  * Pode ser usado em background (fire-and-forget) ou aguardado em refresh
+ *
+ * @param options.loadPartial - Se true, carrega apenas os primeiros N items (early navigation)
+ * @param options.partialLimit - Quantidade de items para carregar no modo partial (padrão: 1000)
+ * @returns Informações sobre o carregamento (partial, loaded, total)
  */
 async function syncItemsFromServer(
   hash: string,
   playlistId: string,
-  onProgress?: ProgressCallback
-): Promise<void> {
+  onProgress?: ProgressCallback,
+  options?: { loadPartial?: boolean; partialLimit?: number }
+): Promise<{ partial: boolean; loaded: number; total: number }> {
   if (!SERVER_URL) {
     throw new Error('Servidor não configurado. Configure VITE_BRIDGE_URL no .env');
   }
 
-  const pageSize = 5000;
   const batchSize = 500;
-  let offset = 0;
   let total = 0;
   let processed = 0;
+
+  // MODO PARTIAL: Carrega apenas primeiros N items para early navigation
+  if (options?.loadPartial) {
+    const partialLimit = options.partialLimit || 1000;
+
+    const itemsResponse = await fetch(
+      `${SERVER_URL}/api/playlist/items/${hash}/partial?limit=${partialLimit}`
+    );
+
+    if (!itemsResponse.ok) {
+      throw new Error(`Erro ao buscar itens parciais: ${itemsResponse.status}`);
+    }
+
+    const page = await itemsResponse.json();
+    const items = page.items || [];
+    total = page.total || 0;
+
+    const dbItems: M3UItem[] = items.map((item: any) => ({
+      id: `${playlistId}_${item.id}`,
+      playlistId,
+      name: item.name,
+      url: item.url,
+      logo: item.logo,
+      group: item.group,
+      mediaKind: item.mediaKind,
+      title: item.parsedTitle?.title || item.title || item.name,
+      year: item.parsedTitle?.year || item.year,
+      season: item.parsedTitle?.season || item.season,
+      episode: item.parsedTitle?.episode || item.episode,
+      quality: item.parsedTitle?.quality || item.quality,
+      epgId: item.epgId,
+      createdAt: Date.now(),
+    }));
+
+    // Insere em batches
+    for (let i = 0; i < dbItems.length; i += batchSize) {
+      const batch = dbItems.slice(i, i + batchSize);
+      await db.items.bulkAdd(batch);
+    }
+
+    processed = items.length;
+
+    onProgress?.({
+      phase: 'indexing',
+      current: processed,
+      total,
+      percentage: Math.min(100, Math.round((processed / total) * 100)),
+      message: `Carregados primeiros ${processed} itens...`,
+    });
+
+    return { partial: true, loaded: processed, total };
+  }
+
+  // MODO COMPLETO: Carrega todos os items com paginação
+  const pageSize = 5000;
+  let offset = 0;
 
   while (true) {
     const itemsResponse = await fetch(
@@ -288,6 +347,39 @@ async function syncItemsFromServer(
     percentage: 100,
     message: 'Itens sincronizados',
   });
+
+  return { partial: false, loaded: processed, total };
+}
+
+/**
+ * Continua sincronização completa em background após early navigation
+ * Aguarda 1s antes de começar (para UI se estabilizar)
+ * Atualiza lastSyncStatus conforme progresso
+ */
+async function continueBackgroundSync(
+  hash: string,
+  playlistId: string
+): Promise<void> {
+  console.log('[DB DEBUG] ===== BACKGROUND SYNC: Iniciando em 1s =====');
+
+  // Aguarda 1s para UI se estabilizar
+  await new Promise(resolve => setTimeout(resolve, 1000));
+
+  try {
+    // Carrega resto dos items com paginação completa
+    console.log('[DB DEBUG] BACKGROUND SYNC: Carregando resto dos items...');
+    await syncItemsFromServer(hash, playlistId, undefined, { loadPartial: false });
+
+    // Atualiza status para 'success'
+    await db.playlists.update(playlistId, { lastSyncStatus: 'success' });
+    console.log('[DB DEBUG] BACKGROUND SYNC: Concluído com sucesso!');
+
+  } catch (error) {
+    console.error('[DB DEBUG] BACKGROUND SYNC: Erro durante sincronização:', error);
+
+    // Marca como erro
+    await db.playlists.update(playlistId, { lastSyncStatus: 'error' });
+  }
 }
 
 /**
@@ -326,7 +418,7 @@ export async function addPlaylist(
   console.log('[DB DEBUG] Groups a salvar:', parsed.groups.length);
   console.log('[DB DEBUG] Stats:', parsed.stats);
 
-  // Salva no banco
+  // Salva no banco com status 'syncing' (early navigation)
   await db.transaction('rw', [db.playlists, db.items, db.groups], async () => {
     // Cria registro da playlist
     const playlist: Playlist = {
@@ -335,7 +427,7 @@ export async function addPlaylist(
       url,
       isActive: isFirst ? 1 : 0,
       lastUpdated: Date.now(),
-      lastSyncStatus: 'success',
+      lastSyncStatus: 'syncing', // Early navigation: marca como syncing
       itemCount: parsed.stats.totalItems,
       liveCount: parsed.stats.liveCount,
       movieCount: parsed.stats.movieCount,
@@ -371,11 +463,9 @@ export async function addPlaylist(
 
   // DEBUG: Verifica o que foi salvo
   const savedPlaylist = await db.playlists.get(playlistId);
-  const savedItemsCount = await db.items.where('playlistId').equals(playlistId).count();
   const savedGroupsCount = await db.groups.where('playlistId').equals(playlistId).count();
   console.log('[DB DEBUG] ===== VERIFICAÇÃO PÓS-SAVE =====');
   console.log('[DB DEBUG] Playlist salva:', savedPlaylist);
-  console.log('[DB DEBUG] Items salvos (parcial):', savedItemsCount);
   console.log('[DB DEBUG] Groups salvos:', savedGroupsCount);
 
   // Verifica grupos por mediaKind
@@ -386,9 +476,19 @@ export async function addPlaylist(
   console.log('[DB DEBUG] Series groups:', seriesGroups);
   console.log('[DB DEBUG] Live groups:', liveGroups);
 
-  // Sincroniza itens em background (não bloqueia onboarding)
-  syncItemsFromServer(parsed.hash, playlistId, onProgress).catch((err) => {
-    console.error('[DB DEBUG] Erro ao sincronizar itens em background:', err);
+  // EARLY NAVIGATION: Carrega apenas primeiros 1000 items
+  console.log('[DB DEBUG] ===== EARLY NAVIGATION: Carregando primeiros 1000 items =====');
+  await syncItemsFromServer(parsed.hash, playlistId, onProgress, {
+    loadPartial: true,
+    partialLimit: 1000,
+  });
+
+  const savedItemsCount = await db.items.where('playlistId').equals(playlistId).count();
+  console.log('[DB DEBUG] Items salvos (parcial):', savedItemsCount);
+
+  // Continua sincronização completa em background (fire-and-forget)
+  continueBackgroundSync(parsed.hash, playlistId).catch((err) => {
+    console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
   });
 
   return playlistId;
