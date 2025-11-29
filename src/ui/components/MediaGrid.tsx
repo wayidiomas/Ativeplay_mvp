@@ -3,8 +3,10 @@
  * Grid display of media items with progressive loading
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
+import { SkeletonCard } from '../shared';
 import styles from './MediaGrid.module.css';
 
 interface MediaGridProps {
@@ -16,51 +18,38 @@ interface MediaGridProps {
 const PAGE_SIZE = 120;
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
-  const [items, setItems] = useState<M3UItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [totalCount, setTotalCount] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
-  const loadPage = useCallback(
-    async (offset: number) => {
-      setLoadingMore(true);
-      try {
-        const collection = db.items.where({ playlistId: group.playlistId, group: group.name });
-        const page = await collection.offset(offset).limit(PAGE_SIZE).toArray();
-        const total = await collection.count();
-        setTotalCount(total);
-
-        if (page.length === 0) {
-          setHasMore(false);
-          return;
-        }
-
-        setItems((prev) => [...prev, ...page]);
-        if (offset + page.length >= total) setHasMore(false);
-      } catch (error) {
-        console.error('Erro ao carregar itens:', error);
-        setHasMore(false);
-      } finally {
-        setLoading(false);
-        setLoadingMore(false);
-      }
-    },
-    [group.name, group.playlistId]
+  // Live query com limit dinâmico - atualiza automaticamente quando novos items chegam
+  const items = useLiveQuery(
+    () =>
+      db.items
+        .where({ playlistId: group.playlistId, group: group.name })
+        .limit(visibleCount)
+        .toArray(),
+    [group.playlistId, group.name, visibleCount],
+    [] // fallback enquanto carrega
   );
 
-  useEffect(() => {
-    // reset when group changes
-    setItems([]);
-    setLoading(true);
-    setHasMore(true);
-    setFocusedIndex(null);
-    loadPage(0);
-  }, [group, loadPage]);
+  const totalCount = useLiveQuery(
+    () => db.items.where({ playlistId: group.playlistId, group: group.name }).count(),
+    [group.playlistId, group.name],
+    0
+  );
 
-  // Infinite scroll trigger
+  const loading = items === undefined;
+  const hasMore = (items?.length || 0) < (totalCount || 0);
+
+  // Reset visibleCount quando grupo muda
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+    setFocusedIndex(null);
+  }, [group]);
+
+  // Infinite scroll: aumenta visibleCount para carregar mais items
   useEffect(() => {
     const el = gridRef.current;
     if (!el) return;
@@ -69,17 +58,20 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       if (!hasMore || loadingMore) return;
       const threshold = 400;
       if (el.scrollTop + el.clientHeight >= el.scrollHeight - threshold) {
-        loadPage(items.length);
+        setLoadingMore(true);
+        setVisibleCount((prev) => prev + PAGE_SIZE);
+        // Debounce visual
+        setTimeout(() => setLoadingMore(false), 300);
       }
     };
 
     el.addEventListener('scroll', onScroll);
     return () => el.removeEventListener('scroll', onScroll);
-  }, [hasMore, items.length, loadPage, loadingMore]);
+  }, [hasMore, loadingMore]);
 
   const focusIndex = useCallback(
     (index: number) => {
-      if (index < 0 || index >= items.length) return;
+      if (!items || index < 0 || index >= items.length) return;
       const el = gridRef.current?.querySelector<HTMLButtonElement>(`[data-index=\"${index}\"]`);
       if (el) {
         el.focus({ preventScroll: false });
@@ -87,7 +79,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         setFocusedIndex(index);
       }
     },
-    [items.length]
+    [items]
   );
 
   // Keyboard navigation for TV/remote
@@ -134,10 +126,10 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
   // Auto-focus primeiro card
   useEffect(() => {
-    if (!loading && items.length > 0 && focusedIndex === null) {
+    if (!loading && items && items.length > 0 && focusedIndex === null) {
       focusIndex(0);
     }
-  }, [loading, items.length, focusIndex, focusedIndex]);
+  }, [loading, items, focusIndex, focusedIndex]);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     if (gridRef.current) {
@@ -159,19 +151,13 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
           <h1 className={styles.title}>{group.name}</h1>
         </header>
         <div className={styles.skeletonGrid}>
-          {Array.from({ length: 12 }).map((_, idx) => (
-            <div key={idx} className={styles.skeletonCard}>
-              <div className={styles.skeletonPoster} />
-              <div className={styles.skeletonBar} />
-              <div className={styles.skeletonMeta} />
-            </div>
-          ))}
+          <SkeletonCard count={12} />
         </div>
       </div>
     );
   }
 
-  if (items.length === 0) {
+  if (!loading && items && items.length === 0) {
     return (
       <div className={styles.container}>
         <header className={styles.header}>
@@ -211,7 +197,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         }}
         onWheel={handleWheel}
       >
-        {items.map((item, idx) => (
+        {items?.map((item, idx) => (
           <button
             key={item.id}
             className={styles.card}

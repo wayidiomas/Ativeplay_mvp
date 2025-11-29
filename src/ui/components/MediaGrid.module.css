@@ -257,56 +257,10 @@
   color: #b3b3b3;
 }
 
-/* Skeletons */
+/* Skeleton Grid Layout */
 .skeletonGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 20px;
   padding: var(--space-xl);
-}
-
-.skeletonCard {
-  background: #1f1f1f;
-  border-radius: 10px;
-  padding: 12px;
-  border: 1px solid rgba(255,255,255,0.05);
-  position: relative;
-  overflow: hidden;
-  aspect-ratio: 2/3;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.skeletonCard::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
-  animation: shimmer 1.6s infinite;
-}
-
-.skeletonPoster {
-  flex: 1;
-  border-radius: 6px;
-  background: rgba(255,255,255,0.06);
-}
-
-.skeletonBar {
-  height: 12px;
-  width: 80%;
-  background: rgba(255,255,255,0.08);
-  border-radius: 6px;
-}
-
-.skeletonMeta {
-  height: 10px;
-  width: 50%;
-  background: rgba(255,255,255,0.06);
-  border-radius: 6px;
-}
-
-@keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
 }

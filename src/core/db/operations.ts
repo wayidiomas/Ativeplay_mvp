@@ -270,13 +270,13 @@ async function syncItemsFromServer(
     throw new Error('Servidor não configurado. Configure VITE_BRIDGE_URL no .env');
   }
 
-  const batchSize = 500;
+  const batchSize = 100;
   let total = 0;
   let processed = 0;
 
   // MODO PARTIAL: Carrega apenas primeiros N items para early navigation
   if (options?.loadPartial) {
-    const partialLimit = options.partialLimit || 1000;
+    const partialLimit = options.partialLimit || 500;
 
     const itemsResponse = await fetch(
       `${SERVER_URL}/api/playlist/items/${hash}/partial?limit=${partialLimit}`
@@ -601,12 +601,12 @@ export async function addPlaylist(
           // Atualiza status para syncing
           await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
 
-          // Se tem menos de 1000 items, carrega parcial primeiro
-          if (itemsCount < 1000) {
-            console.log('[DB DEBUG] Carregando primeiros 1000 items...');
+          // Se tem menos de 500 items, carrega parcial primeiro
+          if (itemsCount < 500) {
+            console.log('[DB DEBUG] Carregando primeiros 500 items...');
             await syncItemsFromServer(hash, existing.id, onProgress, {
               loadPartial: true,
-              partialLimit: 1000,
+              partialLimit: 500,
             });
           }
 
@@ -696,11 +696,11 @@ export async function addPlaylist(
       console.log('[DB DEBUG] Series groups:', seriesGroups);
       console.log('[DB DEBUG] Live groups:', liveGroups);
 
-      // EARLY NAVIGATION: Carrega apenas primeiros 1000 items
-      console.log('[DB DEBUG] ===== EARLY NAVIGATION: Carregando primeiros 1000 items =====');
+      // EARLY NAVIGATION: Carrega apenas primeiros 500 items
+      console.log('[DB DEBUG] ===== EARLY NAVIGATION: Carregando primeiros 500 items =====');
       await syncItemsFromServer(parsed.hash, playlistId, onProgress, {
         loadPartial: true,
-        partialLimit: 1000,
+        partialLimit: 500,
       });
 
       const savedItemsCount = await db.items.where('playlistId').equals(playlistId).count();
