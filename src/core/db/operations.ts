@@ -44,6 +44,27 @@ async function pollJobUntilComplete(
       });
 
       if (!response.ok) {
+        // ✅ FALLBACK: Se job não existe mas temos hash, usa endpoint alternativo
+        if (response.status === 404 && hash) {
+          console.log('[Poll] Job 404, usando fallback para /api/playlist/progress/:hash');
+          const progressResult = await pollProgressAndSyncIncremental(hash, playlistId, onProgress);
+
+          if (progressResult.status === 'completed') {
+            // Busca dados finais do meta.json
+            const metaResp = await fetch(`${SERVER_URL}/api/playlist/progress/${hash}`);
+            const metaData = await metaResp.json();
+            return {
+              hash,
+              stats: metaData.progress,
+              groups: progressResult.groups,
+            };
+          }
+
+          // Ainda em progresso, aguarda e continua polling
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          continue;
+        }
+
         if (response.status === 404) {
           throw new Error('Job não encontrado (pode ter expirado)');
         }
