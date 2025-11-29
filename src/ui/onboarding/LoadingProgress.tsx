@@ -44,6 +44,11 @@ export function LoadingProgress() {
           console.log('[LOADING DEBUG] Setando activePlaylist no Zustand...');
           setActivePlaylist(active);
           console.log('[LOADING DEBUG] activePlaylist setado!');
+
+          // ✅ AGUARDA Dexie propagar mudanças para useLiveQuery (fix race condition)
+          console.log('[LOADING DEBUG] Aguardando Dexie notification (100ms)...');
+          await new Promise(resolve => setTimeout(resolve, 100));
+          console.log('[LOADING DEBUG] Dexie notification propagada!');
         } else {
           console.log('[LOADING DEBUG] NENHUMA playlist ativa encontrada!');
         }
