@@ -8,10 +8,10 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { usePlaylistStore } from '@store/playlistStore';
 import {
   db,
-  getPlaylistGroups,
   type M3UGroup,
   type M3UItem,
   type MediaKind,
+  type Series,
 } from '@core/db/schema';
 import {
   MdMovie,
@@ -31,7 +31,9 @@ type NavItem = 'movies' | 'series' | 'live';
 type SearchKind = 'all' | MediaKind;
 
 const GROUP_BATCH_SIZE = 6;
-const ITEMS_PER_GROUP = 24;
+const ITEMS_PER_GROUP = 24; // Carregamento inicial por grupo
+const ITEMS_LOAD_MORE = 24; // Quantos itens carregar por vez no lazy loading horizontal
+const INITIAL_BATCHES = 2; // carrega mais de um lote no início para garantir scroll
 
 interface HomeProps {
   onSelectGroup: (group: M3UGroup) => void;
@@ -42,23 +44,38 @@ interface HomeProps {
 interface Row {
   group: M3UGroup;
   items: M3UItem[];
+  series?: Series[]; // Para aba de séries: contém séries agrupadas
+  isSeries?: boolean; // Flag para indicar que é row de séries
+  seriesLoadedCount?: number; // Quantas séries foram carregadas (para lazy loading)
+  itemsLoadedCount?: number; // Quantos items foram carregados (para lazy loading)
+  hasMoreSeries?: boolean; // Se há mais séries para carregar
+  hasMoreItems?: boolean; // Se há mais items para carregar
 }
 
 const MediaCard = memo(({ item, groupName, onSelectItem }: { item: M3UItem; groupName: string; onSelectItem: (item: M3UItem) => void }) => {
+  const [imageError, setImageError] = useState(false);
+
+  const handleImageError = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    setImageError(true);
+    // Suprime erro do console evitando que navegador mostre ERR_NAME_NOT_RESOLVED
+    e.preventDefault();
+  }, []);
+
   return (
     <button className={styles.card} onClick={() => onSelectItem(item)}>
-      {item.logo ? (
+      {item.logo && !imageError ? (
         <img
           src={item.logo}
           alt={item.title || item.name}
           className={styles.cardPoster}
           loading="lazy"
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          onError={handleImageError}
         />
-      ) : null}
-      <div className={styles.cardPlaceholder} style={item.logo ? { display: 'none' } : undefined}>
-        {item.mediaKind === 'live' ? <MdLiveTv size={32} /> : <MdMovie size={32} />}
-      </div>
+      ) : (
+        <div className={styles.cardPlaceholder}>
+          {item.mediaKind === 'live' ? <MdLiveTv size={32} /> : <MdMovie size={32} />}
+        </div>
+      )}
       <div className={styles.cardOverlay}>
         <div className={styles.cardTitle}>{item.title || item.name}</div>
         <div className={styles.cardMeta}>
@@ -71,23 +88,68 @@ const MediaCard = memo(({ item, groupName, onSelectItem }: { item: M3UItem; grou
 }, (prev, next) => prev.item.id === next.item.id);
 
 const SearchResultCard = memo(({ item, onSelectItem }: { item: M3UItem; onSelectItem: (item: M3UItem) => void }) => {
+  const [imageError, setImageError] = useState(false);
+
+  const handleImageError = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    setImageError(true);
+    e.preventDefault();
+  }, []);
+
   return (
     <button className={styles.card} onClick={() => onSelectItem(item)}>
-      {item.logo ? (
+      {item.logo && !imageError ? (
         <img
           src={item.logo}
           alt={item.title || item.name}
           className={styles.cardPoster}
           loading="lazy"
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          onError={handleImageError}
         />
-      ) : null}
+      ) : (
+        <div className={styles.cardPlaceholder}>
+          {item.mediaKind === 'live' ? <MdLiveTv size={32} /> : <MdMovie size={32} />}
+        </div>
+      )}
       <div className={styles.cardOverlay}>
         <div className={styles.cardTitle}>{item.title || item.name}</div>
       </div>
     </button>
   );
 }, (prev, next) => prev.item.id === next.item.id);
+
+const SeriesCard = memo(({ series, onNavigate }: { series: Series; onNavigate: (seriesId: string) => void }) => {
+  const [imageError, setImageError] = useState(false);
+
+  const handleImageError = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    setImageError(true);
+    e.preventDefault();
+  }, []);
+
+  return (
+    <button className={styles.card} onClick={() => onNavigate(series.id)}>
+      {series.logo && !imageError ? (
+        <img
+          src={series.logo}
+          alt={series.name}
+          className={styles.cardPoster}
+          loading="lazy"
+          onError={handleImageError}
+        />
+      ) : (
+        <div className={styles.cardPlaceholder}>
+          <MdTv size={32} />
+        </div>
+      )}
+      <div className={styles.cardOverlay}>
+        <div className={styles.cardTitle}>{series.name}</div>
+        <div className={styles.cardMeta}>
+          <span>{series.totalEpisodes} episódios</span>
+          {series.totalSeasons > 1 && <span>{series.totalSeasons} temporadas</span>}
+        </div>
+      </div>
+    </button>
+  );
+}, (prev, next) => prev.series.id === next.series.id);
 
 export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomeProps) {
   const navigate = useNavigate();
@@ -123,6 +185,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const [searchResults, setSearchResults] = useState<M3UItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [loadingMoreGroups, setLoadingMoreGroups] = useState(false);
+  const [loadingCarousels, setLoadingCarousels] = useState<Set<string>>(new Set());
 
   const contentRef = useRef<HTMLDivElement>(null);
   const rowsCacheRef = useRef<Record<NavItem, Row[]>>({
@@ -146,23 +209,140 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     live: true,
   });
 
+  // Zera caches quando playlist ativa muda para evitar dados de playlists antigas
+  useEffect(() => {
+    rowsCacheRef.current = { movies: [], series: [], live: [] };
+    allGroupsRef.current = { movies: [], series: [], live: [] };
+    nextIndexRef.current = { movies: 0, series: 0, live: 0 };
+    hasMoreRef.current = { movies: true, series: true, live: true };
+    setRows([]);
+    setLoading(true);
+  }, [activePlaylist?.id]);
+
   const loadBatch = useCallback(
     async (mediaKind: MediaKind, startIndex: number, allGroups: M3UGroup[]) => {
       const batch = allGroups.slice(startIndex, startIndex + GROUP_BATCH_SIZE);
       if (batch.length === 0) return [];
+
+      // Lógica especial para séries: carrega séries agrupadas + items não agrupados
+      if (mediaKind === 'series') {
+        const rowsLoaded = await Promise.all(
+          batch.map(async (group) => {
+            // Conta total de séries e items deste grupo
+            const totalSeriesCount = await db.series
+              .where({ playlistId: activePlaylist!.id, group: group.name })
+              .count();
+
+            const totalItemsCount = await db.items
+              .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
+              .filter((item) => !item.seriesId)
+              .count();
+
+            // Carrega séries agrupadas deste grupo
+            const seriesInGroup = await db.series
+              .where({ playlistId: activePlaylist!.id, group: group.name })
+              .limit(ITEMS_PER_GROUP)
+              .toArray();
+
+            // Carrega items não agrupados (singleton) deste grupo
+            const ungroupedItems = await db.items
+              .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
+              .filter((item) => !item.seriesId) // Apenas items sem seriesId
+              .limit(ITEMS_PER_GROUP - seriesInGroup.length) // Limita para completar até ITEMS_PER_GROUP
+              .toArray();
+
+            const hasContent = seriesInGroup.length > 0 || ungroupedItems.length > 0;
+
+            return hasContent
+              ? {
+                  group,
+                  items: ungroupedItems,
+                  series: seriesInGroup,
+                  isSeries: true,
+                  seriesLoadedCount: seriesInGroup.length,
+                  itemsLoadedCount: ungroupedItems.length,
+                  hasMoreSeries: seriesInGroup.length < totalSeriesCount,
+                  hasMoreItems: ungroupedItems.length < totalItemsCount,
+                }
+              : null;
+          })
+        );
+        return rowsLoaded.filter(Boolean) as Row[];
+      }
+
+      // Lógica normal para movies e live
       const rowsLoaded = await Promise.all(
         batch.map(async (group) => {
+          const totalItemsCount = await db.items
+            .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
+            .count();
+
           const items = await db.items
             .where({ playlistId: activePlaylist!.id, group: group.name, mediaKind })
             .limit(ITEMS_PER_GROUP)
             .toArray();
-          return items.length > 0 ? { group, items } : null;
+
+          return items.length > 0
+            ? {
+                group,
+                items,
+                itemsLoadedCount: items.length,
+                hasMoreItems: items.length < totalItemsCount,
+              }
+            : null;
         })
       );
       return rowsLoaded.filter(Boolean) as Row[];
     },
     [activePlaylist]
   );
+
+  // useLiveQuery para monitorar grupos reativamente
+  const liveGroups = useLiveQuery(
+    async () => {
+      if (!activePlaylist) return [];
+      const mediaKind: MediaKind =
+        selectedNav === 'movies' ? 'movie' :
+        selectedNav === 'series' ? 'series' : 'live';
+
+      return await db.groups
+        .where({ playlistId: activePlaylist.id, mediaKind })
+        .toArray();
+    },
+    [activePlaylist?.id, selectedNav],
+    [] // Default empty array while loading
+  );
+
+  // Sincroniza liveGroups → allGroupsRef
+  useEffect(() => {
+    if (!liveGroups || liveGroups.length === 0) return;
+
+    // Deduplicate groups by id
+    const seen = new Set<string>();
+    const uniqueGroups = liveGroups.filter((g) => {
+      if (seen.has(g.id)) return false;
+      seen.add(g.id);
+      return true;
+    });
+
+    // Update ref if groups actually changed
+    const currentGroups = allGroupsRef.current[selectedNav];
+    const groupsChanged = JSON.stringify(currentGroups.map(g => g.id)) !== JSON.stringify(uniqueGroups.map(g => g.id));
+
+    if (groupsChanged) {
+      allGroupsRef.current[selectedNav] = uniqueGroups;
+
+      // Trigger reload if we have new groups
+      if (uniqueGroups.length > currentGroups.length) {
+        // Reset state to trigger loadRows
+        nextIndexRef.current[selectedNav] = 0;
+        hasMoreRef.current[selectedNav] = true;
+        rowsCacheRef.current[selectedNav] = [];
+        setRows([]);
+        setLoading(true);
+      }
+    }
+  }, [liveGroups, selectedNav]);
 
   useEffect(() => {
     async function loadRows() {
@@ -186,25 +366,39 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         const mediaKind: MediaKind =
           selectedNav === 'movies' ? 'movie' : selectedNav === 'series' ? 'series' : 'live';
 
-        // Carrega todos os grupos apenas uma vez por aba
-        if (cachedGroups.length === 0) {
-          const allGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
-          allGroupsRef.current[selectedNav] = allGroups;
-          nextIndexRef.current[selectedNav] = 0;
-          hasMoreRef.current[selectedNav] = allGroups.length > 0;
+        // USE allGroupsRef (populated by liveGroups via useEffect)
+        const allGroups = allGroupsRef.current[selectedNav];
+
+        // If no groups yet, wait for liveGroups to populate allGroupsRef
+        if (allGroups.length === 0) {
+          setLoading(false);
+          return;
+        }
+        const startIndex = nextIndexRef.current[selectedNav];
+        const batches: Row[] = [];
+        let localNextIndex = startIndex;
+
+        // carrega um ou mais lotes iniciais para garantir conteúdo visível
+        for (let i = 0; i < INITIAL_BATCHES && localNextIndex < allGroups.length; i++) {
+          const batch = await loadBatch(mediaKind, localNextIndex, allGroups);
+          batches.push(...batch);
+          localNextIndex = Math.min(localNextIndex + GROUP_BATCH_SIZE, allGroups.length);
         }
 
-        const allGroups = allGroupsRef.current[selectedNav];
-        const startIndex = nextIndexRef.current[selectedNav];
-        const batch = await loadBatch(mediaKind, startIndex, allGroups);
-        const newNextIndex = Math.min(startIndex + GROUP_BATCH_SIZE, allGroups.length);
-        const mergedRows = [...cachedRows, ...batch];
+        // Deduplica rows por group.id
+        const mergedRows = [...cachedRows, ...batches];
+        const seenGroupIds = new Set<string>();
+        const uniqueRows = mergedRows.filter((row) => {
+          if (seenGroupIds.has(row.group.id)) return false;
+          seenGroupIds.add(row.group.id);
+          return true;
+        });
 
-        rowsCacheRef.current[selectedNav] = mergedRows;
-        nextIndexRef.current[selectedNav] = newNextIndex;
-        hasMoreRef.current[selectedNav] = newNextIndex < allGroups.length;
+        rowsCacheRef.current[selectedNav] = uniqueRows;
+        nextIndexRef.current[selectedNav] = localNextIndex;
+        hasMoreRef.current[selectedNav] = localNextIndex < allGroups.length;
 
-        setRows(mergedRows);
+        setRows(uniqueRows);
       } catch (error) {
         console.error('Erro ao carregar carrosseis:', error);
         setRows([]);
@@ -213,11 +407,12 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       }
     }
     loadRows();
-  }, [activePlaylist, selectedNav, loadBatch]);
+  }, [activePlaylist, selectedNav, loadBatch, liveGroups?.length]);
 
   const loadMoreGroups = useCallback(async () => {
     if (loadingMoreGroups) return;
     if (!hasMoreRef.current[selectedNav]) return;
+    if (!activePlaylist) return;
     setLoadingMoreGroups(true);
 
     const mediaKind: MediaKind =
@@ -227,14 +422,131 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
     const batch = await loadBatch(mediaKind, startIndex, allGroups);
     const newNextIndex = Math.min(startIndex + GROUP_BATCH_SIZE, allGroups.length);
-    const mergedRows = [...rowsCacheRef.current[selectedNav], ...batch];
 
-    rowsCacheRef.current[selectedNav] = mergedRows;
+    // Deduplica rows por group.id
+    const mergedRows = [...rowsCacheRef.current[selectedNav], ...batch];
+    const seenGroupIds = new Set<string>();
+    const uniqueRows = mergedRows.filter((row) => {
+      if (seenGroupIds.has(row.group.id)) return false;
+      seenGroupIds.add(row.group.id);
+      return true;
+    });
+
+    rowsCacheRef.current[selectedNav] = uniqueRows;
     nextIndexRef.current[selectedNav] = newNextIndex;
     hasMoreRef.current[selectedNav] = newNextIndex < allGroups.length;
-    setRows(mergedRows);
+    setRows(uniqueRows);
     setLoadingMoreGroups(false);
   }, [loadingMoreGroups, selectedNav, loadBatch]);
+
+  // Carregar mais itens dentro de um carrossel específico (lazy loading horizontal)
+  const loadMoreCarouselItems = useCallback(async (groupId: string) => {
+    if (!activePlaylist) return;
+
+    // Evita múltiplas chamadas simultâneas para o mesmo carrossel
+    if (loadingCarousels.has(groupId)) return;
+
+    const mediaKind: MediaKind =
+      selectedNav === 'movies' ? 'movie' : selectedNav === 'series' ? 'series' : 'live';
+
+    const currentRows = rowsCacheRef.current[selectedNav];
+    const rowIndex = currentRows.findIndex((r) => r.group.id === groupId);
+    if (rowIndex === -1) return;
+
+    const row = currentRows[rowIndex];
+
+    // Marca carrossel como loading
+    setLoadingCarousels((prev) => new Set(prev).add(groupId));
+
+    // Para séries: carrega mais séries ou items
+    if (mediaKind === 'series' && row.isSeries) {
+      const seriesOffset = row.seriesLoadedCount || 0;
+      const itemsOffset = row.itemsLoadedCount || 0;
+
+      // Carrega mais séries se houver
+      const moreSeries = row.hasMoreSeries
+        ? await db.series
+            .where({ playlistId: activePlaylist.id, group: row.group.name })
+            .offset(seriesOffset)
+            .limit(ITEMS_LOAD_MORE)
+            .toArray()
+        : [];
+
+      // Carrega mais items não agrupados se houver
+      const moreItems = row.hasMoreItems
+        ? await db.items
+            .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+            .filter((item) => !item.seriesId)
+            .offset(itemsOffset)
+            .limit(ITEMS_LOAD_MORE)
+            .toArray()
+        : [];
+
+      // Atualiza a row com os novos itens
+      const updatedRow: Row = {
+        ...row,
+        series: [...(row.series || []), ...moreSeries],
+        items: [...row.items, ...moreItems],
+        seriesLoadedCount: seriesOffset + moreSeries.length,
+        itemsLoadedCount: itemsOffset + moreItems.length,
+        hasMoreSeries: moreSeries.length === ITEMS_LOAD_MORE,
+        hasMoreItems: moreItems.length === ITEMS_LOAD_MORE,
+      };
+
+      const updatedRows = [...currentRows];
+      updatedRows[rowIndex] = updatedRow;
+
+      rowsCacheRef.current[selectedNav] = updatedRows;
+      setRows(updatedRows);
+
+      // Remove do loading state
+      setLoadingCarousels((prev) => {
+        const next = new Set(prev);
+        next.delete(groupId);
+        return next;
+      });
+      return;
+    }
+
+    // Para movies e live: carrega mais items
+    const itemsOffset = row.itemsLoadedCount || 0;
+    const moreItems = row.hasMoreItems
+      ? await db.items
+          .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
+          .offset(itemsOffset)
+          .limit(ITEMS_LOAD_MORE)
+          .toArray()
+      : [];
+
+    if (moreItems.length === 0) {
+      setLoadingCarousels((prev) => {
+        const next = new Set(prev);
+        next.delete(groupId);
+        return next;
+      });
+      return;
+    }
+
+    const updatedRow: Row = {
+      ...row,
+      items: [...row.items, ...moreItems],
+      itemsLoadedCount: itemsOffset + moreItems.length,
+      hasMoreItems: moreItems.length === ITEMS_LOAD_MORE,
+    };
+
+    const updatedRows = [...currentRows];
+    updatedRows[rowIndex] = updatedRow;
+
+    rowsCacheRef.current[selectedNav] = updatedRows;
+    setRows(updatedRows);
+
+    // Remove do loading state
+    setLoadingCarousels((prev) => {
+      const next = new Set(prev);
+      next.delete(groupId);
+      return next;
+    });
+  }, [activePlaylist, selectedNav, loadingCarousels]);
 
   // Monitor sync status
   useEffect(() => {
@@ -354,7 +666,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
-  // Infinite scroll: detecta quando usuário chega perto do fim
+  // Infinite scroll vertical: detecta quando usuário chega perto do fim da página
   useEffect(() => {
     const handleScroll = () => {
       if (!contentRef.current) return;
@@ -369,9 +681,54 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     return () => content?.removeEventListener('scroll', handleScroll);
   }, [loadingMoreGroups, loadMoreGroups]);
 
+  // Scroll listener horizontal para cada carrossel (lazy loading de itens)
+  useEffect(() => {
+    const carouselScrollHandlers = new Map<string, () => void>();
+
+    rows.forEach((row) => {
+      const carouselElement = document.getElementById(`row-${row.group.id}`);
+      if (!carouselElement) return;
+
+      const handleCarouselScroll = () => {
+        const { scrollLeft, scrollWidth, clientWidth } = carouselElement;
+        const scrollPercentage = (scrollLeft + clientWidth) / scrollWidth;
+
+        // Se chegou a 70% do scroll horizontal, carrega mais
+        if (scrollPercentage > 0.7) {
+          const hasMore = row.hasMoreSeries || row.hasMoreItems;
+          if (hasMore) {
+            loadMoreCarouselItems(row.group.id);
+          }
+        }
+      };
+
+      carouselScrollHandlers.set(row.group.id, handleCarouselScroll);
+      carouselElement.addEventListener('scroll', handleCarouselScroll);
+    });
+
+    return () => {
+      carouselScrollHandlers.forEach((handler, groupId) => {
+        const carouselElement = document.getElementById(`row-${groupId}`);
+        if (carouselElement) {
+          carouselElement.removeEventListener('scroll', handler);
+        }
+      });
+    };
+  }, [rows, loadMoreCarouselItems]);
+
+  // Se o conteúdo não gera scroll (poucos carrosseis), pré-carrega mais grupos
+  useEffect(() => {
+    if (!contentRef.current) return;
+    const { scrollHeight, clientHeight } = contentRef.current;
+    if (scrollHeight <= clientHeight * 1.1 && hasMoreRef.current[selectedNav] && !loadingMoreGroups) {
+      loadMoreGroups();
+    }
+  }, [rows.length, loadingMoreGroups, loadMoreGroups, selectedNav]);
+
   // Reset flags ao trocar aba
   useEffect(() => {
     setLoadingMoreGroups(false);
+    setLoadingCarousels(new Set());
   }, [selectedNav]);
 
   const renderHero = () => {
@@ -471,9 +828,26 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
                 <MdNavigateBefore />
               </button>
               <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
+                {/* Renderiza séries agrupadas primeiro (se houver) */}
+                {row.isSeries && row.series?.map((series) => (
+                  <SeriesCard
+                    key={series.id}
+                    series={series}
+                    onNavigate={(seriesId) => navigate(`/series/${seriesId}`)}
+                  />
+                ))}
+                {/* Renderiza items individuais (ou não agrupados no caso de séries) */}
                 {row.items.map((item) => (
                   <MediaCard key={item.id} item={item} groupName={row.group.name} onSelectItem={onSelectItem} />
                 ))}
+                {/* Loading indicator no final do carrossel */}
+                {loadingCarousels.has(row.group.id) && (
+                  <>
+                    {Array.from({ length: 4 }).map((_, idx) => (
+                      <div key={`skeleton-${idx}`} className={styles.skeletonPoster} />
+                    ))}
+                  </>
+                )}
               </div>
               <button
                 className={styles.carouselArrow}

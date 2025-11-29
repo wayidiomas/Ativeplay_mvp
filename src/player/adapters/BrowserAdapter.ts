@@ -22,6 +22,7 @@ export class BrowserAdapter implements IPlayerAdapter {
   private hls: Hls | null = null;
   private usingHls = false;
   private fallbackAttempted = false;
+  private hlsRecoverAttempts = 0;
   private state: PlayerState = 'idle';
   private currentUrl: string = '';
   private options: PlayerOptions = {};
@@ -200,6 +201,7 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.destroyHls();
     this.usingHls = false;
     this.fallbackAttempted = false;
+    this.hlsRecoverAttempts = 0;
 
     this.currentUrl = url;
     this.options = options;
@@ -219,12 +221,31 @@ export class BrowserAdapter implements IPlayerAdapter {
       this.hls.attachMedia(this.video);
       this.hls.on(Hls.Events.ERROR, (_event, data) => {
         console.error('[BrowserAdapter] HLS error', data);
-        if (data.fatal) {
-          this.setState('error');
-          this.emit('error', { code: 'HLS_FATAL', message: data.details });
+        if (!data.fatal) return;
+
+        // Tentativas leves de recuperação
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          if (this.hlsRecoverAttempts < 2) {
+            this.hlsRecoverAttempts += 1;
+            console.warn('[BrowserAdapter] HLS recover: restarting load');
+            this.hls?.startLoad();
+            return;
+          }
         }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (this.hlsRecoverAttempts < 2) {
+            this.hlsRecoverAttempts += 1;
+            console.warn('[BrowserAdapter] HLS recover: media error');
+            this.hls?.recoverMediaError();
+            return;
+          }
+        }
+
+        this.setState('error');
+        this.emit('error', { code: 'HLS_FATAL', message: data.details });
       });
       this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        this.hlsRecoverAttempts = 0;
         this.loadTracks();
       });
       this.hls.loadSource(url);

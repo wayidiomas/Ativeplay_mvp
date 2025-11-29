@@ -6,6 +6,7 @@ import {
   ErrorScreen,
 } from '@ui/onboarding';
 import { MainApp } from '@ui/MainApp';
+import { SeriesDetailWrapper } from '@ui/series/SeriesDetailWrapper';
 
 function App() {
   return (
@@ -21,6 +22,9 @@ function App() {
 
         {/* Main App */}
         <Route path="/home" element={<MainApp />} />
+
+        {/* Series Detail */}
+        <Route path="/series/:seriesId" element={<SeriesDetailWrapper />} />
 
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />

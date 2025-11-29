@@ -41,54 +41,95 @@ function hashPlaylist(url) {
   return crypto.createHash('sha1').update(url).digest('hex');
 }
 
-function normalizeSpaces(str) {
+function normalizeSpaces(str = '') {
   return str.replace(/\s+/g, ' ').trim();
+}
+
+// Remove ruídos comuns de títulos (qualidade, idioma, tags de release)
+function cleanTitleForGrouping(title = '') {
+  return title
+    .replace(/\b(4k|2160p|1080p|720p|480p|360p|uhd|fhd|hd|sd)\b/gi, '')
+    .replace(/\b(hevc|x264|x265|h264|h265|web-?dl|webrip|bluray|bdrip|hdrip|dvdrip|cam|ts|hdcam)\b/gi, '')
+    .replace(/\b(dub|dublado|dubbed|dual|multi|legendado|leg|sub|subbed|nacional|ptbr|pt-br)\b/gi, '')
+    .replace(/[|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseTitle(name) {
+  const normalized = normalizeSpaces(name);
+
+  // Regex variados para S/E
+  const patterns = [
+    /s(\d{1,2})e(\d{1,3})/i,
+    /(\d{1,2})x(\d{1,3})/i,
+    /temporada\s*(\d{1,2}).*epis[oó]dio\s*(\d{1,3})/i,
+    /t(\d{1,2})[\s._-]*e(\d{1,3})/i,
+  ];
+
+  let season = null;
+  let episode = null;
+  for (const p of patterns) {
+    const m = normalized.match(p);
+    if (m) {
+      season = parseInt(m[1], 10);
+      episode = parseInt(m[2], 10);
+      break;
+    }
+  }
+
+  const yearMatch = normalized.match(/\b(19|20)\d{2}\b/);
+  const year = yearMatch ? parseInt(yearMatch[0], 10) : null;
+
+  const cleaned = cleanTitleForGrouping(normalized);
+  const titleNormalized = (cleaned || normalized)
+    .replace(/\b(s|season|temporada)\s*\d{1,2}\b/gi, '')
+    .replace(/\b(e|epis[oó]dio|episode)\s*\d{1,3}\b/gi, '')
+    .trim()
+    .toLowerCase();
+
+  return {
+    season,
+    episode,
+    hasEpisode: season !== null && episode !== null,
+    year,
+    titleNormalized,
+  };
 }
 
 function classify(name, group) {
   const lowerName = name.toLowerCase();
   const lowerGroup = group.toLowerCase();
 
-  if (
-    lowerGroup.includes('live') ||
-    lowerGroup.includes('canais') ||
-    lowerGroup.includes('tv') ||
-    lowerName.match(/\b(ao vivo|live|hd|fhd|4k|canal)\b/i)
-  ) {
-    return 'live';
-  }
+  // Sinais fortes de série
+  const isSeriesTitle =
+    /s\d{1,2}e\d{1,3}/i.test(lowerName) ||
+    /\d{1,2}x\d{1,3}/.test(lowerName) ||
+    /\b(temporada|season|epis[oó]dio|episode|ep\.)\b/i.test(lowerName);
+  const isSeriesGroup =
+    /\b(series?|s[eé]ries|novelas?|doramas?|animes?)\b/i.test(lowerGroup) ||
+    /\b(netflix|hbo|disney|amazon|paramount|apple|star)\b/i.test(lowerGroup);
 
-  if (
-    lowerGroup.includes('filme') ||
-    lowerGroup.includes('movie') ||
-    lowerName.match(/\b(filme|movie|cinema)\b/i)
-  ) {
-    return 'movie';
-  }
+  // Canais/loop 24h
+  const isLoop = isLoop24h(lowerName, lowerGroup);
+  const isSports = /\b(futebol|jogos|sports?|espn|premiere|sportv|copa|libertadores)\b/i.test(lowerGroup);
+  const isNews = /\b(news|cnn|bandnews|globonews)\b/i.test(lowerGroup);
+  const isLiveKeywords =
+    /\b(live|ao vivo|tv|canal|canais?)\b/i.test(lowerGroup) ||
+    /\b(live|ao vivo|tv)\b/i.test(lowerName);
 
-  if (
-    lowerGroup.includes('serie') ||
-    lowerGroup.includes('novela') ||
-    lowerGroup.includes('dorama') ||
-    lowerName.match(/s\d{1,2}e\d{1,2}/i) ||
-    lowerName.match(/\b(temporada|episódio|season|episode)\b/i)
-  ) {
-    return 'series';
-  }
+  // Filmes
+  const isMovieGroup =
+    /\b(filmes?|movies?|cinema|vod)\b/i.test(lowerGroup) ||
+    /\b(acao|terror|comedia|drama|ficcao|aventura|animacao|suspense|romance)\b/i.test(lowerGroup);
+  const hasYearMovie = /\b(19|20)\d{2}\b/.test(lowerName);
+
+  // Prioridade
+  if (isLoop || isSports || isNews || isLiveKeywords) return 'live';
+  if (isSeriesGroup || isSeriesTitle) return 'series';
+  if (isMovieGroup || hasYearMovie) return 'movie';
 
   return 'unknown';
-}
-
-function parseTitle(name) {
-  const seasonMatch = name.match(/s(\d{1,2})e(\d{1,2})/i);
-  if (seasonMatch) {
-    return {
-      season: parseInt(seasonMatch[1], 10),
-      episode: parseInt(seasonMatch[2], 10),
-      hasEpisode: true,
-    };
-  }
-  return { season: null, episode: null, hasEpisode: false };
 }
 
 function generateItemId(url, index) {
@@ -97,8 +138,23 @@ function generateItemId(url, index) {
 }
 
 function generateGroupId(groupTitle, mediaKind) {
-  const normalized = groupTitle.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  const normalized = normalizeSpaces(groupTitle).toLowerCase().replace(/[^a-z0-9]/g, '_');
   return `group_${normalized}_${mediaKind}`;
+}
+
+// Remove emojis/prefixos visuais e normaliza para dedupe de grupos
+function normalizeGroupTitle(raw = '') {
+  return normalizeSpaces(
+    raw
+      .replace(/^[^\w]+/u, '') // remove emoji/prefixo no início
+      .replace(/[•◆★⭐⚽🎬🎥📺🎵]+/g, '')
+      .replace(/\s{2,}/g, ' ')
+  );
+}
+
+function isLoop24h(title = '', group = '') {
+  const t = `${title} ${group}`.toLowerCase();
+  return /\b24h\b/.test(t) || /\b24hrs?\b/.test(t) || /\b24 horas\b/.test(t);
 }
 
 function parseExtinf(line) {
@@ -191,8 +247,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
     unknownCount: 0,
     groupCount: 0,
   };
-  // Dedup movido para o cliente (browser) - economiza 7.5MB de RAM no servidor
-  // const seenUrls = null; // Removido - não é mais necessário
+  // Índice incremental de séries (franquia → temporadas → contagem de episódios)
+  const seriesIndex = new Map();
 
   try {
     progressCb?.({ phase: 'parsing', percentage: 5, processed: 0 });
@@ -230,10 +286,16 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const tvgId = currentExtinf.attributes.get('tvg-id');
           const tvgLogo = currentExtinf.attributes.get('tvg-logo');
           const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
-          const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+          const groupTitle = options.normalize
+            ? normalizeGroupTitle(groupTitleRaw)
+            : normalizeGroupTitle(groupTitleRaw);
 
           const mediaKind = classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
+          const seriesKey =
+            mediaKind === 'series' && parsedTitle.titleNormalized
+              ? parsedTitle.titleNormalized
+              : null;
 
           const item = {
             id: generateItemId(trimmed, itemIndex++),
@@ -243,6 +305,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             group: groupTitle,
             mediaKind,
             parsedTitle,
+            seriesKey,
             epgId: tvgId,
           };
 
@@ -260,6 +323,23 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
               break;
             case 'series':
               stats.seriesCount++;
+              // Agrupamento incremental por série/temporada
+              if (seriesKey) {
+                const entry = seriesIndex.get(seriesKey) || {
+                  key: seriesKey,
+                  title: parsedTitle.titleNormalized || name.toLowerCase(),
+                  seasons: new Map(),
+                  logo: tvgLogo,
+                  totalEpisodes: 0,
+                };
+                const seasonNumber = parsedTitle.season || 0;
+                const season = entry.seasons.get(seasonNumber) || { season: seasonNumber, episodes: 0 };
+                season.episodes += 1;
+                entry.seasons.set(seasonNumber, season);
+                entry.totalEpisodes += 1;
+                if (!entry.logo && tvgLogo) entry.logo = tvgLogo;
+                seriesIndex.set(seriesKey, entry);
+              }
               break;
             default:
               stats.unknownCount++;
@@ -299,10 +379,16 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
           const tvgLogo = currentExtinf.attributes.get('tvg-logo');
           const groupTitleRaw = currentExtinf.attributes.get('group-title') || 'Sem Grupo';
-          const groupTitle = options.normalize ? normalizeSpaces(groupTitleRaw) : groupTitleRaw;
+          const groupTitle = options.normalize
+            ? normalizeGroupTitle(groupTitleRaw)
+            : normalizeGroupTitle(groupTitleRaw);
 
           const mediaKind = classify(name, groupTitle);
           const parsedTitle = parseTitle(name);
+          const seriesKey =
+            mediaKind === 'series' && parsedTitle.titleNormalized
+              ? parsedTitle.titleNormalized
+              : null;
 
           const item = {
             id: generateItemId(trimmed, itemIndex++),
@@ -312,11 +398,28 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
             group: groupTitle,
             mediaKind,
             parsedTitle,
+            seriesKey,
             epgId: currentExtinf.attributes.get('tvg-id'),
           };
 
           writer.write(`${JSON.stringify(item)}\n`);
           stats.totalItems++;
+          if (mediaKind === 'series' && seriesKey) {
+            const entry = seriesIndex.get(seriesKey) || {
+              key: seriesKey,
+              title: parsedTitle.titleNormalized || name.toLowerCase(),
+              seasons: new Map(),
+              logo: tvgLogo,
+              totalEpisodes: 0,
+            };
+            const seasonNumber = parsedTitle.season || 0;
+            const season = entry.seasons.get(seasonNumber) || { season: seasonNumber, episodes: 0 };
+            season.episodes += 1;
+            entry.seasons.set(seasonNumber, season);
+            entry.totalEpisodes += 1;
+            if (!entry.logo && tvgLogo) entry.logo = tvgLogo;
+            seriesIndex.set(seriesKey, entry);
+          }
         }
       }
     }
@@ -372,6 +475,15 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
     stats.groupCount = groupsMap.size;
     const groups = Array.from(groupsMap.values());
 
+    // Serializa índice de séries de forma compacta (sem Maps)
+    const seriesSummary = Array.from(seriesIndex.values()).map((entry) => ({
+      key: entry.key,
+      title: entry.title,
+      logo: entry.logo,
+      totalEpisodes: entry.totalEpisodes,
+      seasons: Array.from(entry.seasons.values()),
+    }));
+
     const duration = Date.now() - startTime;
     const memoryDelta = Math.round((process.memoryUsage().heapUsed - startMem) / 1024 / 1024);
 
@@ -379,7 +491,7 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
 
     logParseEnd(hash, duration, stats.totalItems, memoryDelta);
 
-    return { stats, groups, hash };
+    return { stats, groups, seriesSummary, hash };
   } catch (error) {
     writer.end();
     throw error;
@@ -421,6 +533,7 @@ const worker = new Worker(
         url,
         stats: parsed.stats,
         groups: parsed.groups,
+        seriesIndex: parsed.seriesSummary,
         createdAt: Date.now(),
         expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 dias
       });

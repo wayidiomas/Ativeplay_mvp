@@ -3,8 +3,9 @@
  * Operacoes de alto nivel para gerenciar playlists e conteudo
  */
 
-import { db, type Playlist, type M3UItem, type M3UGroup } from './schema';
+import { db, type Playlist, type M3UItem, type M3UGroup, type Series } from './schema';
 import type { ProgressCallback } from '../services/m3u';
+import { groupSeriesEpisodes } from '../services/m3u/seriesGrouper';
 
 const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
 const SERVER_URL = import.meta.env.VITE_BRIDGE_URL;
@@ -253,6 +254,53 @@ async function waitForJobCompletion(jobId: string, maxWait = 180000): Promise<vo
 }
 
 /**
+ * ✅ RETRY LOGIC: Faz fetch com retry automático e exponential backoff
+ * Tenta até maxRetries vezes antes de falhar
+ */
+async function fetchWithRetry(url: string, init?: RequestInit, maxRetries = 3): Promise<Response> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: init?.signal || AbortSignal.timeout(30000), // 30s timeout padrão
+      });
+
+      // Sucesso - retorna imediatamente
+      if (response.ok) {
+        return response;
+      }
+
+      // 404 (cache expirado) não faz retry - deixa código chamador lidar
+      if (response.status === 404) {
+        return response;
+      }
+
+      // Outros erros HTTP: retry
+      lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+      console.warn(`[RETRY] Tentativa ${attempt + 1}/${maxRetries} falhou (${response.status})`);
+
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.warn(`[RETRY] Tentativa ${attempt + 1}/${maxRetries} falhou:`, lastError.message);
+
+      // Se for último attempt, lança erro
+      if (attempt === maxRetries - 1) {
+        throw lastError;
+      }
+
+      // Aguarda antes de retry (exponential backoff: 1s, 2s, 4s...)
+      const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // Max 10s
+      console.log(`[RETRY] Aguardando ${delay}ms antes de retentar...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+
+  throw lastError || new Error('Falha após múltiplas tentativas');
+}
+
+/**
  * Sincroniza itens paginados do servidor e insere no Dexie
  * Pode ser usado em background (fire-and-forget) ou aguardado em refresh
  *
@@ -278,7 +326,8 @@ async function syncItemsFromServer(
   if (options?.loadPartial) {
     const partialLimit = options.partialLimit || 500;
 
-    const itemsResponse = await fetch(
+    // ✅ Usa fetchWithRetry para robustez
+    const itemsResponse = await fetchWithRetry(
       `${SERVER_URL}/api/playlist/items/${hash}/partial?limit=${partialLimit}`
     );
 
@@ -389,7 +438,8 @@ async function syncItemsFromServer(
   let duplicatesSkipped = 0;
 
   while (true) {
-    const itemsResponse = await fetch(
+    // ✅ Usa fetchWithRetry para robustez
+    const itemsResponse = await fetchWithRetry(
       `${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=${offset}`
     );
 
@@ -520,11 +570,86 @@ async function syncItemsFromServer(
  * Continua sincronização completa em background após early navigation
  * Aguarda 1s antes de começar (para UI se estabilizar)
  * Atualiza lastSyncStatus conforme progresso
+ *
+ * ✅ LOGS PERSISTENTES: Salva logs no localStorage para inspeção mesmo sem console
  */
+/**
+ * Agrupa episódios de séries e salva no banco
+ * Chamado após sincronização completa de itens
+ */
+async function groupAndSaveSeries(playlistId: string): Promise<void> {
+  // 1. Busca todos os itens de séries da playlist
+  const seriesItems = await db.items
+    .where({ playlistId, mediaKind: 'series' })
+    .toArray();
+
+  if (seriesItems.length === 0) {
+    console.log('[DB DEBUG] Nenhum item de série encontrado para agrupar');
+    return;
+  }
+
+  console.log(`[DB DEBUG] Encontrados ${seriesItems.length} itens de séries para agrupar`);
+
+  // 2. Agrupa episódios e cria registros de Series
+  const { series, itemToSeriesMap } = groupSeriesEpisodes(seriesItems, playlistId);
+
+  console.log(`[DB DEBUG] Criadas ${series.length} séries agrupadas`);
+  console.log(`[DB DEBUG] ${itemToSeriesMap.size} episódios mapeados para séries`);
+
+  // 3. Salva séries no banco
+  if (series.length > 0) {
+    await db.transaction('rw', [db.series, db.items], async () => {
+      // Remove séries antigas desta playlist (se houver)
+      await db.series.where('playlistId').equals(playlistId).delete();
+
+      // Insere novas séries
+      await db.series.bulkAdd(series);
+
+      // Atualiza items com seriesId, seasonNumber e episodeNumber
+      const updates: Array<{ id: string; changes: Partial<M3UItem> }> = [];
+
+      for (const [itemId, mapping] of itemToSeriesMap.entries()) {
+        updates.push({
+          id: itemId,
+          changes: {
+            seriesId: mapping.seriesId,
+            seasonNumber: mapping.seasonNumber,
+            episodeNumber: mapping.episodeNumber,
+          },
+        });
+      }
+
+      // Atualiza em lotes de 100
+      const batchSize = 100;
+      for (let i = 0; i < updates.length; i += batchSize) {
+        const batch = updates.slice(i, i + batchSize);
+        for (const update of batch) {
+          await db.items.update(update.id, update.changes);
+        }
+      }
+    });
+
+    console.log('[DB DEBUG] Séries e episódios salvos com sucesso!');
+  }
+}
+
 async function continueBackgroundSync(
   hash: string,
   playlistId: string
 ): Promise<void> {
+  const logKey = `sync_log_${playlistId}`;
+
+  // ✅ LOG PERSISTENTE: Início
+  try {
+    localStorage.setItem(logKey, JSON.stringify({
+      status: 'started',
+      timestamp: Date.now(),
+      timestampReadable: new Date().toISOString(),
+    }));
+  } catch (e) {
+    // Ignora erro de localStorage (pode estar cheio ou bloqueado)
+  }
+
   console.log('[DB DEBUG] ===== BACKGROUND SYNC: Iniciando em 1s =====');
 
   // Aguarda 1s para UI se estabilizar
@@ -533,14 +658,67 @@ async function continueBackgroundSync(
   try {
     // Carrega resto dos items com paginação completa
     console.log('[DB DEBUG] BACKGROUND SYNC: Carregando resto dos items...');
+
+    // ✅ LOG PERSISTENTE: Em progresso
+    try {
+      localStorage.setItem(logKey, JSON.stringify({
+        status: 'syncing',
+        timestamp: Date.now(),
+        timestampReadable: new Date().toISOString(),
+      }));
+    } catch (e) {
+      // Ignora erro de localStorage
+    }
+
     await syncItemsFromServer(hash, playlistId, undefined, { loadPartial: false });
+
+    // ✅ NOVO: Agrupa episódios de séries
+    console.log('[DB DEBUG] BACKGROUND SYNC: Agrupando episódios de séries...');
+    try {
+      await groupAndSaveSeries(playlistId);
+      console.log('[DB DEBUG] BACKGROUND SYNC: Séries agrupadas com sucesso!');
+    } catch (seriesError) {
+      console.error('[DB DEBUG] BACKGROUND SYNC: Erro ao agrupar séries (não crítico):', seriesError);
+      // Não interrompe o sync por erro no agrupamento
+    }
 
     // Atualiza status para 'success'
     await db.playlists.update(playlistId, { lastSyncStatus: 'success' });
     console.log('[DB DEBUG] BACKGROUND SYNC: Concluído com sucesso!');
 
+    // ✅ LOG PERSISTENTE: Sucesso
+    try {
+      localStorage.setItem(logKey, JSON.stringify({
+        status: 'success',
+        timestamp: Date.now(),
+        timestampReadable: new Date().toISOString(),
+      }));
+    } catch (e) {
+      // Ignora erro de localStorage
+    }
+
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+
     console.error('[DB DEBUG] BACKGROUND SYNC: Erro durante sincronização:', error);
+
+    // ✅ LOG PERSISTENTE: Erro
+    try {
+      localStorage.setItem(logKey, JSON.stringify({
+        status: 'error',
+        error: errorMsg,
+        stack: errorStack,
+        timestamp: Date.now(),
+        timestampReadable: new Date().toISOString(),
+      }));
+    } catch (e) {
+      // Ignora erro de localStorage
+    }
+
+    // ⚠️ ALERT VISUAL: Notifica usuário de erro crítico
+    // Comentado por enquanto para não assustar usuário - podemos ativar se necessário
+    // alert(`Erro ao sincronizar playlist: ${errorMsg}`);
 
     // Marca como erro
     await db.playlists.update(playlistId, { lastSyncStatus: 'error' });

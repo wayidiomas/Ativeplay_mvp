@@ -23,6 +23,12 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const loadingMoreRef = useRef(false);
+
+  // Sincroniza ref com state
+  useEffect(() => {
+    loadingMoreRef.current = loadingMore;
+  }, [loadingMore]);
 
   const { cacheGroupItems, getGroupCache } = usePlaylistStore();
 
@@ -33,10 +39,10 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const items = useLiveQuery(
     () =>
       db.items
-        .where({ playlistId: group.playlistId, group: group.name })
+        .where({ playlistId: group.playlistId, group: group.name, mediaKind: group.mediaKind })
         .limit(visibleCount)
         .toArray(),
-    [group.playlistId, group.name, visibleCount],
+    [group.playlistId, group.name, group.mediaKind, visibleCount],
     cachedItems || [] // Use cache as fallback for instant display
   );
 
@@ -48,13 +54,20 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   }, [items, group.playlistId, group.name, cacheGroupItems]);
 
   const totalCount = useLiveQuery(
-    () => db.items.where({ playlistId: group.playlistId, group: group.name }).count(),
-    [group.playlistId, group.name],
+    () => db.items.where({ playlistId: group.playlistId, group: group.name, mediaKind: group.mediaKind }).count(),
+    [group.playlistId, group.name, group.mediaKind],
     0
   );
 
   const loading = items === undefined;
   const hasMore = (items?.length || 0) < (totalCount || 0);
+
+  // Debug log
+  useEffect(() => {
+    if (!loading && items) {
+      console.log(`[MediaGrid] visibleCount=${visibleCount}, loaded=${items.length}, total=${totalCount}, hasMore=${hasMore}`);
+    }
+  }, [visibleCount, items?.length, totalCount, hasMore, loading]);
 
   // Reset visibleCount quando grupo muda
   useEffect(() => {
@@ -68,19 +81,46 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     if (!el) return;
 
     const onScroll = () => {
-      if (!hasMore || loadingMore) return;
-      const threshold = 400;
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - threshold) {
+      if (!hasMore || loadingMoreRef.current) return;
+      const threshold = 300; // threshold de 300px do fim
+      const scrollBottom = el.scrollTop + el.clientHeight;
+      const isNearBottom = scrollBottom >= el.scrollHeight - threshold;
+
+      if (isNearBottom) {
+        console.log('[MediaGrid] Infinite scroll triggered');
         setLoadingMore(true);
         setVisibleCount((prev) => prev + PAGE_SIZE);
         // Debounce visual
-        setTimeout(() => setLoadingMore(false), 300);
+        setTimeout(() => setLoadingMore(false), 200);
       }
     };
 
     el.addEventListener('scroll', onScroll);
+    // Dispara um check inicial caso já esteja no fundo
+    onScroll();
     return () => el.removeEventListener('scroll', onScroll);
-  }, [hasMore, loadingMore]);
+  }, [hasMore]);
+
+  // Pré-carrega mais itens se o conteúdo inicial não criar scroll
+  useEffect(() => {
+    if (!gridRef.current || loading || !items || loadingMore || !hasMore) return;
+
+    const el = gridRef.current;
+    const hasScroll = el.scrollHeight > el.clientHeight;
+
+    // Se não tem scroll e ainda há mais itens, carrega mais
+    // Garante que visibleCount está sincronizado com items.length antes de carregar mais
+    // ou que items.length alcançou totalCount
+    const isFullyLoaded = items.length >= (totalCount || 0);
+    const queryCompleted = visibleCount <= items.length;
+
+    if (!hasScroll && !isFullyLoaded && queryCompleted) {
+      console.log('[MediaGrid] Auto-loading more items (no scroll detected)');
+      setLoadingMore(true);
+      setVisibleCount((prev) => prev + PAGE_SIZE);
+      setTimeout(() => setLoadingMore(false), 150);
+    }
+  }, [items?.length, totalCount, hasMore, loading, loadingMore, visibleCount]);
 
   const focusIndex = useCallback(
     (index: number) => {
@@ -133,7 +173,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [focusIndex, focusedIndex, onBack]);
 
@@ -144,11 +184,18 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     }
   }, [loading, items, focusIndex, focusedIndex]);
 
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    e.preventDefault(); // Previne scroll default do browser
-    if (gridRef.current) {
-      gridRef.current.scrollBy({ top: e.deltaY });
-    }
+  // Wheel event listener com { passive: false } para permitir preventDefault
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault(); // Previne scroll default do browser
+      el.scrollBy({ top: e.deltaY });
+    };
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
   }, []);
 
   const getDisplayName = useCallback((item: M3UItem): string => {
@@ -209,9 +256,8 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
           height: '100%',
           overflow: 'auto',
         }}
-        onWheel={handleWheel}
       >
-        {items?.map((item, idx) => (
+        {items?.map((item: M3UItem, idx: number) => (
           <button
             key={item.id}
             className={styles.card}

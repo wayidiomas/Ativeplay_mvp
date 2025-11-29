@@ -5,6 +5,14 @@
 
 import type { MediaKind, ParsedTitle } from './types';
 
+// Interface para informações de série extraídas
+export interface SeriesInfo {
+  seriesName: string;       // Nome base da série (sem SxxExx)
+  season: number;           // Número da temporada
+  episode: number;          // Número do episódio
+  isSeries: boolean;        // Se foi detectado como série
+}
+
 // Patterns para classificacao por grupo (mais comum em playlists IPTV BR)
 const GROUP_PATTERNS = {
   live: [
@@ -80,6 +88,28 @@ export class ContentClassifier {
    * Classifica um item baseado no grupo e titulo
    */
   static classify(name: string, group: string): MediaKind {
+    // 0. Filtros de alta prioridade (prefixos especiais e conteúdo adulto)
+
+    // Filtro de conteúdo adulto (classificar como live para ocultar)
+    if (group && /xxx|onlyfans|adulto|\+18/i.test(group)) {
+      return 'live';
+    }
+
+    // Canal 24H (sempre live, mesmo se tiver ano ou padrão de série)
+    if (name && /^24H\s*•/i.test(name)) {
+      return 'live';
+    }
+
+    // Canais CINE temáticos (CINE TERROR 01, CINE COMEDIA 05, etc)
+    if (name && /^CINE\s+\w+\s+\d{2}/i.test(name)) {
+      return 'live';
+    }
+
+    // Eventos ao vivo com horário (19:30 Juventude X Bahia)
+    if (name && /^\d{1,2}:\d{2}\s+/i.test(name)) {
+      return 'live';
+    }
+
     // 1. Tenta classificar pelo grupo primeiro (mais confiavel)
     const groupKind = this.classifyByGroup(group);
     if (groupKind !== 'unknown') {
@@ -127,12 +157,14 @@ export class ContentClassifier {
       if (pattern.test(name)) return 'series';
     }
 
-    // Filmes (ano entre parenteses e qualidade)
+    // Filmes - MAIS RESTRITIVO: exige 2+ matches para evitar falsos positivos
+    // Exemplos válidos: "Flow (2024) Dublado" (ano + idioma = 2 matches)
+    // Exemplos inválidos: "Show (2020)" (só ano = 1 match, classificado como unknown)
     let movieScore = 0;
     for (const pattern of TITLE_PATTERNS.movie) {
       if (pattern.test(name)) movieScore++;
     }
-    if (movieScore >= 1) return 'movie';
+    if (movieScore >= 2) return 'movie';
 
     // Live/TV
     for (const pattern of TITLE_PATTERNS.live) {
@@ -229,6 +261,68 @@ export class ContentClassifier {
       isDubbed,
       isSubbed,
     };
+  }
+
+  /**
+   * Remove prefixos comuns (tags, emojis, etc) do título
+   * Ex: "⭐ Breaking Bad S01E01" → "Breaking Bad S01E01"
+   */
+  private static removePrefixes(title: string): string {
+    return title
+      .replace(/^(\[.*?\]|\(.*?\)|⭐|★|•|\+|\-|=|#)\s*/g, '') // Remove tags e símbolos
+      .replace(/^\d+\.\s+/g, '') // Remove numeração "1. Nome"
+      .trim();
+  }
+
+  /**
+   * Extrai informações de série do nome (detecta padrão SxxExx)
+   * Retorna null se não for detectado como série
+   */
+  static extractSeriesInfo(name: string): SeriesInfo | null {
+    // Remove prefixos comuns antes de tentar match
+    const cleanName = this.removePrefixes(name);
+
+    // Padrão principal: Nome + SxxExx (ex: "Breaking Bad S01E01")
+    // Removido ^ para permitir detecção em qualquer posição
+    const mainPattern = /(.+?)\s+S(\d{1,2})E(\d{1,3})/i;
+    const mainMatch = cleanName.match(mainPattern);
+
+    if (mainMatch) {
+      return {
+        seriesName: mainMatch[1].trim(),
+        season: parseInt(mainMatch[2], 10),
+        episode: parseInt(mainMatch[3], 10),
+        isSeries: true,
+      };
+    }
+
+    // Padrão alternativo: Nome + 1x01 (ex: "Breaking Bad 1x01")
+    const altPattern = /(.+?)\s+(\d{1,2})x(\d{1,3})\b/i;
+    const altMatch = cleanName.match(altPattern);
+
+    if (altMatch) {
+      return {
+        seriesName: altMatch[1].trim(),
+        season: parseInt(altMatch[2], 10),
+        episode: parseInt(altMatch[3], 10),
+        isSeries: true,
+      };
+    }
+
+    // Padrão PT-BR/Espanhol: Nome + T01E01 (ex: "La Casa de Papel T01E01")
+    const ptPattern = /(.+?)\s+T(\d{1,2})E(\d{1,3})/i;
+    const ptMatch = cleanName.match(ptPattern);
+
+    if (ptMatch) {
+      return {
+        seriesName: ptMatch[1].trim(),
+        season: parseInt(ptMatch[2], 10),
+        episode: parseInt(ptMatch[3], 10),
+        isSeries: true,
+      };
+    }
+
+    return null;
   }
 
   /**

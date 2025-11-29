@@ -781,6 +781,7 @@ app.post('/api/playlist/parse', parseRateLimiter, async (req, res) => {
           data: {
             stats: cached.stats,
             groups: cached.groups,
+            seriesIndex: cached.seriesIndex || [],
           },
         });
       } catch (error) {
@@ -888,6 +889,7 @@ app.get('/api/jobs/:jobId', async (req, res) => {
           hash: result.hash,
           stats: result.stats,
           groups: result.groups,
+          seriesIndex: result.seriesSummary || result.seriesIndex || [],
         },
         duration: job.finishedOn - job.processedOn,
         completedAt: job.finishedOn,

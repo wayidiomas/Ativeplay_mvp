@@ -1,0 +1,42 @@
+/**
+ * Series Detail Wrapper
+ * Wrapper para SeriesDetail que integra com navegação e player
+ */
+
+import { useState, useCallback } from 'react';
+import { SeriesDetail } from './SeriesDetail';
+import { PlayerContainer } from '@ui/player';
+import type { M3UItem } from '@core/db/schema';
+
+export function SeriesDetailWrapper() {
+  const [selectedItem, setSelectedItem] = useState<M3UItem | null>(null);
+
+  const handleSelectItem = useCallback((item: M3UItem) => {
+    setSelectedItem(item);
+  }, []);
+
+  const handleClosePlayer = useCallback(() => {
+    setSelectedItem(null);
+  }, []);
+
+  const handleVideoEnded = useCallback(() => {
+    setSelectedItem(null);
+  }, []);
+
+  // Se um item foi selecionado, mostra o player
+  if (selectedItem) {
+    return (
+      <PlayerContainer
+        url={selectedItem.url}
+        title={selectedItem.title || selectedItem.name}
+        onClose={handleClosePlayer}
+        onEnded={handleVideoEnded}
+      />
+    );
+  }
+
+  // Caso contrário, mostra a página de detalhes da série
+  return <SeriesDetail onSelectItem={handleSelectItem} />;
+}
+
+export default SeriesDetailWrapper;

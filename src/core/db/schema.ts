@@ -38,6 +38,10 @@ export interface M3UItem {
   tmdbType?: 'movie' | 'tv';
   // EPG ID para Live TV
   epgId?: string;
+  // Series grouping (novo)
+  seriesId?: string; // Referência à série (se for episódio)
+  seasonNumber?: number; // Número da temporada
+  episodeNumber?: number; // Número do episódio
   // Indices compostos para queries
   createdAt: number;
 }
@@ -49,6 +53,23 @@ export interface M3UGroup {
   mediaKind: MediaKind;
   itemCount: number;
   logo?: string;
+  createdAt: number;
+}
+
+export interface Series {
+  id: string; // série_{playlistId}_{seriesSlug}
+  playlistId: string;
+  name: string; // Nome base (sem SxxExx)
+  logo: string; // Poster/logo
+  group: string;
+  totalEpisodes: number; // Count total
+  totalSeasons: number; // Número de temporadas
+  firstEpisode: number; // Primeiro episódio disponível
+  lastEpisode: number; // Último episódio disponível
+  firstSeason: number; // Primeira temporada disponível
+  lastSeason: number; // Última temporada disponível
+  year?: number; // Ano (se extraído)
+  quality?: string; // Qualidade (se extraído)
   createdAt: number;
 }
 
@@ -75,6 +96,7 @@ class AtivePlayDB extends Dexie {
   playlists!: Table<Playlist>;
   items!: Table<M3UItem>;
   groups!: Table<M3UGroup>;
+  series!: Table<Series>;
   favorites!: Table<Favorite>;
   watchProgress!: Table<WatchProgress>;
 
@@ -125,6 +147,16 @@ class AtivePlayDB extends Dexie {
       playlists: 'id, url, lastUpdated, isActive',
       items: 'id, playlistId, url, group, mediaKind, titleNormalized, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind]',
       groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    });
+
+    // Schema v6 - Adiciona tabela Series e campos para agrupamento de episódios
+    this.version(6).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: 'id, playlistId, url, group, mediaKind, titleNormalized, seriesId, [playlistId+titleNormalized], [playlistId+group], [playlistId+mediaKind], [playlistId+group+mediaKind], [seriesId+seasonNumber+episodeNumber]',
+      groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      series: 'id, playlistId, [playlistId+group]',
       favorites: 'id, [playlistId+itemId], playlistId',
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
     });
@@ -255,17 +287,52 @@ export async function getContinueWatching(
 }
 
 export async function clearPlaylistData(playlistId: string): Promise<void> {
-  await db.transaction('rw', [db.items, db.groups, db.favorites, db.watchProgress], async () => {
+  await db.transaction('rw', [db.items, db.groups, db.series, db.favorites, db.watchProgress], async () => {
     await db.items.where('playlistId').equals(playlistId).delete();
     await db.groups.where('playlistId').equals(playlistId).delete();
+    await db.series.where('playlistId').equals(playlistId).delete();
     await db.favorites.where('playlistId').equals(playlistId).delete();
     await db.watchProgress.where('playlistId').equals(playlistId).delete();
   });
 }
 
 export async function removePlaylistWithData(playlistId: string): Promise<void> {
-  await db.transaction('rw', [db.playlists, db.items, db.groups, db.favorites, db.watchProgress], async () => {
+  await db.transaction('rw', [db.playlists, db.items, db.groups, db.favorites, db.watchProgress, db.series], async () => {
     await clearPlaylistData(playlistId);
     await db.playlists.delete(playlistId);
   });
+}
+
+// Series helper functions
+export async function getSeriesByPlaylist(
+  playlistId: string,
+  group?: string
+): Promise<Series[]> {
+  if (group) {
+    return db.series.where({ playlistId, group }).toArray();
+  }
+  return db.series.where('playlistId').equals(playlistId).toArray();
+}
+
+export async function getSeriesById(seriesId: string): Promise<Series | undefined> {
+  return db.series.get(seriesId);
+}
+
+export async function getEpisodesBySeries(
+  seriesId: string
+): Promise<M3UItem[]> {
+  return db.items
+    .where('seriesId')
+    .equals(seriesId)
+    .sortBy('[seasonNumber+episodeNumber]');
+}
+
+export async function getEpisodesBySeriesAndSeason(
+  seriesId: string,
+  seasonNumber: number
+): Promise<M3UItem[]> {
+  return db.items
+    .where({ seriesId })
+    .filter((item) => item.seasonNumber === seasonNumber)
+    .sortBy('episodeNumber');
 }
