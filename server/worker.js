@@ -191,7 +191,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
     unknownCount: 0,
     groupCount: 0,
   };
-  const seenUrls = options.removeDuplicates === false ? null : new Set();
+  // Dedup movido para o cliente (browser) - economiza 7.5MB de RAM no servidor
+  // const seenUrls = null; // Removido - não é mais necessário
 
   try {
     progressCb?.({ phase: 'parsing', percentage: 5, processed: 0 });
@@ -218,10 +219,11 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
         }
 
         if (currentExtinf && trimmed.startsWith('http')) {
-          if (seenUrls && seenUrls.has(trimmed)) {
-            currentExtinf = null;
-            continue;
-          }
+          // Dedup desabilitado no servidor (movido para cliente)
+          // if (seenUrls && seenUrls.has(trimmed)) {
+          //   currentExtinf = null;
+          //   continue;
+          // }
 
           const nameRaw = currentExtinf.title;
           const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
@@ -245,7 +247,8 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           };
 
           writer.write(`${JSON.stringify(item)}\n`);
-          if (seenUrls) seenUrls.add(trimmed);
+          // Dedup desabilitado no servidor
+          // if (seenUrls) seenUrls.add(trimmed);
 
           stats.totalItems++;
           switch (mediaKind) {
@@ -289,7 +292,9 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
     if (buffer.trim()) {
       const trimmed = buffer.trim();
       if (currentExtinf && trimmed.startsWith('http')) {
-        if (!seenUrls || !seenUrls.has(trimmed)) {
+        // Dedup desabilitado no servidor (movido para cliente)
+        // if (!seenUrls || !seenUrls.has(trimmed)) {
+        if (true) { // Sempre processa (dedup no cliente)
           const nameRaw = currentExtinf.title;
           const name = options.normalize ? normalizeSpaces(nameRaw) : nameRaw;
           const tvgLogo = currentExtinf.attributes.get('tvg-logo');

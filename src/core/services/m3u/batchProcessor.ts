@@ -109,12 +109,37 @@ export async function processBatches(
           createdAt: Date.now(),
         }));
 
-        // Insere no DB
+        // Insere no DB com fallback triplo
         try {
           await db.items.bulkAdd(dbItems);
         } catch (error) {
-          console.error('[BatchProcessor] Erro ao inserir batch:', error);
-          // Continua processamento mesmo com erro
+          console.warn('[BatchProcessor] bulkAdd falhou, tentando bulkPut (upsert):', (error as Error).message);
+
+          try {
+            // Fallback: upsert (substitui duplicatas)
+            await db.items.bulkPut(dbItems);
+            console.log('[BatchProcessor] ✓ Batch salvo via bulkPut (upsert)');
+          } catch (putError) {
+            console.error('[BatchProcessor] ❌ ERRO CRÍTICO: batch pode ser perdido', {
+              batchSize: dbItems.length,
+              error: (putError as Error).message,
+              firstItem: dbItems[0]?.id,
+              lastItem: dbItems[dbItems.length - 1]?.id,
+            });
+
+            // ⚠️ Última tentativa: insere item por item
+            let savedCount = 0;
+            for (const item of dbItems) {
+              try {
+                await db.items.put(item);
+                savedCount++;
+              } catch {
+                console.error('[BatchProcessor] Item rejeitado:', item.id);
+              }
+            }
+
+            console.warn(`[BatchProcessor] Salvou ${savedCount}/${dbItems.length} items individualmente`);
+          }
         }
 
         totalProcessed += batch.length;
@@ -158,7 +183,30 @@ export async function processBatches(
       try {
         await db.items.bulkAdd(dbItems);
       } catch (error) {
-        console.error('[BatchProcessor] Erro ao inserir último batch:', error);
+        console.warn('[BatchProcessor] bulkAdd falhou no último batch, usando bulkPut:', (error as Error).message);
+
+        try {
+          await db.items.bulkPut(dbItems);
+          console.log('[BatchProcessor] ✓ Último batch salvo via bulkPut (upsert)');
+        } catch (putError) {
+          console.error('[BatchProcessor] ❌ ERRO no último batch', {
+            batchSize: dbItems.length,
+            error: (putError as Error).message,
+          });
+
+          // Última tentativa: item por item
+          let savedCount = 0;
+          for (const item of dbItems) {
+            try {
+              await db.items.put(item);
+              savedCount++;
+            } catch {
+              console.error('[BatchProcessor] Item rejeitado:', item.id);
+            }
+          }
+
+          console.warn(`[BatchProcessor] Último batch: ${savedCount}/${dbItems.length} salvos`);
+        }
       }
 
       totalProcessed += batch.length;
@@ -183,7 +231,15 @@ export async function processBatches(
       try {
         await db.groups.bulkAdd(dbGroups);
       } catch (error) {
-        console.error('[BatchProcessor] Erro ao inserir grupos:', error);
+        console.warn('[BatchProcessor] bulkAdd de grupos falhou, usando bulkPut:', (error as Error).message);
+
+        try {
+          await db.groups.bulkPut(dbGroups);
+          console.log('[BatchProcessor] ✓ Grupos salvos via bulkPut (upsert)');
+        } catch (putError) {
+          console.error('[BatchProcessor] Erro ao salvar grupos:', (putError as Error).message);
+          // Groups são menos críticos, pode continuar
+        }
       }
     }
 

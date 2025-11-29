@@ -319,7 +319,21 @@ async function syncItemsFromServer(
     const items = page.items || [];
     total = page.total || 0;
 
-    const dbItems: M3UItem[] = items.map((item: any) => ({
+    // ✅ Dedup efêmero para partial load
+    const seenUrls = new Set<string>();
+    const uniqueItems = items.filter((item: any) => {
+      if (seenUrls.has(item.url)) return false;
+      seenUrls.add(item.url);
+      return true;
+    });
+
+    console.log('[DB DEBUG] Partial load processado', {
+      total: items.length,
+      unique: uniqueItems.length,
+      duplicates: items.length - uniqueItems.length,
+    });
+
+    const dbItems: M3UItem[] = uniqueItems.map((item: any) => ({
       id: `${playlistId}_${item.id}`,
       playlistId,
       name: item.name,
@@ -343,7 +357,10 @@ async function syncItemsFromServer(
       await db.items.bulkPut(batch);
     }
 
-    processed = items.length;
+    processed = uniqueItems.length; // ✅ Conta apenas únicos
+
+    // Libera memória do Set
+    seenUrls.clear();
 
     onProgress?.({
       phase: 'indexing',
@@ -360,6 +377,10 @@ async function syncItemsFromServer(
   const pageSize = 5000;
   let offset = 0;
 
+  // ✅ DEDUP EFÊMERO (liberado ao final da função)
+  const seenUrls = new Set<string>();
+  let duplicatesSkipped = 0;
+
   while (true) {
     const itemsResponse = await fetch(
       `${SERVER_URL}/api/playlist/items/${hash}?limit=${pageSize}&offset=${offset}`
@@ -367,7 +388,7 @@ async function syncItemsFromServer(
 
     // FALLBACK: Cache expirado (404) → reprocessa playlist
     if (itemsResponse.status === 404) {
-      console.warn(`[DB DEBUG] Cache expirado (404). Reprocessando playlist...`);
+      console.warn(`[DB DEBUG] Cache expirado em offset ${offset} (404). Reprocessando e reiniciando do zero...`);
 
       const playlist = await db.playlists.get(playlistId);
       if (!playlist) throw new Error('Playlist não encontrada');
@@ -393,8 +414,9 @@ async function syncItemsFromServer(
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      // Recomeça sync com novo hash (RECURSÃO)
-      return syncItemsFromServer(newHash, playlistId, onProgress, options);
+      // IMPORTANTE: Recomeça do ZERO (não do offset atual)
+      // Remove options.loadPartial para forçar modo completo desde o início
+      return syncItemsFromServer(newHash, playlistId, onProgress, { loadPartial: false });
     }
 
     if (!itemsResponse.ok) {
@@ -409,8 +431,25 @@ async function syncItemsFromServer(
       break;
     }
 
+    // ✅ FILTRAR DUPLICATAS ANTES DE INSERIR
+    const uniqueItems = items.filter((item: any) => {
+      if (seenUrls.has(item.url)) {
+        duplicatesSkipped++;
+        return false; // Pula duplicata
+      }
+      seenUrls.add(item.url);
+      return true;
+    });
+
+    console.log('[DB DEBUG] Página processada', {
+      total: items.length,
+      unique: uniqueItems.length,
+      duplicates: items.length - uniqueItems.length,
+      totalDuplicatesSkipped: duplicatesSkipped,
+    });
+
     // Inserir em lotes menores para evitar travar
-    const dbItems: M3UItem[] = items.map((item: any) => ({
+    const dbItems: M3UItem[] = uniqueItems.map((item: any) => ({
       id: `${playlistId}_${item.id}`,
       playlistId,
       name: item.name,
@@ -447,6 +486,13 @@ async function syncItemsFromServer(
 
     if (processed >= total) break;
   }
+
+  // ✅ LIBERA MEMÓRIA DO SET
+  seenUrls.clear();
+  console.log('[DB DEBUG] ✓ Sync completo. Memória de dedup liberada.', {
+    totalProcessed: processed,
+    totalDuplicatesSkipped: duplicatesSkipped,
+  });
 
   onProgress?.({
     phase: 'complete',

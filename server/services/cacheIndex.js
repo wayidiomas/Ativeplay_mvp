@@ -153,13 +153,15 @@ class CacheIndex {
 
     const itemsPath = path.join(CACHE_DIR, `${hash}.ndjson`);
     const metaPath = path.join(CACHE_DIR, `${hash}.meta.json`);
+    const indexPath = path.join(CACHE_DIR, `${hash}.ndjson.idx`); // ✅ Índice de byte offsets
 
     await Promise.all([
       fs.rm(itemsPath, { force: true }),
       fs.rm(metaPath, { force: true }),
+      fs.rm(indexPath, { force: true }), // ✅ Deletar índice
     ]);
 
-    console.log(`[CacheIndex] Removido: ${hash}`);
+    console.log(`[CacheIndex] Removido: ${hash} (incluindo .idx)`);
   }
 
   /**

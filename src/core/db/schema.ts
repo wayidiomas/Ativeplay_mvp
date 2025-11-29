@@ -88,6 +88,15 @@ class AtivePlayDB extends Dexie {
       favorites: 'id, [playlistId+itemId], playlistId',
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt',
     });
+
+    // Schema v3 - Adiciona índice URL para deduplicação O(1)
+    this.version(3).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: 'id, playlistId, url, group, mediaKind, [playlistId+group], [playlistId+mediaKind]',
+      groups: 'id, playlistId, mediaKind, [playlistId+mediaKind]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt',
+    });
   }
 }
 

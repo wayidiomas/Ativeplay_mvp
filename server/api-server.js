@@ -878,6 +878,19 @@ async function readItemsWithIndex(itemsPath, offset, limit) {
     const indexData = await fs.readFile(indexPath, 'utf8');
     const offsets = JSON.parse(indexData);
 
+    // ✅ VALIDAÇÕES
+    if (!Array.isArray(offsets)) {
+      throw new Error('Índice inválido: não é array');
+    }
+
+    if (offsets.length === 0) {
+      throw new Error('Índice vazio');
+    }
+
+    if (offsets[0] !== 0) {
+      throw new Error('Índice corrompido: primeiro offset deve ser 0');
+    }
+
     // Calcula byte range
     const startByte = offsets[offset];
     const endByte = offsets[Math.min(offset + limit, offsets.length - 1)] || offsets[offsets.length - 1];
@@ -887,22 +900,28 @@ async function readItemsWithIndex(itemsPath, offset, limit) {
       return [];
     }
 
+    // ✅ BUFFER DINÂMICO baseado no tamanho médio das linhas
+    const avgLineSize = Math.ceil((endByte - startByte) / limit);
+    const bufferMargin = Math.max(5000, avgLineSize * 2); // Margem dinâmica
+    const bytesToRead = endByte - startByte + bufferMargin;
+
     // Lê apenas os bytes necessários (seek direto!)
     const fileHandle = await fs.open(itemsPath, 'r');
-    const bytesToRead = endByte - startByte + 1000; // +1000 buffer para última linha completa
     const buffer = Buffer.allocUnsafe(bytesToRead);
-    await fileHandle.read(buffer, 0, bytesToRead, startByte);
+    const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, startByte);
     await fileHandle.close();
 
-    // Parse das linhas
-    const lines = buffer.toString('utf8').split('\n').filter(Boolean);
+    // ✅ Parse com bytesRead real
+    const content = buffer.toString('utf8', 0, bytesRead);
+    const lines = content.split('\n').filter(Boolean);
     const items = [];
 
     for (let i = 0; i < Math.min(limit, lines.length); i++) {
       try {
         items.push(JSON.parse(lines[i]));
-      } catch (error) {
-        console.warn('[Items] Linha inválida no índice, pulando');
+      } catch (parseError) {
+        console.warn('[Items] JSON inválido na linha', i, parseError.message);
+        // Continua para próxima linha
       }
     }
 
