@@ -82,19 +82,19 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         }
 
         const loadedGroups = await getPlaylistGroups(activePlaylist.id, mediaKind);
-        const topGroups = loadedGroups.slice(0, 12);
+        const topGroups = loadedGroups.slice(0, 8); // limitar carrosseis para performance
 
-        const rowsLoaded: Row[] = [];
-        for (const group of topGroups) {
-          const items = await db.items
-            .where({ playlistId: activePlaylist.id, group: group.name, mediaKind })
-            .limit(24)
-            .toArray();
-          if (items.length > 0) {
-            rowsLoaded.push({ group, items });
-          }
-        }
-        setRows(rowsLoaded);
+        const rowsLoaded = await Promise.all(
+          topGroups.map(async (group) => {
+            const items = await db.items
+              .where({ playlistId: activePlaylist.id, group: group.name, mediaKind })
+              .limit(24)
+              .toArray();
+            return items.length > 0 ? { group, items } : null;
+          })
+        );
+
+        setRows(rowsLoaded.filter(Boolean) as Row[]);
       } catch (error) {
         console.error('Erro ao carregar carrosseis:', error);
         setRows([]);
