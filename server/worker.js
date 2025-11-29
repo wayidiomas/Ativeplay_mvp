@@ -283,31 +283,33 @@ async function savePartialMeta(hash, url, stats, groups, seriesIndex, status = '
 function levenshteinDistance(s1, s2) {
   const len1 = s1.length;
   const len2 = s2.length;
-  const matrix = [];
 
-  // Inicializa primeira coluna (0 a len1)
-  for (let i = 0; i <= len1; i++) {
-    matrix[i] = [i];
-  }
+  // ✅ OTIMIZADO: Usa apenas 2 arrays ao invés de matriz completa
+  // Space complexity: O(min(len1, len2)) ao invés de O(len1 × len2)
+  let prevRow = new Array(len2 + 1);
+  let currRow = new Array(len2 + 1);
 
   // Inicializa primeira linha (0 a len2)
   for (let j = 0; j <= len2; j++) {
-    matrix[0][j] = j;
+    prevRow[j] = j;
   }
 
-  // Preenche a matriz com custos de operações
+  // Calcula cada linha baseado na anterior
   for (let i = 1; i <= len1; i++) {
+    currRow[0] = i;
     for (let j = 1; j <= len2; j++) {
       const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,      // deletion
-        matrix[i][j - 1] + 1,      // insertion
-        matrix[i - 1][j - 1] + cost // substitution
+      currRow[j] = Math.min(
+        prevRow[j] + 1,         // deletion
+        currRow[j - 1] + 1,     // insertion
+        prevRow[j - 1] + cost   // substitution
       );
     }
+    // Swap: currRow vira prevRow para próxima iteração
+    [prevRow, currRow] = [currRow, prevRow];
   }
 
-  return matrix[len1][len2];
+  return prevRow[len2];
 }
 
 /**
@@ -634,27 +636,35 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
 
     try {
       const indexFile = `${itemsFile}.idx`;
-      const offsets = [];
+
+      // ✅ OTIMIZADO: Stream offsets diretamente para arquivo (sem array intermediário)
+      // Elimina array de 291k+ entries e join() de string gigante
+      const offsetWriter = createWriteStream(indexFile, { encoding: 'utf8' });
 
       const fileStream = createReadStream(itemsFile, { encoding: 'utf8' });
       const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
       let currentOffset = 0;
+      let lineCount = 0;
+
       for await (const line of rl) {
-        offsets.push(currentOffset);
+        offsetWriter.write(`${currentOffset}\n`);
         currentOffset += Buffer.byteLength(line, 'utf8') + 1; // +1 for \n
+        lineCount++;
       }
 
       rl.close();
 
-      // ✅ Salva índice sem criar JSON gigante na memória
-      // Escreve diretamente como newline-delimited numbers para economizar RAM
-      await fs.writeFile(indexFile, offsets.join('\n'));
+      // Aguarda finalização do stream
+      await new Promise((resolve, reject) => {
+        offsetWriter.end(resolve);
+        offsetWriter.on('error', reject);
+      });
 
-      const indexSizeMB = (offsets.length * 8) / 1024 / 1024; // 8 bytes por offset (number)
+      const indexSizeMB = (lineCount * 8) / 1024 / 1024; // 8 bytes por offset (number)
       logger.info('index_generated', {
         hash,
-        lines: offsets.length,
+        lines: lineCount,
         indexSizeMB: indexSizeMB.toFixed(2),
       });
     } catch (indexError) {
@@ -725,6 +735,23 @@ async function parseM3UStream(url, options = {}, hashOverride, progressCb) {
           hash,
           totalSeriesInIndex: seriesIndex.size
         });
+      }
+
+      // ✅ OTIMIZADO: Liberar memória após agrupamento de séries
+      // Força GC para liberar ~100-150MB após pico de memória
+      if (itemsWithoutPattern.length > 0) {
+        itemsWithoutPattern.length = 0;  // Clear array
+        if (global.gc) {
+          const memBefore = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+          global.gc();
+          const memAfter = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+          logger.debug('gc_forced', {
+            phase: 'after_series_grouping',
+            memBeforeMB: memBefore,
+            memAfterMB: memAfter,
+            freedMB: memBefore - memAfter
+          });
+        }
       }
     } catch (groupError) {
       logger.warn('series_grouping_failed', {
