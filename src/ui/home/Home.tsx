@@ -614,13 +614,16 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     let cancelled = false;
     const poll = async () => {
       while (!cancelled) {
+        // ✅ FIX: Busca playlist atualizada ANTES de calcular percentagem
+        const updated = await db.playlists.get(activePlaylist.id);
+        if (!updated) break;
+
         const loadedCount = await db.items.where('playlistId').equals(activePlaylist.id).count();
-        const total = activePlaylist.itemCount;
+        const total = updated.itemCount; // ✅ Usa valor atualizado, não stale
         const percentage = total > 0 ? Math.round((loadedCount / total) * 100) : 0;
         setSyncProgress({ current: loadedCount, total, percentage });
 
-        const updated = await db.playlists.get(activePlaylist.id);
-        if (updated?.lastSyncStatus !== 'syncing') {
+        if (updated.lastSyncStatus !== 'syncing') {
           setSyncing(false);
           setSyncProgress(null);
           break;

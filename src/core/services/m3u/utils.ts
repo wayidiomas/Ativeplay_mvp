@@ -31,15 +31,41 @@ export function normalizeSeriesName(name: string): string {
 }
 
 /**
- * Creates a unique hash-based series key from normalized name
- * Uses simple hash algorithm (djb2 variant) for consistent ID generation
+ * Creates a unique hash-based series key from normalized name and optional context
+ * Uses djb2 hash algorithm with optional group/year for collision reduction
  *
- * Example:
+ * FASE OTIMIZAÇÃO: Adiciona parâmetros opcionais para reduzir colisões
+ *
+ * Examples:
  * - "breaking bad" → "series_1a2b3c4d"
+ * - "breaking bad" + group "Series Netflix" → "series_1a2b3c4d5e"
+ * - "breaking bad" + group + year 2008 → "series_1a2b3c4d5e6f"
+ *
+ * @param normalized Nome normalizado da série
+ * @param group Grupo opcional (reduz colisões entre playlists)
+ * @param year Ano opcional (reduz colisões de remakes)
  */
-export function createSeriesKey(normalized: string): string {
+export function createSeriesKey(
+  normalized: string,
+  group?: string,
+  year?: number
+): string {
+  // Concatena dados para hash (nome + grupo + ano)
+  // Isso reduz significativamente as colisões
+  let hashInput = normalized;
+
+  if (group) {
+    // Normaliza grupo antes de adicionar (uppercase, sem emojis)
+    const normalizedGroup = normalizeGroup(group);
+    hashInput += `::${normalizedGroup}`;
+  }
+
+  if (year) {
+    hashInput += `::${year}`;
+  }
+
   // djb2 hash algorithm - simple but effective for string hashing
-  const hash = normalized.split('').reduce((acc, char) => {
+  const hash = hashInput.split('').reduce((acc, char) => {
     return ((acc << 5) - acc) + char.charCodeAt(0);
   }, 0);
 
@@ -77,15 +103,17 @@ export function normalizeTitle(title: string): string {
 
 /**
  * Valida se URL é um stream válido
- * Verifica protocolo, host e extensões comuns
+ * Verifica protocolo, host e extensões/padrões comuns
  *
  * Examples:
  * - "http://server.com/play/user/pass/123.mp4" → true
+ * - "http://server.com/123/456/789" → true (Xtream Codes)
  * - "http://server.com/play/user/pass/123/ts" → true
  * - "ftp://invalid.com/file.avi" → false
  * - "not-a-url" → false
  *
  * Otimização: Evita inserir URLs inválidas no DB
+ * Aceita formato Xtream Codes (comum em IPTV): http://host/user/pass/streamid
  */
 export function isValidStreamURL(url: string): boolean {
   try {
@@ -98,6 +126,11 @@ export function isValidStreamURL(url: string): boolean {
 
     // URL deve ter host válido
     if (!parsed.hostname || parsed.hostname.length === 0) {
+      return false;
+    }
+
+    // URLs válidas devem ter algum path (não apenas "/")
+    if (!parsed.pathname || parsed.pathname === '/') {
       return false;
     }
 
@@ -118,7 +151,23 @@ export function isValidStreamURL(url: string): boolean {
       '/stream/',
     ];
 
-    return validPatterns.some(pattern => urlLower.includes(pattern));
+    // Se tem padrão conhecido, aceita
+    if (validPatterns.some(pattern => urlLower.includes(pattern))) {
+      return true;
+    }
+
+    // ✅ ACEITA formato Xtream Codes: http://host:port/user/pass/streamid
+    // Exemplo: http://cdnp.xyz:80/199003005/760722007/2694533
+    // Valida se tem pelo menos 2 segmentos numéricos no path (user/pass ou pass/streamid)
+    const pathSegments = parsed.pathname.split('/').filter(s => s.length > 0);
+    const hasNumericSegments = pathSegments.filter(s => /^\d+$/.test(s)).length >= 2;
+
+    if (hasNumericSegments) {
+      return true; // Formato Xtream Codes detectado
+    }
+
+    // Rejeita URLs sem padrões reconhecidos
+    return false;
   } catch {
     return false;
   }

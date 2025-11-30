@@ -343,6 +343,28 @@ export async function processBatches(
           seriesToUpdate.clear();
         }
 
+        // ✅ FIX: Flush groups to DB during batch processing (UI lazy loading fix)
+        // Salva grupos incrementalmente para que UI possa mostrar conteúdo durante parsing
+        if (groupsMap.size > 0) {
+          const dbGroups = Array.from(groupsMap.values()).map((group) => ({
+            id: `${playlistId}_${group.id}`,
+            playlistId,
+            name: group.name,
+            mediaKind: group.mediaKind,
+            itemCount: group.itemCount,
+            logo: group.logo,
+            createdAt: Date.now(),
+          }));
+
+          try {
+            // Use bulkPut (upsert) para atualizar counts incrementalmente
+            await db.groups.bulkPut(dbGroups);
+            console.log(`[Groups] ✅ ${dbGroups.length} grupos salvos/atualizados`);
+          } catch (err) {
+            console.error('[Groups] Erro ao salvar grupos em batch:', err);
+          }
+        }
+
         totalProcessed += batch.length;
         batchCount++; // ✅ NOVO: Incrementa contador de batches
 
@@ -512,13 +534,34 @@ export async function processBatches(
 
         seriesToUpdate.clear();
       }
+
+      // ✅ FIX: Flush final de groups (último batch)
+      if (groupsMap.size > 0) {
+        const dbGroups = Array.from(groupsMap.values()).map((group) => ({
+          id: `${playlistId}_${group.id}`,
+          playlistId,
+          name: group.name,
+          mediaKind: group.mediaKind,
+          itemCount: group.itemCount,
+          logo: group.logo,
+          createdAt: Date.now(),
+        }));
+
+        try {
+          await db.groups.bulkPut(dbGroups);
+          console.log(`[Groups] ✅ ${dbGroups.length} grupos salvos/atualizados (último batch)`);
+        } catch (err) {
+          console.error('[Groups] Erro ao salvar grupos no último batch:', err);
+        }
+      }
     }
 
     // Finaliza grupos
     const groups = Array.from(groupsMap.values());
     stats.groupCount = groups.length;
 
-    // Salva grupos no DB
+    // ✅ Grupos já foram salvos incrementalmente durante batches, mas mantém
+    // este código final como fallback/validação
     const dbGroups = groups.map((group) => ({
       id: `${playlistId}_${group.id}`,
       playlistId,
@@ -531,17 +574,12 @@ export async function processBatches(
 
     if (dbGroups.length > 0) {
       try {
-        await db.groups.bulkAdd(dbGroups);
-      } catch (error) {
-        console.warn('[BatchProcessor] bulkAdd de grupos falhou, usando bulkPut:', (error as Error).message);
-
-        try {
-          await db.groups.bulkPut(dbGroups);
-          console.log('[BatchProcessor] ✓ Grupos salvos via bulkPut (upsert)');
-        } catch (putError) {
-          console.error('[BatchProcessor] Erro ao salvar grupos:', (putError as Error).message);
-          // Groups são menos críticos, pode continuar
-        }
+        // ✅ Use bulkPut diretamente (grupos já foram criados incrementalmente)
+        await db.groups.bulkPut(dbGroups);
+        console.log('[BatchProcessor] ✓ Validação final: grupos salvos/atualizados');
+      } catch (putError) {
+        console.error('[BatchProcessor] Erro na validação final de grupos:', (putError as Error).message);
+        // Groups são menos críticos, pode continuar
       }
     }
 
