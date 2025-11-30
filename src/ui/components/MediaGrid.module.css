@@ -1,18 +1,19 @@
 /* MediaGrid.module.css - Refatorado */
 
+/* Usa variáveis globais da Home para manter consistência */
 :root {
-  --grid-bg: #0f0f0f;
-  --card-bg: #1f1f1f;
-  --text-primary: #ffffff;
-  --text-secondary: #cfcfcf;
+  --grid-bg: #0b0b0f;
+  --card-bg: #15151c;
+  --text-primary: #f5f5f5;
+  --text-secondary: #b9b9c3;
   --accent-color: #e50914;
-  --accent-gradient: linear-gradient(120deg, #e50914, #ff6b6b);
+  --accent-gradient: linear-gradient(120deg, #ff304f, #c41b4d);
   --transition-smooth: 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
 .container {
   min-height: 100vh;
-  background: radial-gradient(circle at 10% 10%, rgba(229,9,20,0.08), transparent 30%), #0f0f0f;
+  background: radial-gradient(circle at 10% 10%, rgba(229, 9, 20, 0.06), transparent 35%), radial-gradient(circle at 80% 0%, rgba(196, 27, 77, 0.06), transparent 30%), #0b0b0f;
   display: flex;
   flex-direction: column;
   color: var(--text-primary);
@@ -24,24 +25,24 @@
   display: flex;
   align-items: center;
   gap: 20px;
-  padding: 20px 48px;
-  background: linear-gradient(90deg, rgba(0,0,0,0.95), rgba(0,0,0,0.7));
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  padding: 16px 32px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   position: sticky;
   top: 0;
   z-index: 100;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .backButton {
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 12px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-primary);
-  font-size: 24px;
+  font-size: 22px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -59,29 +60,30 @@
 
 .title {
   flex: 1;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 800;
   color: var(--text-primary);
-  letter-spacing: -0.5px;
+  letter-spacing: -0.3px;
   margin: 0;
 }
 
 .itemCount {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
   background: var(--accent-gradient);
-  padding: 8px 16px;
+  padding: 8px 12px;
   border-radius: 8px;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
+  box-shadow: 0 6px 18px rgba(229, 9, 20, 0.35);
 }
 
 /* Grid - Mantém cards grandes */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 28px;
-  padding: 36px 48px 100px 48px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 24px;
+  padding: 28px 32px 80px 32px;
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
@@ -110,13 +112,13 @@
 .card {
   position: relative;
   background: var(--card-bg);
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   transition: all var(--transition-smooth);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   aspect-ratio: 2/3;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   padding: 0;
 }
 
@@ -126,8 +128,8 @@
   transform: translateY(-6px) scale(1.02);
   z-index: 10;
   box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.7),
-    0 0 0 2px rgba(229, 9, 20, 0.4);
+    0 16px 36px rgba(0, 0, 0, 0.75),
+    0 0 0 2px rgba(229, 9, 20, 0.35);
   outline: none;
   border-color: rgba(229, 9, 20, 0.6);
 }
@@ -163,15 +165,15 @@
   bottom: 0;
   left: 0;
   right: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.7) 50%, transparent 100%);
-  padding: 18px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.55) 45%, transparent 90%);
+  padding: 16px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
 }
 
 .cardTitle {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   color: #fff;
   margin-bottom: 6px;

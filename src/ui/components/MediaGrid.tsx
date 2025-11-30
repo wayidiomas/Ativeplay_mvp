@@ -19,9 +19,9 @@ interface MediaGridProps {
   onSelectItem: (item: M3UItem) => void;
 }
 
-const PAGE_SIZE = 240;
-const MIN_CARD_WIDTH = 280; // BIG POSTER: Matches CSS minmax(280px, 1fr)
-const CARD_GAP = 32; // Matches CSS gap: 32px
+const PAGE_SIZE = 120;
+const MIN_CARD_WIDTH = 200; // menor para caber mais colunas
+const CARD_GAP = 24;
 const ASPECT_RATIO = 1.5; // 2:3 ratio
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
@@ -94,14 +94,13 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   const hasMore = (items?.length || 0) < (totalCount || 0);
 
   // Calculate columns per row dynamically
-  const [columnsPerRow, setColumnsPerRow] = useState(4); // Default fewer columns for big cards
+  const [columnsPerRow, setColumnsPerRow] = useState(5);
   const [cardHeight, setCardHeight] = useState(MIN_CARD_WIDTH * ASPECT_RATIO);
 
   useEffect(() => {
     const updateLayout = () => {
       if (!gridRef.current) return;
-      // 112px = padding left + right (56px * 2)
-      const containerWidth = gridRef.current.clientWidth - 112;
+      const containerWidth = gridRef.current.clientWidth - 48; // padding lateral
       // Calculate how many cards fit with min width + gap
       const cols = Math.floor((containerWidth + CARD_GAP) / (MIN_CARD_WIDTH + CARD_GAP)) || 1;
 
@@ -116,22 +115,6 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     window.addEventListener('resize', updateLayout);
     return () => window.removeEventListener('resize', updateLayout);
   }, []);
-
-  // Split items into rows
-  const rows: M3UItem[][] = [];
-  if (items) {
-    for (let i = 0; i < items.length; i += columnsPerRow) {
-      rows.push(items.slice(i, i + columnsPerRow));
-    }
-  }
-
-  // Virtual scrolling
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => gridRef.current,
-    estimateSize: () => cardHeight + CARD_GAP,
-    overscan: 3,
-  });
 
   // Reset on group change
   useEffect(() => {
@@ -295,88 +278,51 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         </span>
       </header>
 
-      <div
-        ref={gridRef}
-        className={styles.grid}
-        style={{ height: '100%' }}
-      >
-        <div
-          style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const row = rows[virtualRow.index];
-            if (!row) return null;
-
-            return (
-              <div
-                key={virtualRow.key}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
-                  display: 'grid',
-                  gridTemplateColumns: `repeat(${columnsPerRow}, 1fr)`,
-                  gap: `${CARD_GAP}px`,
+      <div ref={gridRef} className={styles.grid} style={{ height: '100%' }}>
+        {items?.map((item, idx) => (
+          <button
+            key={item.id}
+            className={styles.card}
+            onClick={() => onSelectItem(item)}
+            data-index={idx}
+            onFocus={() => setFocusedIndex(idx)}
+            onMouseEnter={() => setFocusedIndex(idx)}
+            tabIndex={0}
+          >
+            {item.logo ? (
+              <img
+                src={item.logo}
+                alt={getDisplayName(item)}
+                className={styles.cardPoster}
+                loading="lazy"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                  (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
                 }}
-              >
-                {row.map((item: M3UItem, colIdx: number) => {
-                  const globalIdx = virtualRow.index * columnsPerRow + colIdx;
-                  return (
-                    <button
-                      key={item.id}
-                      className={styles.card}
-                      onClick={() => onSelectItem(item)}
-                      data-index={globalIdx}
-                      onFocus={() => setFocusedIndex(globalIdx)}
-                      onMouseEnter={() => setFocusedIndex(globalIdx)}
-                      tabIndex={0}
-                    >
-                      {item.logo ? (
-                        <img
-                          src={item.logo}
-                          alt={getDisplayName(item)}
-                          className={styles.cardPoster}
-                          loading="lazy"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                            (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
-                          }}
-                        />
-                      ) : null}
+              />
+            ) : null}
 
-                      <div
-                        className={styles.cardPlaceholder}
-                        style={item.logo ? { display: 'none' } : undefined}
-                      >
-                        {item.mediaKind === 'live' ? 'TV' : item.name.charAt(0).toUpperCase()}
-                      </div>
+            <div
+              className={styles.cardPlaceholder}
+              style={item.logo ? { display: 'none' } : undefined}
+            >
+              {item.mediaKind === 'live' ? 'TV' : item.name.charAt(0).toUpperCase()}
+            </div>
 
-                      <div className={styles.cardOverlay}>
-                        <div className={styles.cardTitle}>{getDisplayName(item)}</div>
-                        <div className={styles.cardMeta}>
-                          {item.year && <span className={styles.cardYear}>{item.year}</span>}
-                          {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
-                          {item.season && item.episode && (
-                            <span className={styles.cardYear}>
-                              S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
+            <div className={styles.cardOverlay}>
+              <div className={styles.cardTitle}>{getDisplayName(item)}</div>
+              <div className={styles.cardMeta}>
+                {item.year && <span className={styles.cardYear}>{item.year}</span>}
+                {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
+                {item.season && item.episode && (
+                  <span className={styles.cardYear}>
+                    S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
+                  </span>
+                )}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          </button>
+        ))}
       </div>
 
       {loadingMore && (

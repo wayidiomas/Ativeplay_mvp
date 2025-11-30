@@ -308,7 +308,8 @@ export async function processBatches(
 
           if (seriesInfo && item.mediaKind === 'series') {
             const normalized = normalizeSeriesName(seriesInfo.seriesName);
-            seriesId = createSeriesKey(normalized, item.group, item.parsedTitle.year);
+            const seriesKey = createSeriesKey(normalized, item.group, item.parsedTitle.year);
+            seriesId = `${playlistId}_${seriesKey}`;
             seasonNumber = seriesInfo.season;
             episodeNumber = seriesInfo.episode;
           }
@@ -463,7 +464,8 @@ export async function processBatches(
 
         if (seriesInfo && item.mediaKind === 'series') {
           const normalized = normalizeSeriesName(seriesInfo.seriesName);
-          seriesId = createSeriesKey(normalized, item.group, item.parsedTitle.year);
+          const seriesKey = createSeriesKey(normalized, item.group, item.parsedTitle.year);
+          seriesId = `${playlistId}_${seriesKey}`;
           seasonNumber = seriesInfo.season;
           episodeNumber = seriesInfo.episode;
         }

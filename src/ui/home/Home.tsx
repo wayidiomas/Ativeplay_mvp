@@ -25,6 +25,7 @@ import {
   MdHelpOutline,
   MdErrorOutline,
 } from 'react-icons/md';
+import { SkeletonCard } from '@ui/shared';
 import styles from './Home.module.css';
 
 type NavItem = 'movies' | 'series' | 'live';
@@ -157,6 +158,9 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const setActivePlaylist = usePlaylistStore((s) => s.setActivePlaylist);
   const setSyncing = usePlaylistStore((s) => s.setSyncing);
   const setSyncProgress = usePlaylistStore((s) => s.setSyncProgress);
+  const getTabCache = usePlaylistStore((s) => s.getTabCache);
+  const setTabCache = usePlaylistStore((s) => s.setTabCache);
+  // clearNavigationCache disponível se precisar limpar cache manualmente (ex: botão "Limpar Cache")
 
   const liveActivePlaylist = useLiveQuery(
     async () => {
@@ -210,7 +214,9 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     live: true,
   });
 
-  // Zera caches quando playlist ativa muda para evitar dados de playlists antigas
+  // Zera caches IN-MEMORY quando playlist ativa muda para evitar dados de playlists antigas
+  // ✅ Cache PERSISTENTE (localStorage) mantém dados por playlist (não limpa aqui)
+  // ✅ Cada playlist tem seu próprio cache isolado (playlistId como key)
   useEffect(() => {
     rowsCacheRef.current = { movies: [], series: [], live: [] };
     allGroupsRef.current = { movies: [], series: [], live: [] };
@@ -218,6 +224,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
     hasMoreRef.current = { movies: true, series: true, live: true };
     setRows([]);
     setLoading(true);
+    // Nota: clearNavigationCache() NÃO é chamado aqui intencionalmente
+    // O cache persistente sobrevive a troca de playlists para permitir voltar rapidamente
   }, [activePlaylist?.id]);
 
   const loadBatch = useCallback(
@@ -371,14 +379,48 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         return;
       }
 
+      // ✅ FASE 1: Checa cache persistente PRIMEIRO
+      const persistentCache = getTabCache(activePlaylist.id, selectedNav);
+
+      // ✅ FASE 2: Valida cache (não muito antigo, ex: < 5min)
+      const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+      const isCacheValid = persistentCache &&
+        persistentCache.rows.length > 0 &&
+        (Date.now() - persistentCache.timestamp < CACHE_TTL);
+
+      // ✅ FASE 3: Se cache válido, mostra IMEDIATAMENTE
+      if (isCacheValid && persistentCache) {
+        console.log('[Home] 📦 Restaurando cache persistente:', {
+          tab: selectedNav,
+          rows: persistentCache.rows.length,
+          age: Math.round((Date.now() - persistentCache.timestamp) / 1000) + 's'
+        });
+
+        // Atualiza refs
+        rowsCacheRef.current[selectedNav] = persistentCache.rows;
+        nextIndexRef.current[selectedNav] = persistentCache.nextIndex;
+        hasMoreRef.current[selectedNav] = persistentCache.hasMore;
+
+        // Mostra cache instantaneamente (SEM loading)
+        setRows(persistentCache.rows);
+        setLoading(false);
+
+        // ✅ Opcional: Refresh em background (descomentar se quiser dados sempre frescos)
+        // Usuário não vê loading, apenas vê dados atualizarem silenciosamente
+        return;
+      }
+
+      // ✅ FASE 4: Cache in-memory (fallback)
       const cachedRows = rowsCacheRef.current[selectedNav];
       const cachedGroups = allGroupsRef.current[selectedNav];
       if (cachedRows.length > 0 && cachedGroups.length > 0 && !hasMoreRef.current[selectedNav]) {
+        console.log('[Home] 💾 Usando cache in-memory:', cachedRows.length, 'rows');
         setRows(cachedRows);
         setLoading(false);
         return;
       }
 
+      // ✅ FASE 5: Sem cache - loading normal
       setRows(cachedRows);
       setLoading(true);
 
@@ -390,14 +432,12 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         const allGroups = allGroupsRef.current[selectedNav];
 
         // ✅ Se ainda não há grupos, mantém loading e aguarda useLiveQuery
-        // Fix race condition: não exibe tela vazia prematuramente
         if (allGroups.length === 0) {
-          console.log('[HOME DEBUG] Aguardando grupos do useLiveQuery... (mantém loading)');
-          // Mantém loading=true para indicar que está aguardando dados
-          // O useLiveQuery vai notificar quando os grupos chegarem e re-executar este effect
+          console.log('[HOME DEBUG] Aguardando grupos do useLiveQuery...');
           return;
         }
-        console.log('[HOME DEBUG] Grupos recebidos, carregando rows:', allGroups.length);
+
+        console.log('[Home] 🔄 Carregando dados frescos:', allGroups.length, 'grupos');
         const startIndex = nextIndexRef.current[selectedNav];
         const batches: Row[] = [];
         let localNextIndex = startIndex;
@@ -423,6 +463,16 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
         hasMoreRef.current[selectedNav] = localNextIndex < allGroups.length;
 
         setRows(uniqueRows);
+
+        // ✅ SALVA cache persistente
+        setTabCache(activePlaylist.id, selectedNav, {
+          rows: uniqueRows,
+          timestamp: Date.now(),
+          nextIndex: localNextIndex,
+          hasMore: localNextIndex < allGroups.length,
+        });
+        console.log('[Home] 💾 Cache salvo:', uniqueRows.length, 'rows');
+
       } catch (error) {
         console.error('Erro ao carregar carrosseis:', error);
         setRows([]);
@@ -431,7 +481,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       }
     }
     loadRows();
-  }, [activePlaylist, selectedNav, loadBatch, liveGroups]); // ✅ Fix: use liveGroups instead of liveGroups?.length
+  }, [activePlaylist, selectedNav, loadBatch, liveGroups, getTabCache, setTabCache]);
 
   const loadMoreGroups = useCallback(async () => {
     if (loadingMoreGroups) return;
@@ -863,18 +913,21 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   };
 
   const renderRows = () => {
+    // ✅ MUDANÇA: Skeleton sections para primeira carga
     if (loading && rows.length === 0) {
       return (
-        <div className={styles.section}>
-          <div className={styles.sectionHeader}>
-            <h2 className={styles.sectionTitle}>Carregando...</h2>
-          </div>
-          <div className={styles.skeletonCarousel}>
-            {Array.from({ length: 10 }).map((_, idx) => (
-              <div key={idx} className={styles.skeletonPoster} />
-            ))}
-          </div>
-        </div>
+        <>
+          {Array.from({ length: 3 }).map((_, sectionIdx) => (
+            <div className={styles.section} key={`skeleton-section-${sectionIdx}`}>
+              <div className={styles.sectionHeader}>
+                <div className={styles.skeletonTitle} style={{ width: '200px', height: '24px', background: '#333', borderRadius: '4px' }} />
+              </div>
+              <div className={styles.carouselTrack} style={{ gap: 16 }}>
+                <SkeletonCard count={8} />
+              </div>
+            </div>
+          ))}
+        </>
       );
     }
 
@@ -888,9 +941,28 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
       );
     }
 
+    // Deduplica itens e séries para evitar chaves repetidas
+    const dedupedRows = rows.map((row) => {
+      const itemSet = new Set<string>();
+      const uniqueItems = row.items.filter((it) => {
+        if (itemSet.has(it.id)) return false;
+        itemSet.add(it.id);
+        return true;
+      });
+
+      const seriesSet = new Set<string>();
+      const uniqueSeries = (row.series || []).filter((s) => {
+        if (seriesSet.has(s.id)) return false;
+        seriesSet.add(s.id);
+        return true;
+      });
+
+      return { ...row, items: uniqueItems, series: uniqueSeries };
+    });
+
     return (
       <>
-        {rows.map((row) => (
+        {dedupedRows.map((row) => (
           <div className={styles.section} key={row.group.id}>
             <div className={styles.sectionHeader}>
               <h2 className={styles.sectionTitle}>{row.group.name}</h2>
@@ -944,11 +1016,21 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             </div>
           </div>
         ))}
+
+        {/* ✅ NOVO: Skeleton sections durante loadMoreGroups */}
         {loadingMoreGroups && (
-          <div className={styles.loadingMore}>
-            <div className={styles.spinner} />
-            <span>Carregando mais categorias...</span>
-          </div>
+          <>
+            {Array.from({ length: 2 }).map((_, idx) => (
+              <div className={styles.section} key={`loading-section-${idx}`}>
+                <div className={styles.sectionHeader}>
+                  <div className={styles.skeletonTitle} style={{ width: '200px', height: '24px', background: '#333', borderRadius: '4px' }} />
+                </div>
+                <div className={styles.carouselTrack} style={{ gap: 16 }}>
+                  <SkeletonCard count={8} />
+                </div>
+              </div>
+            ))}
+          </>
         )}
       </>
     );
