@@ -1,74 +1,138 @@
 /**
- * M3U Parser
- * Parseia playlists M3U/M3U8 usando STREAMING
- * Funciona com arquivos de qualquer tamanho (1KB até 1GB+)
- * Usa ~1-2MB de memória independente do tamanho do arquivo
+ * M3U Parser - Frontend-Only Entry Point
+ * FASE 4: Main orchestrator for local M3U parsing
+ *
+ * Flow:
+ * 1. Streaming download + parse (streamParseM3U)
+ * 2. Chunked processing with adaptive batch sizes (processBatches)
+ * 3. Incremental series grouping (hash-based during streaming)
+ * 4. Fuzzy merge final (singletons only)
  */
 
-import type {
-  M3UPlaylist,
-  ParserProgress,
-} from './types';
+import { streamParseM3U } from './streamParser';
+import { processBatches } from './batchProcessor';
+import { mergeSeriesGroups } from './seriesGrouper';
+import type { ParserProgress } from './types';
 
 export type ProgressCallback = (progress: ParserProgress) => void;
 
 /**
- * Faz download e parseia uma playlist M3U usando STREAMING
- * Reduz uso de memória de 300MB+ para ~1-2MB
- * Funciona para arquivos de qualquer tamanho
+ * Parse M3U completamente no frontend
+ * - Streaming download + parse
+ * - Chunked processing com batch adaptativo
+ * - Incremental series grouping (hash + fuzzy)
+ * - Memory management (GC intervals)
+ *
+ * @param url - URL do arquivo M3U
+ * @param playlistId - ID único da playlist
+ * @param onProgress - Callback de progresso (opcional)
+ * @returns Stats, groups e series da playlist
  */
-export async function fetchAndParseM3U(
+export async function parseM3ULocal(
   url: string,
   playlistId: string,
   onProgress?: ProgressCallback
-): Promise<M3UPlaylist> {
-  // Importação dinâmica para evitar circular dependency
-  const { streamParseM3U } = await import('./streamParser');
-  const { processBatches } = await import('./batchProcessor');
+): Promise<{
+  stats: {
+    totalItems: number;
+    liveCount: number;
+    movieCount: number;
+    seriesCount: number;
+    unknownCount: number;
+    groupCount: number;
+  };
+  groups: Array<{
+    id: string;
+    name: string;
+    mediaKind: string;
+    itemCount: number;
+    logo?: string;
+  }>;
+  series: Array<{
+    id: string;
+    playlistId: string;
+    name: string;
+    logo: string;
+    group: string;
+    totalEpisodes: number;
+    totalSeasons: number;
+    firstSeason: number;
+    lastSeason: number;
+    firstEpisode: number;
+    lastEpisode: number;
+    createdAt: number;
+  }>;
+}> {
+  console.log('[Parser] Iniciando parsing local de M3U:', url);
 
+  // FASE 1: Downloading
   onProgress?.({
     phase: 'downloading',
     current: 0,
     total: 100,
     percentage: 0,
-    message: 'Iniciando download com streaming...',
+    message: 'Iniciando download...',
   });
 
-  try {
-    // Inicia streaming parser
-    const generator = streamParseM3U(url);
+  // FASE 2: Stream parsing + batch processing
+  // Cria generator do stream parser
+  const generator = streamParseM3U(url);
 
-    onProgress?.({
-      phase: 'parsing',
-      current: 0,
-      total: 100,
-      percentage: 0,
-      message: 'Processando playlist...',
-    });
+  // Processa em batches (com hash-based series grouping)
+  const result = await processBatches(generator, playlistId, onProgress);
 
-    // Processa em lotes
-    const result = await processBatches(generator, playlistId, onProgress);
+  console.log('[Parser] Batch processing completo:', {
+    totalItems: result.stats.totalItems,
+    seriesGroups: result.seriesGroups.length,
+  });
 
-    // Cria playlist completa
-    const playlist: M3UPlaylist = {
-      url,
-      items: result.items,
-      groups: result.groups,
-      stats: result.stats,
-    };
+  // FASE 3: Series classification
+  onProgress?.({
+    phase: 'classifying',
+    current: 80,
+    total: 100,
+    percentage: 80,
+    message: 'Agrupando séries...',
+  });
 
-    return playlist;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
-    onProgress?.({
-      phase: 'error',
-      current: 0,
-      total: 100,
-      percentage: 0,
-      message: errorMessage,
-    });
-    throw error;
+  // Fuzzy merge de singletons (se houver series)
+  let series: any[] = [];
+  if (result.seriesGroups && result.seriesGroups.length > 0) {
+    console.log('[Parser] Iniciando fuzzy merge de series groups...');
+    series = await mergeSeriesGroups(result.seriesGroups, playlistId);
+    console.log(`[Parser] ${series.length} séries finais criadas`);
   }
+
+  // FASE 4: Complete
+  onProgress?.({
+    phase: 'complete',
+    current: 100,
+    total: 100,
+    percentage: 100,
+    message: 'Concluído!',
+  });
+
+  console.log('[Parser] ===== PARSING COMPLETO =====');
+  console.log(`[Parser] Total Items: ${result.stats.totalItems}`);
+  console.log(`[Parser] Movies: ${result.stats.movieCount}`);
+  console.log(`[Parser] Series: ${result.stats.seriesCount} (${series.length} unique)`);
+  console.log(`[Parser] Live: ${result.stats.liveCount}`);
+  console.log(`[Parser] Groups: ${result.stats.groupCount}`);
+
+  return {
+    stats: result.stats,
+    groups: result.groups,
+    series,
+  };
 }
 
-export default { fetchAndParseM3U };
+// Legacy export for backward compatibility
+export async function fetchAndParseM3U(
+  url: string,
+  playlistId: string,
+  onProgress?: ProgressCallback
+): Promise<any> {
+  return parseM3ULocal(url, playlistId, onProgress);
+}
+
+export default { parseM3ULocal, fetchAndParseM3U };
