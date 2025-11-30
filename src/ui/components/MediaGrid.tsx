@@ -2,14 +2,18 @@
  * MediaGrid
  * Grid display of media items with progressive loading
  * Refactored for Premium/Netflix-like aesthetic (Big Poster Edition)
+ *
+ * FIX: Para séries, mostra grupos de séries (com episódios/temporadas)
+ *      ao invés de episódios individuais
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
+import { db, type M3UItem, type M3UGroup, type Series } from '@core/db/schema';
 import { usePlaylistStore } from '@store/playlistStore';
 import { SkeletonCard } from '../shared';
-import { MdArrowBack, MdSearchOff } from 'react-icons/md';
+import { MdArrowBack, MdSearchOff, MdTv } from 'react-icons/md';
 import styles from './MediaGrid.module.css';
 
 interface MediaGridProps {
@@ -21,25 +25,24 @@ interface MediaGridProps {
 const PAGE_SIZE = 120;
 const MIN_CARD_WIDTH = 200; // menor para caber mais colunas
 const CARD_GAP = 24;
-const ASPECT_RATIO = 1.5; // 2:3 ratio
 
 export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
+  const navigate = useNavigate();
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [loadingMore, setLoadingMore] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true); // ✅ FIX: Skeleton imediato
   const gridRef = useRef<HTMLDivElement>(null);
   const loadingMoreRef = useRef(false);
   const cacheKey = `${group.playlistId}:${group.name}:${group.mediaKind}`;
+  const isSeries = group.mediaKind === 'series'; // ✅ FIX: Detecta se é aba de séries
 
   // Sync ref with state
   useEffect(() => {
     loadingMoreRef.current = loadingMore;
   }, [loadingMore]);
 
-  const { cacheGroupItems, getGroupCache, setMediaGridCache, getMediaGridCache } = usePlaylistStore();
-
-  // Check cache first
-  const cachedItems = getGroupCache(group.playlistId, group.name);
+  const { cacheGroupItems, setMediaGridCache, getMediaGridCache } = usePlaylistStore();
 
   // Restore view state if cached
   useEffect(() => {
@@ -55,25 +58,50 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       setVisibleCount(PAGE_SIZE);
     }
     setFocusedIndex(null);
+    setIsInitialLoad(true); // ✅ FIX: Reset on group change
   }, [cacheKey, getMediaGridCache]);
 
-  // Live query with dynamic limit
+  // ✅ FIX: Query separada para séries (tabela series)
+  const seriesData = useLiveQuery(
+    async () => {
+      if (!isSeries) return [];
+      return db.series
+        .where({ playlistId: group.playlistId, group: group.name })
+        .limit(visibleCount)
+        .toArray();
+    },
+    [group.playlistId, group.name, visibleCount, isSeries],
+    undefined // ✅ FIX: undefined para detectar loading
+  );
+
+  // Live query for items (non-series)
   const items = useLiveQuery(
-    () =>
-      db.items
+    () => {
+      if (isSeries) return []; // Séries usa query separada
+      return db.items
         .where({ playlistId: group.playlistId, group: group.name, mediaKind: group.mediaKind })
         .limit(visibleCount)
-        .toArray(),
-    [group.playlistId, group.name, group.mediaKind, visibleCount],
-    cachedItems || []
+        .toArray();
+    },
+    [group.playlistId, group.name, group.mediaKind, visibleCount, isSeries],
+    undefined // ✅ FIX: undefined para detectar loading
   );
+
+  // ✅ FIX: Marca loading completo quando dados chegam
+  useEffect(() => {
+    if (isSeries && seriesData !== undefined) {
+      setIsInitialLoad(false);
+    } else if (!isSeries && items !== undefined) {
+      setIsInitialLoad(false);
+    }
+  }, [isSeries, seriesData, items]);
 
   // Cache items after load
   useEffect(() => {
-    if (items && items.length > 0) {
+    if (!isSeries && items && items.length > 0) {
       cacheGroupItems(group.playlistId, group.name, items);
     }
-  }, [items, group.playlistId, group.name, cacheGroupItems]);
+  }, [items, group.playlistId, group.name, cacheGroupItems, isSeries]);
 
   // Persist view state on unmount/change
   useEffect(() => {
@@ -83,14 +111,22 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     };
   }, [cacheKey, visibleCount, setMediaGridCache]);
 
+  // ✅ FIX: Total count para séries ou items
   const totalCount = useLiveQuery(
-    () => db.items.where({ playlistId: group.playlistId, group: group.name, mediaKind: group.mediaKind }).count(),
-    [group.playlistId, group.name, group.mediaKind],
+    () => {
+      if (isSeries) {
+        return db.series.where({ playlistId: group.playlistId, group: group.name }).count();
+      }
+      return db.items.where({ playlistId: group.playlistId, group: group.name, mediaKind: group.mediaKind }).count();
+    },
+    [group.playlistId, group.name, group.mediaKind, isSeries],
     0
   );
 
-  const loading = items === undefined;
-  const hasMore = (items?.length || 0) < (totalCount || 0);
+  // ✅ FIX: Loading agora usa isInitialLoad para skeleton imediato
+  const loading = isInitialLoad;
+  const dataLength = isSeries ? (seriesData?.length || 0) : (items?.length || 0);
+  const hasMore = dataLength < (totalCount || 0);
 
   // Calculate columns per row dynamically
   const [columnsPerRow, setColumnsPerRow] = useState(5);
@@ -140,22 +176,23 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
   // Auto-load more if no scroll
   useEffect(() => {
-    if (!gridRef.current || loading || !items || loadingMore || !hasMore) return;
+    if (!gridRef.current || loading || loadingMore || !hasMore) return;
+    if (dataLength === 0) return; // ✅ FIX: Aguarda dados carregarem
     const el = gridRef.current;
     const hasScroll = el.scrollHeight > el.clientHeight;
-    const isFullyLoaded = items.length >= (totalCount || 0);
-    const queryCompleted = visibleCount <= items.length;
+    const isFullyLoaded = dataLength >= (totalCount || 0);
+    const queryCompleted = visibleCount <= dataLength;
 
     if (!hasScroll && !isFullyLoaded && queryCompleted) {
       setLoadingMore(true);
       setVisibleCount((prev) => prev + PAGE_SIZE);
       setTimeout(() => setLoadingMore(false), 150);
     }
-  }, [items?.length, totalCount, hasMore, loading, loadingMore, visibleCount]);
+  }, [dataLength, totalCount, hasMore, loading, loadingMore, visibleCount]);
 
   const focusIndex = useCallback(
     (index: number) => {
-      if (!items || index < 0 || index >= items.length) return;
+      if (index < 0 || index >= dataLength) return;
       const el = gridRef.current?.querySelector<HTMLButtonElement>(`[data-index="${index}"]`);
       if (el) {
         el.focus({ preventScroll: false });
@@ -163,7 +200,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
         setFocusedIndex(index);
       }
     },
-    [items]
+    [dataLength]
   );
 
   // Keyboard navigation
@@ -210,16 +247,22 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
   // Auto-focus first card
   useEffect(() => {
-    if (!loading && items && items.length > 0 && focusedIndex === null) {
+    if (!loading && dataLength > 0 && focusedIndex === null) {
       // Small delay to ensure render
       setTimeout(() => focusIndex(0), 50);
     }
-  }, [loading, items, focusIndex, focusedIndex]);
+  }, [loading, dataLength, focusIndex, focusedIndex]);
 
   const getDisplayName = useCallback((item: M3UItem): string => {
     return item.title || item.name;
   }, []);
 
+  // ✅ FIX: Handler para navegar para página de série
+  const handleSeriesClick = useCallback((series: Series) => {
+    navigate(`/series/${series.id}`);
+  }, [navigate]);
+
+  // ✅ FIX: Skeleton mostrado imediatamente no loading
   if (loading) {
     return (
       <div className={styles.container}>
@@ -236,7 +279,8 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
     );
   }
 
-  if (!loading && items && items.length === 0) {
+  // ✅ FIX: Empty state usa dataLength
+  if (!loading && dataLength === 0) {
     return (
       <div className={styles.container}>
         <header className={styles.header}>
@@ -273,50 +317,98 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       </header>
 
       <div ref={gridRef} className={styles.grid} style={{ height: '100%' }}>
-        {items?.map((item, idx) => (
-          <button
-            key={item.id}
-            className={styles.card}
-            onClick={() => onSelectItem(item)}
-            data-index={idx}
-            onFocus={() => setFocusedIndex(idx)}
-            onMouseEnter={() => setFocusedIndex(idx)}
-            tabIndex={0}
-          >
-            {item.logo ? (
-              <img
-                src={item.logo}
-                alt={getDisplayName(item)}
-                className={styles.cardPoster}
-                loading="lazy"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                  (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
-                }}
-              />
-            ) : null}
-
-            <div
-              className={styles.cardPlaceholder}
-              style={item.logo ? { display: 'none' } : undefined}
+        {/* ✅ FIX: Renderiza séries OU items dependendo do tipo */}
+        {isSeries ? (
+          // Renderiza cards de SÉRIES (agrupadas com episódios/temporadas)
+          seriesData?.map((series, idx) => (
+            <button
+              key={series.id}
+              className={styles.card}
+              onClick={() => handleSeriesClick(series)}
+              data-index={idx}
+              onFocus={() => setFocusedIndex(idx)}
+              onMouseEnter={() => setFocusedIndex(idx)}
+              tabIndex={0}
             >
-              {item.mediaKind === 'live' ? 'TV' : item.name.charAt(0).toUpperCase()}
-            </div>
+              {series.logo ? (
+                <img
+                  src={series.logo}
+                  alt={series.name}
+                  className={styles.cardPoster}
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                    (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
+                  }}
+                />
+              ) : null}
 
-            <div className={styles.cardOverlay}>
-              <div className={styles.cardTitle}>{getDisplayName(item)}</div>
-              <div className={styles.cardMeta}>
-                {item.year && <span className={styles.cardYear}>{item.year}</span>}
-                {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
-                {item.season && item.episode && (
-                  <span className={styles.cardYear}>
-                    S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
-                  </span>
-                )}
+              <div
+                className={styles.cardPlaceholder}
+                style={series.logo ? { display: 'none' } : undefined}
+              >
+                <MdTv size={32} />
               </div>
-            </div>
-          </button>
-        ))}
+
+              <div className={styles.cardOverlay}>
+                <div className={styles.cardTitle}>{series.name}</div>
+                <div className={styles.cardMeta}>
+                  {series.year && <span className={styles.cardYear}>{series.year}</span>}
+                  {series.quality && <span className={styles.cardQuality}>{series.quality}</span>}
+                  <span className={styles.cardYear}>
+                    {series.totalSeasons} temp · {series.totalEpisodes} ep
+                  </span>
+                </div>
+              </div>
+            </button>
+          ))
+        ) : (
+          // Renderiza cards de ITEMS (filmes/live)
+          items?.map((item, idx) => (
+            <button
+              key={item.id}
+              className={styles.card}
+              onClick={() => onSelectItem(item)}
+              data-index={idx}
+              onFocus={() => setFocusedIndex(idx)}
+              onMouseEnter={() => setFocusedIndex(idx)}
+              tabIndex={0}
+            >
+              {item.logo ? (
+                <img
+                  src={item.logo}
+                  alt={getDisplayName(item)}
+                  className={styles.cardPoster}
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                    (e.target as HTMLImageElement).nextElementSibling?.classList.remove(styles.hidden);
+                  }}
+                />
+              ) : null}
+
+              <div
+                className={styles.cardPlaceholder}
+                style={item.logo ? { display: 'none' } : undefined}
+              >
+                {item.mediaKind === 'live' ? 'TV' : item.name.charAt(0).toUpperCase()}
+              </div>
+
+              <div className={styles.cardOverlay}>
+                <div className={styles.cardTitle}>{getDisplayName(item)}</div>
+                <div className={styles.cardMeta}>
+                  {item.year && <span className={styles.cardYear}>{item.year}</span>}
+                  {item.quality && <span className={styles.cardQuality}>{item.quality}</span>}
+                  {item.season && item.episode && (
+                    <span className={styles.cardYear}>
+                      S{item.season.toString().padStart(2, '0')}E{item.episode.toString().padStart(2, '0')}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </button>
+          ))
+        )}
       </div>
 
       {loadingMore && (

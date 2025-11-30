@@ -76,6 +76,13 @@ export interface ParserProgress {
   total: number;
   percentage: number;
   message: string;
+  // ✅ Stats parciais para early navigation
+  stats?: {
+    totalItems?: number;
+    liveCount?: number;
+    movieCount?: number;
+    seriesCount?: number;
+  };
 }
 
 // Worker messages
