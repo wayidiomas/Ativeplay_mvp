@@ -82,6 +82,8 @@ export async function* streamParseM3U(
 ): AsyncGenerator<M3UParsedItem, void, unknown> {
   const fetchUrl = getProxiedUrl(url);
 
+  console.log('[StreamParser] Iniciando download:', fetchUrl);
+
   const response = await fetch(fetchUrl, {
     headers: {
       'User-Agent': 'AtivePlay/1.0',
@@ -96,6 +98,13 @@ export async function* streamParseM3U(
     throw new Error('Response body não disponível');
   }
 
+  // ✅ Log do tamanho do arquivo se disponível
+  const contentLength = response.headers.get('content-length');
+  if (contentLength) {
+    const sizeMB = (parseInt(contentLength) / 1024 / 1024).toFixed(2);
+    console.log(`[StreamParser] Tamanho do arquivo: ${sizeMB} MB`);
+  }
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
 
@@ -103,13 +112,28 @@ export async function* streamParseM3U(
   let currentExtinf: ExtinfData | null = null;
   let itemIndex = 0;
   let foundHeader = false;
+  let bytesRead = 0;
+  let lastLogTime = Date.now();
 
   try {
     while (true) {
       const { done, value } = await reader.read();
 
       if (done) {
+        console.log(`[StreamParser] ✓ Stream completo! Total: ${itemIndex} items, ${(bytesRead / 1024 / 1024).toFixed(2)} MB lidos`);
         break;
+      }
+
+      // ✅ Track bytes lidos
+      bytesRead += value.byteLength;
+
+      // ✅ Log progress a cada 5MB
+      if (bytesRead % (5 * 1024 * 1024) < value.byteLength) {
+        const now = Date.now();
+        const elapsed = (now - lastLogTime) / 1000;
+        const speed = elapsed > 0 ? ((5 * 1024 * 1024) / elapsed / 1024 / 1024).toFixed(2) : '0';
+        console.log(`[StreamParser] Progress: ${itemIndex} items, ${(bytesRead / 1024 / 1024).toFixed(2)} MB (${speed} MB/s)`);
+        lastLogTime = now;
       }
 
       // Decode chunk e adiciona ao buffer
@@ -203,6 +227,17 @@ export async function* streamParseM3U(
 
     if (!foundHeader) {
       throw new Error('Formato de playlist inválido (falta #EXTM3U)');
+    }
+
+    // ✅ Verifica se baixamos tudo que era esperado
+    if (contentLength) {
+      const expectedBytes = parseInt(contentLength);
+      const percentComplete = ((bytesRead / expectedBytes) * 100).toFixed(2);
+      if (bytesRead < expectedBytes) {
+        console.warn(`[StreamParser] ⚠️ AVISO: Stream incompleto! Lido ${bytesRead} de ${expectedBytes} bytes (${percentComplete}%)`);
+      } else {
+        console.log(`[StreamParser] ✓ Download completo: 100% (${itemIndex} items)`);
+      }
     }
   } finally {
     reader.releaseLock();
