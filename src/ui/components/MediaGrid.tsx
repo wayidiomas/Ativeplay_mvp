@@ -6,7 +6,6 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { db, type M3UItem, type M3UGroup } from '@core/db/schema';
 import { usePlaylistStore } from '@store/playlistStore';
 import { SkeletonCard } from '../shared';
@@ -95,7 +94,6 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
 
   // Calculate columns per row dynamically
   const [columnsPerRow, setColumnsPerRow] = useState(5);
-  const [cardHeight, setCardHeight] = useState(MIN_CARD_WIDTH * ASPECT_RATIO);
 
   useEffect(() => {
     const updateLayout = () => {
@@ -104,11 +102,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
       // Calculate how many cards fit with min width + gap
       const cols = Math.floor((containerWidth + CARD_GAP) / (MIN_CARD_WIDTH + CARD_GAP)) || 1;
 
-      // Calculate actual card width to determine height
-      const actualCardWidth = (containerWidth - (cols - 1) * CARD_GAP) / cols;
-
       setColumnsPerRow(cols);
-      setCardHeight(actualCardWidth * ASPECT_RATIO);
     };
 
     updateLayout();
