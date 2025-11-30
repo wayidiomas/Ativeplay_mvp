@@ -279,6 +279,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
                   items: ungroupedItems,
                   series: seriesSlice,
                   isSeries: true,
+                  lastSeriesId: seriesSlice[seriesSlice.length - 1]?.id, // ✅ BUGFIX: keyset pagination
+                  lastItemId: ungroupedItems[ungroupedItems.length - 1]?.id, // ✅ BUGFIX: keyset pagination
                   seriesLoadedCount: seriesSlice.length,
                   itemsLoadedCount: ungroupedItems.length,
                   hasMoreSeries: seriesInGroup.length < totalSeriesCount,
@@ -306,6 +308,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             ? {
                 group,
                 items,
+                lastItemId: items[items.length - 1]?.id, // ✅ BUGFIX: keyset pagination
                 itemsLoadedCount: items.length,
                 hasMoreItems: items.length < totalItemsCount,
               }
@@ -618,8 +621,8 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
               .toArray()
           : db.items
               .where({ playlistId: activePlaylist.id, group: row.group.name, mediaKind })
-              .limit(ITEMS_LOAD_MORE)
-              .toArray())
+              .sortBy('id')
+              .then(arr => arr.slice(row.items.length, row.items.length + ITEMS_LOAD_MORE))) // ✅ BUGFIX: usa slice ao invés de limit
       : [];
 
     if (moreItems.length === 0) {
