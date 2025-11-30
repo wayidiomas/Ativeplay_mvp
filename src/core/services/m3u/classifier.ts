@@ -17,20 +17,18 @@ export interface SeriesInfo {
 // Otimizado: Regex compiladas uma vez (reutilizadas)
 const GROUP_PATTERNS = {
   live: [
-    /\b(canais?|channels?|tv|live|24\/7|sports?|news|ao vivo|abertos?)\b/i,
+    /\b(canais?|channels?|tv|live|news|ao vivo|abertos?)\b/i,
     /\b(globo|sbt|record|band|redetv|cultura)\b/i, // Canais BR comuns
+    /24HRS?/i, /24\/7/i, // loops 24h
     /SERIES\s*24H/i, // "⭐ SERIES 24H" = canais 24H, não séries!
     /CANAIS\s*\|/i, // "⭐ Canais | Filmes e Séries" = canais ao vivo
-    /futebol/i, // "⚽ Futebol | Amazon Prime" = canais de futebol
-    /esporte/i, // "⚽ Esporte | Lutas", "⚽ Esporte | NBA" = canais de esporte
-    /M[UÚ]SICAS?\s*24H/i, // "⭐ MÚSICAS 24H" = canais de música 24H
-    /RUNTIME\s*24H/i, // "⭐ RUNTIME 24H" = canais temáticos 24H
-    /24HRS/i, // "CINE FILMES HD 24HRS" → live
-    /24H\b/i, // marca loop 24h
+    /futebol/i, /esporte/i, /sports?/i, // esportes
+    /M[UÚ]SICAS?\s*24H/i, // música 24h
+    /RUNTIME\s*24H/i, // runtime 24h
     /CINE\s+.*24HRS/i, // CINE … 24HRS
-    /\bJogos do Dia\b/i, // "⚽ Jogos do Dia" - eventos ao vivo
-    /\b(Esportes?|Sports?)\s*PPV/i, // Esportes PPV
-    /\b(SPORTV|ESPN|FOX\s*SPORTS|COMBATE)\b/i, // Canais de esporte específicos
+    /\bJogos do Dia\b/i, // eventos ao vivo
+    /\b(Esportes?|Sports?)\s*PPV/i, // PPV
+    /\b(SPORTV|ESPN|FOX\s*SPORTS|COMBATE)\b/i, // esportes específicos
     /\bPPV\b/i, // Pay-per-view
     /\bDOCUMENT[ÁA]RIOS?\b/i, // Canais de documentários
     /\bVARIEDADES\b/i, // Canais de variedades
@@ -49,6 +47,7 @@ const GROUP_PATTERNS = {
     /\bCOLET[AÂ]NEA\b/i, // Coletâneas (franquias de filmes)
   ],
   series: [
+    /▶️\s*s[eé]ries?/i, // Prefixo com emoji usado no m3u analisado
     /\b(series?|shows?|novelas?|animes?|doramas?|k-?dramas?)\b/i,
     // REMOVIDO: /\b(netflix|hbo|amazon|disney|apple|paramount|star)\b/i
     // Motivo: Plataformas têm FILMES e SÉRIES, não devem decidir sozinhas
@@ -189,13 +188,25 @@ export class ContentClassifier {
 
     const lowerGroup = group.toLowerCase();
 
-    // Live/TV primeiro (mais específico: SERIES 24H, CANAIS, FUTEBOL)
-    // IMPORTANTE: "SERIES 24H" tem "series" no nome mas é LIVE!
+    const hasSeries = /s[eé]ries|series|novelas|animes|doramas/i.test(lowerGroup);
+    const hasMovies = /filmes|movies|cinema|lancamentos|lançamentos|vod/i.test(lowerGroup);
+    const has24h = /24h|24\/7/i.test(lowerGroup);
+
+    // Se é série + 24h => live (loop 24h)
+    if (hasSeries && has24h) return 'live';
+
+    // Series primeiro (evita 'Apple TV' cair em live por causa do 'tv')
+    if (hasSeries) return 'series';
+
+    // Filmes antes de live (evita 'Filmes | Apple TV' cair em live)
+    if (hasMovies) return 'movie';
+
+    // Live/TV (restante)
     for (const pattern of GROUP_PATTERNS.live) {
       if (pattern.test(lowerGroup)) return 'live';
     }
 
-    // Series (depois de live para evitar falsos positivos)
+    // Series (fallback regex)
     for (const pattern of GROUP_PATTERNS.series) {
       if (pattern.test(lowerGroup)) return 'series';
     }
@@ -232,7 +243,7 @@ export class ContentClassifier {
     // Filmes - LÓGICA FLEXÍVEL com group-title
     // Se group-title indica FILME e NÃO tem S##E## → É filme!
     // Resolve: "Pasárgada", "Cabrito", "Levante" sem ano/idioma
-    const hasMovieGroup = group && /filme|movie|cinema|lancamento|f\s*•/i.test(group);
+    const hasMovieGroup = group && /filme|movies?|cinema|lancamento|lançamento|f\s*•|▶️\s*filmes?/i.test(group);
     const hasSeriesPattern = /S\d{1,2}E\d{1,3}/i.test(name);
 
     if (hasMovieGroup && !hasSeriesPattern) {
