@@ -1,9 +1,13 @@
 /**
  * Batch Processor
  * Processa itens do streaming parser em lotes, mantendo UI responsiva
+ * FASE 1: Adiciona series grouping híbrido (hash-based durante streaming)
  */
 
 import { db, type M3UItem } from '@core/db/schema';
+import { ContentClassifier } from './classifier';
+import { normalizeSeriesName, createSeriesKey } from './utils';
+import { getBatchConfig } from './deviceDetection'; // ✅ FASE 2: Device-adaptive config
 import type {
   M3UParsedItem,
   M3UGroup,
@@ -15,8 +19,20 @@ import type {
 
 export type ProgressCallback = (progress: ParserProgress) => void;
 
-const BATCH_SIZE = 100; // Processa 100 itens por vez
 const YIELD_INTERVAL = 0; // Yield para UI (setTimeout 0ms)
+
+// ✅ FASE 2: REMOVIDO - Agora usa config adaptativo
+// const BATCH_SIZE = 100;
+// const GC_INTERVAL = 10;
+
+// Interface para tracking de séries durante streaming
+export interface SeriesGroup {
+  seriesKey: string;      // Hash normalizado (ID único)
+  seriesName: string;     // Nome original da série
+  itemIds: string[];      // IDs dos episódios
+  seasons: Set<number>;   // Temporadas únicas
+  episodeCount: number;   // Total de episódios
+}
 
 /**
  * Gera ID único para um grupo
@@ -28,18 +44,25 @@ function generateGroupId(name: string, mediaKind: MediaKind): string {
 
 /**
  * Processa itens do stream em lotes e insere no banco
+ * FASE 1: Adiciona series grouping incremental (hash-based)
  *
  * @param generator AsyncGenerator que produz itens parseados
  * @param playlistId ID da playlist
  * @param onProgress Callback de progresso
- * @returns Playlist completa com stats e grupos
+ * @returns Playlist completa com stats, grupos e seriesGroups
  */
 export async function processBatches(
   generator: AsyncGenerator<M3UParsedItem>,
   playlistId: string,
   onProgress?: ProgressCallback
-): Promise<Omit<M3UPlaylist, 'url'>> {
+): Promise<Omit<M3UPlaylist, 'url'> & { seriesGroups: SeriesGroup[] }> {
+  // ✅ FASE 2: Config adaptativo baseado no device
+  const config = getBatchConfig();
+  const BATCH_SIZE = config.itemBatchSize;
+  const GC_INTERVAL = config.gcInterval;
+
   const groupsMap = new Map<string, M3UGroup>();
+  const seriesGroupsMap = new Map<string, SeriesGroup>(); // ✅ FASE 1: Series tracking
   const stats: PlaylistStats = {
     totalItems: 0,
     liveCount: 0,
@@ -51,6 +74,7 @@ export async function processBatches(
 
   let batch: M3UParsedItem[] = [];
   let totalProcessed = 0;
+  let batchCount = 0; // ✅ FASE 1: Para GC interval
 
   try {
     for await (const item of generator) {
@@ -89,25 +113,69 @@ export async function processBatches(
         });
       }
 
+      // ✅ NOVO: Series grouping incremental (hash-based)
+      if (item.mediaKind === 'series' && item.parsedTitle?.season) {
+        const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
+
+        if (seriesInfo) {
+          // Normaliza nome (remove tags, anos, qualidade, etc)
+          const normalized = normalizeSeriesName(seriesInfo.seriesName);
+          const seriesKey = createSeriesKey(normalized);
+
+          if (!seriesGroupsMap.has(seriesKey)) {
+            seriesGroupsMap.set(seriesKey, {
+              seriesKey,
+              seriesName: seriesInfo.seriesName,
+              itemIds: [],
+              seasons: new Set(),
+              episodeCount: 0,
+            });
+          }
+
+          const group = seriesGroupsMap.get(seriesKey)!;
+          group.itemIds.push(item.id);
+          group.seasons.add(seriesInfo.season);
+          group.episodeCount++;
+        }
+      }
+
       // Processa batch quando atingir tamanho limite
       if (batch.length >= BATCH_SIZE) {
         // Prepara itens para inserção no DB
-        const dbItems: M3UItem[] = batch.map((item) => ({
-          id: `${playlistId}_${item.id}`,
-          playlistId,
-          name: item.name,
-          url: item.url,
-          logo: item.logo,
-          group: item.group,
-          mediaKind: item.mediaKind,
-          title: item.parsedTitle.title,
-          year: item.parsedTitle.year,
-          season: item.parsedTitle.season,
-          episode: item.parsedTitle.episode,
-          quality: item.parsedTitle.quality,
-          epgId: item.epgId,
-          createdAt: Date.now(),
-        }));
+        const dbItems: M3UItem[] = batch.map((item) => {
+          // ✅ NOVO: Extrai seriesId para items de séries
+          const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
+          let seriesId: string | undefined;
+          let seasonNumber: number | undefined;
+          let episodeNumber: number | undefined;
+
+          if (seriesInfo && item.mediaKind === 'series') {
+            const normalized = normalizeSeriesName(seriesInfo.seriesName);
+            seriesId = createSeriesKey(normalized);
+            seasonNumber = seriesInfo.season;
+            episodeNumber = seriesInfo.episode;
+          }
+
+          return {
+            id: `${playlistId}_${item.id}`,
+            playlistId,
+            name: item.name,
+            url: item.url,
+            logo: item.logo,
+            group: item.group,
+            mediaKind: item.mediaKind,
+            title: item.parsedTitle.title,
+            year: item.parsedTitle.year,
+            season: item.parsedTitle.season,
+            episode: item.parsedTitle.episode,
+            quality: item.parsedTitle.quality,
+            epgId: item.epgId,
+            seriesId,        // ✅ NOVO
+            seasonNumber,    // ✅ NOVO
+            episodeNumber,   // ✅ NOVO
+            createdAt: Date.now(),
+          };
+        });
 
         // Insere no DB com fallback triplo
         try {
@@ -143,6 +211,7 @@ export async function processBatches(
         }
 
         totalProcessed += batch.length;
+        batchCount++; // ✅ NOVO: Incrementa contador de batches
 
         // Report progress (não sabemos total ainda no streaming)
         onProgress?.({
@@ -156,29 +225,57 @@ export async function processBatches(
         // Limpa batch
         batch = [];
 
-        // Yield para UI atualizar (evita bloquear thread)
-        await new Promise((resolve) => setTimeout(resolve, YIELD_INTERVAL));
+        // ✅ NOVO: Force GC a cada N batches para liberar memória
+        if (batchCount % GC_INTERVAL === 0) {
+          if (globalThis.gc) {
+            globalThis.gc();
+            console.log(`[BatchProcessor] GC forçado após ${batchCount} batches`);
+          }
+          // Yield extra para dar tempo ao GC
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        } else {
+          // Yield normal para UI atualizar (evita bloquear thread)
+          await new Promise((resolve) => setTimeout(resolve, YIELD_INTERVAL));
+        }
       }
     }
 
     // Processa últimos itens do batch (se houver)
     if (batch.length > 0) {
-      const dbItems: M3UItem[] = batch.map((item) => ({
-        id: `${playlistId}_${item.id}`,
-        playlistId,
-        name: item.name,
-        url: item.url,
-        logo: item.logo,
-        group: item.group,
-        mediaKind: item.mediaKind,
-        title: item.parsedTitle.title,
-        year: item.parsedTitle.year,
-        season: item.parsedTitle.season,
-        episode: item.parsedTitle.episode,
-        quality: item.parsedTitle.quality,
-        epgId: item.epgId,
-        createdAt: Date.now(),
-      }));
+      const dbItems: M3UItem[] = batch.map((item) => {
+        // ✅ NOVO: Extrai seriesId para items de séries (mesmo código do batch principal)
+        const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
+        let seriesId: string | undefined;
+        let seasonNumber: number | undefined;
+        let episodeNumber: number | undefined;
+
+        if (seriesInfo && item.mediaKind === 'series') {
+          const normalized = normalizeSeriesName(seriesInfo.seriesName);
+          seriesId = createSeriesKey(normalized);
+          seasonNumber = seriesInfo.season;
+          episodeNumber = seriesInfo.episode;
+        }
+
+        return {
+          id: `${playlistId}_${item.id}`,
+          playlistId,
+          name: item.name,
+          url: item.url,
+          logo: item.logo,
+          group: item.group,
+          mediaKind: item.mediaKind,
+          title: item.parsedTitle.title,
+          year: item.parsedTitle.year,
+          season: item.parsedTitle.season,
+          episode: item.parsedTitle.episode,
+          quality: item.parsedTitle.quality,
+          epgId: item.epgId,
+          seriesId,        // ✅ NOVO
+          seasonNumber,    // ✅ NOVO
+          episodeNumber,   // ✅ NOVO
+          createdAt: Date.now(),
+        };
+      });
 
       try {
         await db.items.bulkAdd(dbItems);
@@ -252,6 +349,12 @@ export async function processBatches(
       message: `Concluído! ${stats.totalItems} itens processados.`,
     });
 
+    // ✅ NOVO: Converte Set para array no seriesGroups
+    const seriesGroupsArray: SeriesGroup[] = Array.from(seriesGroupsMap.values()).map(group => ({
+      ...group,
+      seasons: group.seasons, // Mantém como Set por enquanto (será usado no fuzzy merge)
+    }));
+
     // DEBUG: Log stats
     console.log('[BatchProcessor] ===== STATS FINAIS =====');
     console.log(`[BatchProcessor] Total Items: ${stats.totalItems}`);
@@ -260,11 +363,13 @@ export async function processBatches(
     console.log(`[BatchProcessor] Live: ${stats.liveCount}`);
     console.log(`[BatchProcessor] Unknown: ${stats.unknownCount}`);
     console.log(`[BatchProcessor] Groups: ${stats.groupCount}`);
+    console.log(`[BatchProcessor] Series Groups: ${seriesGroupsArray.length}`); // ✅ NOVO
 
     return {
       items: [], // Items já foram inseridos no DB - não retornamos para economizar memória
       groups,
       stats,
+      seriesGroups: seriesGroupsArray, // ✅ NOVO: Retorna series groups para fuzzy merge
     };
   } catch (error) {
     onProgress?.({

@@ -1,74 +1,63 @@
 /**
- * Series Grouper
- * Agrupa episódios de séries usando algoritmo de similaridade de nomes
+ * Series Grouper - FASE 1 Refactored
+ * Merge fuzzy de singletons em grupos multi-episódio
+ * Recebe series groups já criados pelo hash-based grouping do batchProcessor
  */
 
-import type { M3UItem, Series } from '@core/db';
-import { ContentClassifier, type SeriesInfo } from './classifier';
+import { db, type Series } from '@core/db';
+import { normalizeSeriesName } from './utils';
+import type { SeriesGroup } from './batchProcessor';
 
 const SIMILARITY_THRESHOLD = 0.85; // 85% de similaridade = mesma série
+const MAX_COMPARISONS_PER_SINGLETON = 50; // Limita comparações para performance
 
 /**
- * Calcula a distância de Levenshtein entre duas strings
- * Retorna o número de operações (inserção, deleção, substituição) necessárias
+ * Calcula a distância de Levenshtein entre duas strings usando algoritmo otimizado (2-row)
+ * Baseado na implementação do server/worker.js (linhas 409-439)
+ *
+ * Complexity: O(min(len1, len2)) em espaço (2 linhas apenas)
+ * Complexity: O(len1 * len2) em tempo
  */
 function levenshteinDistance(s1: string, s2: string): number {
   const len1 = s1.length;
   const len2 = s2.length;
-  const matrix: number[][] = [];
 
-  // Inicializa primeira coluna (0 a len1)
-  for (let i = 0; i <= len1; i++) {
-    matrix[i] = [i];
-  }
+  // Edge cases
+  if (len1 === 0) return len2;
+  if (len2 === 0) return len1;
 
-  // Inicializa primeira linha (0 a len2)
-  for (let j = 0; j <= len2; j++) {
-    matrix[0][j] = j;
-  }
+  // Optimization: use 2 rows instead of full matrix
+  let prevRow = Array.from({ length: len2 + 1 }, (_, i) => i);
+  let currRow = Array(len2 + 1).fill(0);
 
-  // Preenche a matriz com custos de operações
   for (let i = 1; i <= len1; i++) {
+    currRow[0] = i;
+
     for (let j = 1; j <= len2; j++) {
       const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,      // deletion
-        matrix[i][j - 1] + 1,      // insertion
-        matrix[i - 1][j - 1] + cost // substitution
+      currRow[j] = Math.min(
+        prevRow[j] + 1,         // deletion
+        currRow[j - 1] + 1,     // insertion
+        prevRow[j - 1] + cost   // substitution
       );
     }
+
+    // Swap rows
+    [prevRow, currRow] = [currRow, prevRow];
   }
 
-  return matrix[len1][len2];
+  return prevRow[len2];
 }
 
 /**
- * Normaliza nome para comparação
- * Remove pontuação e sufixos de idioma, preservando a estrutura do nome
- * IMPORTANTE: Remove pt/br apenas como sufixo para não quebrar nomes como "Restart", "Brother"
- */
-function normalize(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\s+(pt-br|pt|br)$/i, '')  // Remove APENAS sufixos de idioma (final da string)
-    .replace(/[^a-z0-9\s]/g, '')        // Remove pontuação (preserva espaços)
-    .replace(/\s+/g, ' ')               // Normaliza múltiplos espaços
-    .trim();
-}
-
-/**
- * Calcula similaridade entre dois nomes (0-1)
+ * Calcula similaridade entre dois nomes normalizados (0-1)
  * 1 = idênticos, 0 = completamente diferentes
  */
 function calculateSimilarity(name1: string, name2: string): number {
-  const n1 = normalize(name1);
-  const n2 = normalize(name2);
+  if (name1 === name2) return 1.0;
 
-  if (n1 === n2) return 1.0;
-
-  // Levenshtein distance normalizado
-  const distance = levenshteinDistance(n1, n2);
-  const maxLen = Math.max(n1.length, n2.length);
+  const distance = levenshteinDistance(name1, name2);
+  const maxLen = Math.max(name1.length, name2.length);
 
   if (maxLen === 0) return 0;
 
@@ -76,192 +65,209 @@ function calculateSimilarity(name1: string, name2: string): number {
 }
 
 /**
- * Extrai "base name" removendo S01E01, ano, qualidade, etc
- */
-function extractBaseName(name: string): string {
-  return name
-    .replace(/\s+S\d{1,2}E\d{1,2}.*/i, '')  // Remove S01E01...
-    .replace(/\s+\d{1,2}x\d{1,2}.*/i, '')   // Remove 1x01...
-    .replace(/\s+T\d{1,2}E\d{1,2}.*/i, '')  // Remove T01E01...
-    .replace(/\(\d{4}\)/g, '')              // Remove (2024)
-    .replace(/\[\d{4}\]/g, '')              // Remove [2024]
-    .replace(/\b(1080p|720p|4k|hd|fhd|uhd)\b/gi, '')
-    .trim();
-}
-
-/**
- * Agrupa episódios por similaridade de nome
- * Retorna Map onde chave = nome base da série, valor = array de episódios
- */
-export function groupEpisodesBySimilarity(items: M3UItem[]): Map<string, M3UItem[]> {
-  const groups = new Map<string, M3UItem[]>();
-
-  for (const item of items) {
-    const baseName = extractBaseName(item.name);
-    let foundGroup = false;
-
-    // Tenta encontrar grupo similar existente
-    for (const [groupName, episodes] of groups.entries()) {
-      const similarity = calculateSimilarity(baseName, groupName);
-
-      if (similarity >= SIMILARITY_THRESHOLD) {
-        episodes.push(item);
-        foundGroup = true;
-        break;
-      }
-    }
-
-    // Se não encontrou grupo similar, cria novo
-    if (!foundGroup) {
-      groups.set(baseName, [item]);
-    }
-  }
-
-  return groups;
-}
-
-/**
- * Cria um slug para ID da série baseado no nome
- */
-function createSeriesSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^\w\s]/g, '')
-    .replace(/\s+/g, '-')
-    .substring(0, 50); // Limita tamanho
-}
-
-/**
- * Agrupa itens de séries e cria registros de Series
- * @param items - Itens já filtrados como mediaKind='series'
+ * Merge fuzzy de series groups (apenas singletons)
+ * FASE 1: Implementação do algoritmo híbrido
+ *
+ * @param seriesGroups - Groups criados pelo hash-based grouping do batchProcessor
  * @param playlistId - ID da playlist
- * @returns Objeto com séries criadas e mapeamento item->série
+ * @param similarityThreshold - Threshold de similaridade (default: 0.85)
+ * @returns Array de Series records para salvar no DB
  */
-export function groupSeriesEpisodes(
-  items: M3UItem[],
-  playlistId: string
-): {
-  series: Series[];
-  itemToSeriesMap: Map<string, { seriesId: string; seasonNumber: number; episodeNumber: number }>;
-} {
-  const series: Series[] = [];
-  const itemToSeriesMap = new Map<string, { seriesId: string; seasonNumber: number; episodeNumber: number }>();
+export async function mergeSeriesGroups(
+  seriesGroups: SeriesGroup[],
+  playlistId: string,
+  similarityThreshold: number = SIMILARITY_THRESHOLD
+): Promise<Series[]> {
+  console.log(`[Series Merge] Iniciando merge de ${seriesGroups.length} series groups...`);
 
-  // 1. Separa itens com padrão claro (SxxExx) dos sem padrão
-  const itemsWithPattern: Array<{ item: M3UItem; info: SeriesInfo }> = [];
-  const itemsWithoutPattern: M3UItem[] = [];
+  // Separa singletons (1 episódio) de multi-episode (2+)
+  const singletons = seriesGroups.filter(g => g.episodeCount === 1);
+  const multiEpisode = seriesGroups.filter(g => g.episodeCount > 1);
 
-  for (const item of items) {
-    const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
-    if (seriesInfo) {
-      itemsWithPattern.push({ item, info: seriesInfo });
-    } else {
-      itemsWithoutPattern.push(item);
+  console.log(`[Series Merge] ${singletons.length} singletons, ${multiEpisode.length} multi-episode groups`);
+
+  // Map para tracking de merges: singletonKey -> targetKey
+  const mergeMap = new Map<string, string>();
+
+  // ✅ OTIMIZAÇÃO: Indexa multi-episode groups por primeira palavra
+  const indexByFirstWord = new Map<string, string[]>();
+  for (const group of multiEpisode) {
+    const firstWord = group.seriesName.split(' ')[0].toLowerCase();
+    if (!indexByFirstWord.has(firstWord)) {
+      indexByFirstWord.set(firstWord, []);
     }
+    indexByFirstWord.get(firstWord)!.push(group.seriesKey);
   }
 
-  // 2. Agrupa itens COM padrão por nome da série
-  const patternGroups = new Map<string, Array<{ item: M3UItem; info: SeriesInfo }>>();
+  console.log(`[Series Merge] Index criado com ${indexByFirstWord.size} palavras únicas`);
 
-  for (const { item, info } of itemsWithPattern) {
-    const seriesName = info.seriesName;
+  // ✅ FUZZY MATCH: Apenas singletons vs multi-episode groups
+  let comparisonCount = 0;
+  let mergeCount = 0;
 
-    // Busca grupo similar
-    let foundGroup = false;
-    for (const [groupName, episodes] of patternGroups.entries()) {
-      const similarity = calculateSimilarity(seriesName, groupName);
+  for (const singleton of singletons) {
+    const firstWord = singleton.seriesName.split(' ')[0].toLowerCase();
+    const candidates = indexByFirstWord.get(firstWord) || [];
 
-      if (similarity >= SIMILARITY_THRESHOLD) {
-        episodes.push({ item, info });
-        foundGroup = true;
-        break;
+    if (candidates.length === 0) {
+      continue; // Sem candidatos com mesma primeira palavra
+    }
+
+    let bestMatch: { key: string; similarity: number } | null = null;
+
+    // Limita comparações para performance
+    const candidatesToCheck = candidates.slice(0, MAX_COMPARISONS_PER_SINGLETON);
+
+    for (const candidateKey of candidatesToCheck) {
+      const candidate = multiEpisode.find(g => g.seriesKey === candidateKey);
+      if (!candidate) continue;
+
+      // Normaliza nomes antes de comparar
+      const normalizedSingleton = normalizeSeriesName(singleton.seriesName);
+      const normalizedCandidate = normalizeSeriesName(candidate.seriesName);
+
+      const similarity = calculateSimilarity(normalizedSingleton, normalizedCandidate);
+      comparisonCount++;
+
+      if (similarity >= similarityThreshold) {
+        if (!bestMatch || similarity > bestMatch.similarity) {
+          bestMatch = { key: candidateKey, similarity };
+        }
       }
     }
 
-    if (!foundGroup) {
-      patternGroups.set(seriesName, [{ item, info }]);
+    if (bestMatch) {
+      mergeMap.set(singleton.seriesKey, bestMatch.key);
+      mergeCount++;
+
+      const target = multiEpisode.find(g => g.seriesKey === bestMatch!.key)!;
+      console.log(
+        `[Series Merge] "${singleton.seriesName}" → "${target.seriesName}" (${(bestMatch.similarity * 100).toFixed(1)}%)`
+      );
     }
   }
 
-  // 3. Agrupa itens SEM padrão por similaridade de nome
-  const noPatterGroups = groupEpisodesBySimilarity(itemsWithoutPattern);
+  console.log(`[Series Merge] ${mergeCount} singletons merged (${comparisonCount} comparisons)`);
 
-  // 4. Cria registros de Series para grupos COM padrão
-  for (const [seriesName, episodes] of patternGroups.entries()) {
-    // Pega primeiro episódio como referência
-    const firstEpisode = episodes[0];
-    const slug = createSeriesSlug(seriesName);
-    const seriesId = `series_${playlistId}_${slug}`;
+  // ✅ APLICA MERGES: Atualiza metadata dos grupos multi-episódio
+  for (const [singletonKey, targetKey] of mergeMap.entries()) {
+    const singleton = singletons.find(g => g.seriesKey === singletonKey)!;
+    const target = multiEpisode.find(g => g.seriesKey === targetKey)!;
 
-    // Calcula estatísticas
-    const seasons = new Set(episodes.map((e) => e.info.season));
-    const episodeNumbers = episodes.map((e) => e.info.episode);
-    const seasonNumbers = episodes.map((e) => e.info.season);
-
-    const seriesRecord: Series = {
-      id: seriesId,
-      playlistId,
-      name: seriesName,
-      logo: firstEpisode.item.logo || '',
-      group: firstEpisode.item.group,
-      totalEpisodes: episodes.length,
-      totalSeasons: seasons.size,
-      firstEpisode: Math.min(...episodeNumbers),
-      lastEpisode: Math.max(...episodeNumbers),
-      firstSeason: Math.min(...seasonNumbers),
-      lastSeason: Math.max(...seasonNumbers),
-      createdAt: Date.now(),
-    };
-
-    series.push(seriesRecord);
-
-    // Mapeia items para série
-    for (const { item, info } of episodes) {
-      itemToSeriesMap.set(item.id, {
-        seriesId,
-        seasonNumber: info.season,
-        episodeNumber: info.episode,
-      });
-    }
+    // Merge metadata
+    target.itemIds.push(...singleton.itemIds);
+    target.episodeCount += singleton.episodeCount;
+    target.seasons = new Set([...target.seasons, ...singleton.seasons]);
   }
 
-  // 5. Cria registros de Series para grupos SEM padrão (se tiver múltiplos episódios)
-  for (const [baseName, episodes] of noPatterGroups.entries()) {
-    // Só cria série se tiver 2+ episódios
-    if (episodes.length < 2) {
-      continue; // Deixa como item individual
-    }
+  // ✅ ATUALIZA ITEMS NO DB: Corrige seriesId dos items que foram merged
+  await updateItemsSeriesId(mergeMap, playlistId);
 
-    const firstEpisode = episodes[0];
-    const slug = createSeriesSlug(baseName);
-    const seriesId = `series_${playlistId}_${slug}`;
+  // ✅ CRIA SERIES RECORDS FINAIS
+  const finalSeries: Series[] = [];
 
-    const seriesRecord: Series = {
-      id: seriesId,
+  // Multi-episode groups (incluindo merged singletons)
+  for (const group of multiEpisode) {
+    // Busca primeiro item para pegar logo e group
+    const firstItemId = `${playlistId}_${group.itemIds[0]}`;
+    const firstItem = await db.items.get(firstItemId);
+
+    finalSeries.push({
+      id: `${playlistId}_${group.seriesKey}`,
       playlistId,
-      name: baseName,
-      logo: firstEpisode.logo || '',
-      group: firstEpisode.group,
-      totalEpisodes: episodes.length,
-      totalSeasons: 1, // Assume 1 temporada se não tiver padrão
-      firstEpisode: 1,
-      lastEpisode: episodes.length,
-      firstSeason: 1,
-      lastSeason: 1,
+      name: group.seriesName,
+      logo: firstItem?.logo || '',
+      group: firstItem?.group || '',
+      totalEpisodes: group.episodeCount,
+      totalSeasons: group.seasons.size,
+      firstSeason: Math.min(...group.seasons),
+      lastSeason: Math.max(...group.seasons),
+      firstEpisode: 1, // TODO: calcular min episode number
+      lastEpisode: group.episodeCount, // TODO: calcular max episode number
       createdAt: Date.now(),
-    };
-
-    series.push(seriesRecord);
-
-    // Mapeia items para série (usa índice como episódio)
-    episodes.forEach((item, index) => {
-      itemToSeriesMap.set(item.id, {
-        seriesId,
-        seasonNumber: 1,
-        episodeNumber: index + 1,
-      });
     });
   }
 
-  return { series, itemToSeriesMap };
+  // Singletons NÃO merged: também viram Series (para permitir expand futuro)
+  for (const singleton of singletons) {
+    if (mergeMap.has(singleton.seriesKey)) {
+      continue; // Já foi merged, skip
+    }
+
+    const firstItemId = `${playlistId}_${singleton.itemIds[0]}`;
+    const firstItem = await db.items.get(firstItemId);
+
+    finalSeries.push({
+      id: `${playlistId}_${singleton.seriesKey}`,
+      playlistId,
+      name: singleton.seriesName,
+      logo: firstItem?.logo || '',
+      group: firstItem?.group || '',
+      totalEpisodes: 1,
+      totalSeasons: 1,
+      firstSeason: 0,
+      lastSeason: 0,
+      firstEpisode: 1,
+      lastEpisode: 1,
+      createdAt: Date.now(),
+    });
+  }
+
+  console.log(`[Series Merge] ${finalSeries.length} séries finais criadas`);
+
+  return finalSeries;
+}
+
+/**
+ * Atualiza seriesId dos items que foram merged
+ * @param mergeMap - Map de oldKey -> newKey (singletons que foram merged)
+ * @param playlistId - ID da playlist
+ */
+async function updateItemsSeriesId(
+  mergeMap: Map<string, string>,
+  playlistId: string
+): Promise<void> {
+  if (mergeMap.size === 0) {
+    return; // Nenhum merge para aplicar
+  }
+
+  console.log(`[Series Merge] Atualizando ${mergeMap.size} items com novo seriesId...`);
+
+  // Busca todos os items que precisam ser atualizados
+  const oldKeys = Array.from(mergeMap.keys());
+  const itemsToUpdate = await db.items
+    .where('playlistId')
+    .equals(playlistId)
+    .and(item => oldKeys.includes(item.seriesId || ''))
+    .toArray();
+
+  console.log(`[Series Merge] ${itemsToUpdate.length} items encontrados para atualização`);
+
+  // Atualiza seriesId
+  const updated = itemsToUpdate.map(item => ({
+    ...item,
+    seriesId: mergeMap.get(item.seriesId || '') || item.seriesId,
+  }));
+
+  // Salva no DB
+  if (updated.length > 0) {
+    try {
+      await db.items.bulkPut(updated);
+      console.log(`[Series Merge] ✓ ${updated.length} items atualizados`);
+    } catch (error) {
+      console.error('[Series Merge] Erro ao atualizar items:', error);
+
+      // Fallback: atualiza item por item
+      let successCount = 0;
+      for (const item of updated) {
+        try {
+          await db.items.put(item);
+          successCount++;
+        } catch (e) {
+          console.error(`[Series Merge] Erro ao atualizar item ${item.id}:`, e);
+        }
+      }
+      console.log(`[Series Merge] ${successCount}/${updated.length} items atualizados (fallback)`);
+    }
+  }
 }
