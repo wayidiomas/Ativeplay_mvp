@@ -185,22 +185,32 @@ export async function addPlaylist(
         onProgress?.(progress);
 
         // ✅ FASE 7.1: Quando receber early_ready, ativa playlist IMEDIATAMENTE
-        if (progress.phase === 'early_ready' && !earlyActivated && isFirst) {
-          earlyActivated = true;
-          console.log('[DB DEBUG] ✅ EARLY_READY recebido! Ativando playlist imediatamente...');
+    if (progress.phase === 'early_ready' && !earlyActivated && isFirst) {
+      earlyActivated = true;
+      console.log('[DB DEBUG] ✅ EARLY_READY recebido! Ativando playlist imediatamente...');
 
-          // Ativa playlist
-          await setActivePlaylist(playlistId);
+      // Ativa playlist
+      await setActivePlaylist(playlistId);
 
           // Atualiza Zustand store para trigger navegação IMEDIATA
-          const currentPlaylist = await db.playlists.get(playlistId);
-          if (currentPlaylist) {
-            const { usePlaylistStore } = await import('@store/playlistStore');
-            usePlaylistStore.getState().setActivePlaylist(currentPlaylist);
-            console.log('[DB DEBUG] ✅ Store atualizado (early navigation)');
-          }
+      const currentPlaylist = await db.playlists.get(playlistId);
+      if (currentPlaylist) {
+        const { usePlaylistStore } = await import('@store/playlistStore');
+        usePlaylistStore.getState().setActivePlaylist(currentPlaylist);
+        console.log('[DB DEBUG] ✅ Store atualizado (early navigation)');
+
+        // Se o total já veio em stats parcial, usa no banner para evitar /0
+        if (progress.stats?.totalItems) {
+          await db.playlists.update(playlistId, {
+            itemCount: progress.stats.totalItems,
+            liveCount: progress.stats.liveCount ?? currentPlaylist.liveCount,
+            movieCount: progress.stats.movieCount ?? currentPlaylist.movieCount,
+            seriesCount: progress.stats.seriesCount ?? currentPlaylist.seriesCount,
+          });
         }
-      };
+      }
+    }
+  };
 
       // Parsing com early navigation callback
       const parsed = await parseM3ULocal(url, playlistId, progressWrapper);

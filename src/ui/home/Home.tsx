@@ -673,8 +673,24 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
         const loadedCount = await db.items.where('playlistId').equals(activePlaylist.id).count();
         const total = updated.itemCount; // ✅ Usa valor atualizado, não stale
-        const percentage = total > 0 ? Math.round((loadedCount / total) * 100) : 0;
-        setSyncProgress({ current: loadedCount, total, percentage });
+
+        if (total > 0) {
+          const percentage = Math.min(100, Math.round((loadedCount / total) * 100));
+          setSyncProgress({ current: loadedCount, total, percentage });
+        } else {
+          // Modo indeterminado: sem total conhecido
+          setSyncProgress({ current: loadedCount, total: 0, percentage: 0 });
+        }
+
+        // ✅ Se já carregou tudo, encerra banner e força status success/local
+        if (total > 0 && loadedCount >= total) {
+          await db.playlists.update(activePlaylist.id, { lastSyncStatus: 'success' });
+          const fresh = await db.playlists.get(activePlaylist.id);
+          if (fresh) setActivePlaylist(fresh);
+          setSyncing(false);
+          setSyncProgress(null);
+          break;
+        }
 
         if (updated.lastSyncStatus !== 'syncing') {
           setSyncing(false);
@@ -1047,12 +1063,14 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
             <MdCloudDownload size={24} className={styles.syncIconRotate} />
           </div>
           <div className={styles.syncText}>
-            Carregando itens... {syncProgress.percentage}% ({syncProgress.current.toLocaleString()}/{syncProgress.total.toLocaleString()})
+            {syncProgress.total > 0
+              ? `Carregando itens... ${syncProgress.percentage}% (${syncProgress.current.toLocaleString()}/${syncProgress.total.toLocaleString()})`
+              : `Carregando itens... ${syncProgress.current.toLocaleString()}`}
           </div>
           <div className={styles.syncProgressBarContainer}>
             <div
               className={styles.syncProgressBar}
-              style={{ width: `${syncProgress.percentage}%` }}
+              style={{ width: `${syncProgress.total > 0 ? syncProgress.percentage : 15}%` }}
             />
           </div>
         </div>
