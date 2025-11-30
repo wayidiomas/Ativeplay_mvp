@@ -71,7 +71,7 @@ export interface PlaylistStats {
 
 // Parser progress
 export interface ParserProgress {
-  phase: 'downloading' | 'parsing' | 'classifying' | 'indexing' | 'complete' | 'error';
+  phase: 'downloading' | 'parsing' | 'classifying' | 'indexing' | 'early_ready' | 'complete' | 'error';
   current: number;
   total: number;
   percentage: number;

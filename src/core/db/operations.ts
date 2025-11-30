@@ -176,8 +176,34 @@ export async function addPlaylist(
 
       await db.playlists.add(playlist);
 
-      // Aguarda parsing completo
-      const parsed = await parseM3ULocal(url, playlistId, onProgress);
+      // ✅ FASE 7.1: Flag para evitar dupla ativação
+      let earlyActivated = false;
+
+      // ✅ FASE 7.1: Wrapper de callback para interceptar early_ready
+      const progressWrapper: ProgressCallback = async (progress) => {
+        // Propaga callback original
+        onProgress?.(progress);
+
+        // ✅ FASE 7.1: Quando receber early_ready, ativa playlist IMEDIATAMENTE
+        if (progress.phase === 'early_ready' && !earlyActivated && isFirst) {
+          earlyActivated = true;
+          console.log('[DB DEBUG] ✅ EARLY_READY recebido! Ativando playlist imediatamente...');
+
+          // Ativa playlist
+          await setActivePlaylist(playlistId);
+
+          // Atualiza Zustand store para trigger navegação IMEDIATA
+          const currentPlaylist = await db.playlists.get(playlistId);
+          if (currentPlaylist) {
+            const { usePlaylistStore } = await import('@store/playlistStore');
+            usePlaylistStore.getState().setActivePlaylist(currentPlaylist);
+            console.log('[DB DEBUG] ✅ Store atualizado (early navigation)');
+          }
+        }
+      };
+
+      // Parsing com early navigation callback
+      const parsed = await parseM3ULocal(url, playlistId, progressWrapper);
 
       // Atualiza com stats finais
       console.log('[DB DEBUG] ✓ Parsing completo! Atualizando stats finais...');
@@ -190,9 +216,9 @@ export async function addPlaylist(
         lastUpdated: Date.now(),
       });
 
-      // Ativa playlist se for a primeira
-      if (isFirst) {
-        console.log('[DB DEBUG] Ativando primeira playlist...');
+      // ✅ FASE 7.1: Se não ativou early, ativa agora (fallback para playlists pequenas)
+      if (isFirst && !earlyActivated) {
+        console.log('[DB DEBUG] Ativando playlist (fallback - playlist pequena)...');
         await setActivePlaylist(playlistId);
 
         // Atualiza Zustand store para trigger navegação

@@ -22,6 +22,9 @@ export type ProgressCallback = (progress: ParserProgress) => void;
 
 const YIELD_INTERVAL = 0; // Yield para UI (setTimeout 0ms)
 
+// ✅ FASE 7.1: Early navigation threshold (usuário pode navegar após N items)
+const EARLY_READY_THRESHOLD = 500;
+
 // ✅ NOVO: Series Run-Length Encoding (RLE)
 // Detecta quando episodes consecutivos pertencem à mesma série
 interface SeriesRun {
@@ -171,6 +174,7 @@ export async function processBatches(
   let batch: M3UParsedItem[] = [];
   let totalProcessed = 0;
   let batchCount = 0; // ✅ FASE 1: Para GC interval
+  let earlyReadyEmitted = false; // ✅ FASE 7.1: Flag para emitir early_ready apenas uma vez
 
   // ✅ NOVO: Series Run-Length Encoding (RLE)
   // Detecta quando episodes consecutivos pertencem à mesma série
@@ -385,6 +389,19 @@ export async function processBatches(
 
         totalProcessed += batch.length;
         batchCount++; // ✅ NOVO: Incrementa contador de batches
+
+        // ✅ FASE 7.1: Emite early_ready quando atingir threshold (navegação imediata)
+        if (!earlyReadyEmitted && totalProcessed >= EARLY_READY_THRESHOLD) {
+          earlyReadyEmitted = true;
+          console.log(`[BatchProcessor] ✅ EARLY_READY! ${totalProcessed} items processados - navegação liberada`);
+          onProgress?.({
+            phase: 'early_ready',
+            current: totalProcessed,
+            total: totalProcessed,
+            percentage: 0,
+            message: `Pronto! ${totalProcessed} itens carregados. Carregando mais em background...`,
+          });
+        }
 
         // Report progress (não sabemos total ainda no streaming)
         onProgress?.({
