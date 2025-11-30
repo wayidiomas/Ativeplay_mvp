@@ -7,7 +7,7 @@
 
 import { db, type M3UItem, type Series } from '@core/db/schema';
 import { ContentClassifier } from './classifier';
-import { normalizeSeriesName, createSeriesKey, normalizeGroup, normalizeTitle, hashURL } from './utils';
+import { normalizeSeriesName, createSeriesKey, normalizeGroup, normalizeTitle, hashURL, isValidStreamURL } from './utils';
 import { getBatchConfig } from './deviceDetection'; // ✅ FASE 2: Device-adaptive config
 import type {
   M3UParsedItem,
@@ -85,8 +85,9 @@ export async function processBatches(
     groupCount: 0,
   };
 
-  // ✅ FASE 7.2: Cache e batch updates para Series incrementais
+  // ✅ FASE 7.2: Cache e batch operations para Series incrementais
   const seriesDbCache = new Map<string, Series>(); // seriesKey -> Series (evita DB reads)
+  const seriesToCreate = new Map<string, Series>(); // Acumula series para criar em batch
   const seriesToUpdate = new Map<string, Partial<Series>>(); // Acumula updates para batch
 
   let batch: M3UParsedItem[] = [];
@@ -138,7 +139,7 @@ export async function processBatches(
         if (seriesInfo) {
           // Normaliza nome (remove tags, anos, qualidade, etc)
           const normalized = normalizeSeriesName(seriesInfo.seriesName);
-          const seriesKey = createSeriesKey(normalized);
+          const seriesKey = createSeriesKey(normalized, item.group, item.parsedTitle.year);
 
           if (!seriesGroupsMap.has(seriesKey)) {
             seriesGroupsMap.set(seriesKey, {
@@ -166,7 +167,7 @@ export async function processBatches(
             existingSeries = await db.series.get(seriesDbId) || undefined;
 
             if (!existingSeries) {
-              // ✅ NOVA SÉRIE: Cria no DB imediatamente
+              // ✅ NOVA SÉRIE: Acumula para criar em batch (evita conflito de transação)
               const newSeries: Series = {
                 id: seriesDbId,
                 playlistId,
@@ -184,10 +185,11 @@ export async function processBatches(
                 createdAt: Date.now(),
               };
 
-              await db.series.add(newSeries);
+              // Acumula para batch create ao invés de criar imediatamente
+              seriesToCreate.set(seriesDbId, newSeries);
               seriesDbCache.set(seriesKey, newSeries);
 
-              console.log(`[Series] ✅ NOVA: ${seriesInfo.seriesName} (S${seriesInfo.season}E${seriesInfo.episode})`);
+              console.log(`[Series] ➕ ACUMULADA: ${seriesInfo.seriesName} (S${seriesInfo.season}E${seriesInfo.episode})`);
             } else {
               // Série existente - adiciona ao cache
               seriesDbCache.set(seriesKey, existingSeries);
@@ -217,8 +219,17 @@ export async function processBatches(
 
       // Processa batch quando atingir tamanho limite
       if (batch.length >= BATCH_SIZE) {
+        // ✅ FASE OTIMIZAÇÃO: Filtra URLs inválidas antes de processar
+        const validBatch = batch.filter((item) => {
+          const isValid = isValidStreamURL(item.url);
+          if (!isValid) {
+            console.warn(`[BatchProcessor] URL inválida rejeitada: ${item.name} (${item.url.substring(0, 50)}...)`);
+          }
+          return isValid;
+        });
+
         // Prepara itens para inserção no DB
-        const dbItems: M3UItem[] = batch.map((item) => {
+        const dbItems: M3UItem[] = validBatch.map((item) => {
           // ✅ NOVO: Extrai seriesId para items de séries
           const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
           let seriesId: string | undefined;
@@ -227,7 +238,7 @@ export async function processBatches(
 
           if (seriesInfo && item.mediaKind === 'series') {
             const normalized = normalizeSeriesName(seriesInfo.seriesName);
-            seriesId = createSeriesKey(normalized);
+            seriesId = createSeriesKey(normalized, item.group, item.parsedTitle.year);
             seasonNumber = seriesInfo.season;
             episodeNumber = seriesInfo.episode;
           }
@@ -289,7 +300,34 @@ export async function processBatches(
           }
         }
 
-        // ✅ FASE 7.2: Flush series updates a cada batch
+        // ✅ FASE 7.2: Flush series creation a cada batch (ANTES dos updates)
+        if (seriesToCreate.size > 0) {
+          console.log(`[Series] ✅ Criando ${seriesToCreate.size} novas séries...`);
+
+          const seriesToAdd = Array.from(seriesToCreate.values());
+          try {
+            await db.series.bulkAdd(seriesToAdd);
+            console.log(`[Series] ✅ ${seriesToAdd.length} séries criadas com sucesso`);
+          } catch (err) {
+            console.error(`[Series] Erro ao criar séries em batch, tentando individualmente:`, err);
+
+            // Fallback: inserir uma por uma
+            let createdCount = 0;
+            for (const series of seriesToAdd) {
+              try {
+                await db.series.add(series);
+                createdCount++;
+              } catch (addErr) {
+                console.error(`[Series] Erro ao criar série ${series.id}:`, addErr);
+              }
+            }
+            console.log(`[Series] ${createdCount}/${seriesToAdd.length} séries criadas individualmente`);
+          }
+
+          seriesToCreate.clear();
+        }
+
+        // ✅ FASE 7.2: Flush series updates a cada batch (DEPOIS das criações)
         if (seriesToUpdate.size > 0) {
           console.log(`[Series] 📝 Atualizando ${seriesToUpdate.size} séries...`);
 
@@ -355,7 +393,16 @@ export async function processBatches(
 
     // Processa últimos itens do batch (se houver)
     if (batch.length > 0) {
-      const dbItems: M3UItem[] = batch.map((item) => {
+      // ✅ FASE OTIMIZAÇÃO: Filtra URLs inválidas antes de processar
+      const validBatch = batch.filter((item) => {
+        const isValid = isValidStreamURL(item.url);
+        if (!isValid) {
+          console.warn(`[BatchProcessor] URL inválida rejeitada (final batch): ${item.name} (${item.url.substring(0, 50)}...)`);
+        }
+        return isValid;
+      });
+
+      const dbItems: M3UItem[] = validBatch.map((item) => {
         // ✅ NOVO: Extrai seriesId para items de séries (mesmo código do batch principal)
         const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
         let seriesId: string | undefined;
@@ -364,7 +411,7 @@ export async function processBatches(
 
         if (seriesInfo && item.mediaKind === 'series') {
           const normalized = normalizeSeriesName(seriesInfo.seriesName);
-          seriesId = createSeriesKey(normalized);
+          seriesId = createSeriesKey(normalized, item.group, item.parsedTitle.year);
           seasonNumber = seriesInfo.season;
           episodeNumber = seriesInfo.episode;
         }
@@ -378,6 +425,9 @@ export async function processBatches(
           group: item.group,
           mediaKind: item.mediaKind,
           title: item.parsedTitle.title,
+          titleNormalized: normalizeTitle(item.parsedTitle.title || item.name),  // ✅ FASE OTIMIZAÇÃO
+          groupNormalized: normalizeGroup(item.group),                          // ✅ FASE OTIMIZAÇÃO
+          urlHash: hashURL(item.url),                                           // ✅ FASE OTIMIZAÇÃO
           year: item.parsedTitle.year,
           season: item.parsedTitle.season,
           episode: item.parsedTitle.episode,
@@ -421,7 +471,34 @@ export async function processBatches(
 
       totalProcessed += batch.length;
 
-      // ✅ FASE 7.2: Flush final de series updates (último batch)
+      // ✅ FASE 7.2: Flush final de series creation (último batch) - ANTES dos updates
+      if (seriesToCreate.size > 0) {
+        console.log(`[Series] ✅ Criando ${seriesToCreate.size} novas séries (último batch)...`);
+
+        const seriesToAdd = Array.from(seriesToCreate.values());
+        try {
+          await db.series.bulkAdd(seriesToAdd);
+          console.log(`[Series] ✅ ${seriesToAdd.length} séries criadas com sucesso (final)`);
+        } catch (err) {
+          console.error(`[Series] Erro ao criar séries no último batch:`, err);
+
+          // Fallback: inserir uma por uma
+          let createdCount = 0;
+          for (const series of seriesToAdd) {
+            try {
+              await db.series.add(series);
+              createdCount++;
+            } catch (addErr) {
+              console.error(`[Series] Erro ao criar série ${series.id}:`, addErr);
+            }
+          }
+          console.log(`[Series] ${createdCount}/${seriesToAdd.length} séries criadas individualmente (final)`);
+        }
+
+        seriesToCreate.clear();
+      }
+
+      // ✅ FASE 7.2: Flush final de series updates (último batch) - DEPOIS das criações
       if (seriesToUpdate.size > 0) {
         console.log(`[Series] 📝 Atualizando ${seriesToUpdate.size} séries (último batch)...`);
 
