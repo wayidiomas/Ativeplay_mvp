@@ -542,6 +542,22 @@ export async function processBatches(
         // ✅ Use bulkPut diretamente (grupos já foram criados incrementalmente)
         await db.groups.bulkPut(dbGroups);
         console.log('[BatchProcessor] ✓ Validação final: grupos salvos/atualizados');
+
+        // ✅ DEBUG: Log breakdown por mediaKind para detectar problemas de classificação
+        const breakdown = dbGroups.reduce((acc, g) => {
+          acc[g.mediaKind] = (acc[g.mediaKind] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        console.log('[Groups DEBUG] Breakdown por mediaKind:', breakdown);
+        console.log('[Groups DEBUG] Total grupos únicos:', dbGroups.length);
+
+        // Lista os nomes dos grupos por tipo (apenas primeiros 3 de cada)
+        const movieGroups = dbGroups.filter(g => g.mediaKind === 'movie').slice(0, 3);
+        const seriesGroups = dbGroups.filter(g => g.mediaKind === 'series').slice(0, 3);
+        const liveGroups = dbGroups.filter(g => g.mediaKind === 'live').slice(0, 3);
+        console.log('[Groups DEBUG] Exemplos Movies:', movieGroups.map(g => g.name));
+        console.log('[Groups DEBUG] Exemplos Series:', seriesGroups.map(g => g.name));
+        console.log('[Groups DEBUG] Exemplos Live:', liveGroups.map(g => g.name));
       } catch (putError) {
         console.error('[BatchProcessor] Erro na validação final de grupos:', (putError as Error).message);
         // Groups são menos críticos, pode continuar
