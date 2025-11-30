@@ -44,6 +44,9 @@ export interface M3UItem {
   seriesId?: string; // Referência à série (se for episódio)
   seasonNumber?: number; // Número da temporada
   episodeNumber?: number; // Número do episódio
+  // FASE OTIMIZAÇÃO: Campos normalizados para queries rápidas
+  groupNormalized?: string; // Uppercase, sem emojis (para busca O(1))
+  urlHash?: string;         // Hash da URL (dedupe ultra-rápido)
   // Indices compostos para queries
   createdAt: number;
 }
@@ -191,6 +194,58 @@ class AtivePlayDB extends Dexie {
       series: 'id, playlistId, [playlistId+group]',
       favorites: 'id, [playlistId+itemId], playlistId',
       watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    });
+
+    // Schema v10 - FASE OTIMIZAÇÃO: Adiciona campos normalizados e índices otimizados
+    this.version(10).stores({
+      playlists: 'id, url, lastUpdated, isActive',
+      items: `
+        id,
+        playlistId,
+        url,
+        group,
+        mediaKind,
+        titleNormalized,
+        groupNormalized,
+        urlHash,
+        seriesId,
+        seasonNumber,
+        episodeNumber,
+        xuiId,
+        [playlistId+titleNormalized],
+        [playlistId+group],
+        [playlistId+groupNormalized],
+        [playlistId+mediaKind],
+        [playlistId+group+mediaKind],
+        [playlistId+url],
+        [playlistId+urlHash],
+        [seriesId+seasonNumber+episodeNumber],
+        [playlistId+xuiId]
+      `.replace(/\s+/g, ' ').trim(),
+      groups: 'id, playlistId, mediaKind, name, [playlistId+mediaKind]',
+      series: 'id, playlistId, name, [playlistId+group]',
+      favorites: 'id, [playlistId+itemId], playlistId',
+      watchProgress: 'id, [playlistId+itemId], playlistId, watchedAt, [playlistId+watchedAt]',
+    }).upgrade(async (tx) => {
+      // Popula campos normalizados para items existentes
+      console.log('[DB] Migrando para v10: adicionando campos normalizados...');
+
+      const { normalizeGroup, normalizeTitle, hashURL } = await import('../services/m3u/utils');
+
+      let count = 0;
+      await tx.table('items').toCollection().modify((item) => {
+        // Adiciona campos normalizados
+        item.groupNormalized = normalizeGroup(item.group || '');
+        item.titleNormalized = normalizeTitle(item.title || item.name || '');
+        item.urlHash = hashURL(item.url);
+
+        count++;
+        if (count % 1000 === 0) {
+          console.log(`[DB] Normalizado ${count} items...`);
+        }
+      });
+
+      console.log(`[DB] Migração v10 completa: ${count} items normalizados`);
     });
   }
 }

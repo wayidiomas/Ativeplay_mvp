@@ -2,11 +2,12 @@
  * Batch Processor
  * Processa itens do streaming parser em lotes, mantendo UI responsiva
  * FASE 1: Adiciona series grouping híbrido (hash-based durante streaming)
+ * FASE 7.2: Adiciona criação incremental de Series no DB
  */
 
-import { db, type M3UItem } from '@core/db/schema';
+import { db, type M3UItem, type Series } from '@core/db/schema';
 import { ContentClassifier } from './classifier';
-import { normalizeSeriesName, createSeriesKey } from './utils';
+import { normalizeSeriesName, createSeriesKey, normalizeGroup, normalizeTitle, hashURL } from './utils';
 import { getBatchConfig } from './deviceDetection'; // ✅ FASE 2: Device-adaptive config
 import type {
   M3UParsedItem,
@@ -84,6 +85,10 @@ export async function processBatches(
     groupCount: 0,
   };
 
+  // ✅ FASE 7.2: Cache e batch updates para Series incrementais
+  const seriesDbCache = new Map<string, Series>(); // seriesKey -> Series (evita DB reads)
+  const seriesToUpdate = new Map<string, Partial<Series>>(); // Acumula updates para batch
+
   let batch: M3UParsedItem[] = [];
   let totalProcessed = 0;
   let batchCount = 0; // ✅ FASE 1: Para GC interval
@@ -149,6 +154,64 @@ export async function processBatches(
           group.itemIds.push(item.id);
           group.seasons.add(seriesInfo.season);
           group.episodeCount++;
+
+          // ✅ FASE 7.2: Criação/atualização incremental de Series no DB
+          const seriesDbId = `${playlistId}_${seriesKey}`;
+
+          // Verifica cache antes de DB
+          let existingSeries = seriesDbCache.get(seriesKey);
+
+          if (!existingSeries) {
+            // Cache miss: verifica no DB (apenas primeira vez)
+            existingSeries = await db.series.get(seriesDbId) || undefined;
+
+            if (!existingSeries) {
+              // ✅ NOVA SÉRIE: Cria no DB imediatamente
+              const newSeries: Series = {
+                id: seriesDbId,
+                playlistId,
+                name: seriesInfo.seriesName,
+                logo: item.logo || '',
+                group: item.group,
+                totalEpisodes: 1,
+                totalSeasons: 1,
+                firstSeason: seriesInfo.season,
+                lastSeason: seriesInfo.season,
+                firstEpisode: seriesInfo.episode,
+                lastEpisode: seriesInfo.episode,
+                year: item.parsedTitle.year,
+                quality: item.parsedTitle.quality,
+                createdAt: Date.now(),
+              };
+
+              await db.series.add(newSeries);
+              seriesDbCache.set(seriesKey, newSeries);
+
+              console.log(`[Series] ✅ NOVA: ${seriesInfo.seriesName} (S${seriesInfo.season}E${seriesInfo.episode})`);
+            } else {
+              // Série existente - adiciona ao cache
+              seriesDbCache.set(seriesKey, existingSeries);
+            }
+          }
+
+          // ✅ SÉRIE EXISTENTE: Acumula updates para batch
+          if (existingSeries) {
+            const cached = seriesDbCache.get(seriesKey)!;
+            const updates: Partial<Series> = {
+              totalEpisodes: cached.totalEpisodes + 1,
+              totalSeasons: Math.max(cached.totalSeasons, seriesInfo.season),
+              lastSeason: Math.max(cached.lastSeason || 0, seriesInfo.season),
+              lastEpisode: Math.max(cached.lastEpisode || 0, seriesInfo.episode),
+              firstSeason: Math.min(cached.firstSeason || Infinity, seriesInfo.season),
+              firstEpisode: Math.min(cached.firstEpisode || Infinity, seriesInfo.episode),
+            };
+
+            // Atualiza cache local
+            Object.assign(cached, updates);
+
+            // Acumula para batch update
+            seriesToUpdate.set(seriesDbId, updates);
+          }
         }
       }
 
@@ -178,6 +241,9 @@ export async function processBatches(
             group: item.group,
             mediaKind: item.mediaKind,
             title: item.parsedTitle.title,
+            titleNormalized: normalizeTitle(item.parsedTitle.title || item.name),  // ✅ FASE OTIMIZAÇÃO
+            groupNormalized: normalizeGroup(item.group),                          // ✅ FASE OTIMIZAÇÃO
+            urlHash: hashURL(item.url),                                           // ✅ FASE OTIMIZAÇÃO
             year: item.parsedTitle.year,
             season: item.parsedTitle.season,
             episode: item.parsedTitle.episode,
@@ -221,6 +287,22 @@ export async function processBatches(
 
             console.warn(`[BatchProcessor] Salvou ${savedCount}/${dbItems.length} items individualmente`);
           }
+        }
+
+        // ✅ FASE 7.2: Flush series updates a cada batch
+        if (seriesToUpdate.size > 0) {
+          console.log(`[Series] 📝 Atualizando ${seriesToUpdate.size} séries...`);
+
+          for (const [id, updates] of seriesToUpdate.entries()) {
+            try {
+              await db.series.update(id, updates);
+            } catch (err) {
+              console.error(`[Series] Erro ao atualizar ${id}:`, err);
+              // Continua com próximas series mesmo se uma falhar
+            }
+          }
+
+          seriesToUpdate.clear();
         }
 
         totalProcessed += batch.length;
@@ -338,6 +420,21 @@ export async function processBatches(
       }
 
       totalProcessed += batch.length;
+
+      // ✅ FASE 7.2: Flush final de series updates (último batch)
+      if (seriesToUpdate.size > 0) {
+        console.log(`[Series] 📝 Atualizando ${seriesToUpdate.size} séries (último batch)...`);
+
+        for (const [id, updates] of seriesToUpdate.entries()) {
+          try {
+            await db.series.update(id, updates);
+          } catch (err) {
+            console.error(`[Series] Erro ao atualizar ${id}:`, err);
+          }
+        }
+
+        seriesToUpdate.clear();
+      }
     }
 
     // Finaliza grupos

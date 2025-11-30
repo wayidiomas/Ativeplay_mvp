@@ -11,8 +11,9 @@
 
 import { streamParseM3U } from './streamParser';
 import { processBatches, type EarlyReadyCallback } from './batchProcessor';
-import { mergeSeriesGroups } from './seriesGrouper';
+// import { mergeSeriesGroups } from './seriesGrouper'; // ✅ FASE 7.2: Opcional (fuzzy merge desabilitado)
 import type { ParserProgress } from './types';
+import { db } from '@core/db/schema'; // ✅ FASE 7.2: Busca series do DB
 
 export type ProgressCallback = (progress: ParserProgress) => void;
 export type { EarlyReadyCallback }; // ✅ FASE 7.1: Re-export para conveniência
@@ -90,22 +91,30 @@ export async function parseM3ULocal(
     seriesGroups: result.seriesGroups.length,
   });
 
-  // FASE 3: Series classification
+  // ✅ FASE 7.2: Series já estão no DB (criadas durante streaming)
+  // Busca series do DB ao invés de fazer fuzzy merge
   onProgress?.({
     phase: 'classifying',
-    current: 80,
+    current: 90,
     total: 100,
-    percentage: 80,
-    message: 'Agrupando séries...',
+    percentage: 90,
+    message: 'Finalizando séries...',
   });
 
-  // Fuzzy merge de singletons (se houver series)
-  let series: any[] = [];
-  if (result.seriesGroups && result.seriesGroups.length > 0) {
-    console.log('[Parser] Iniciando fuzzy merge de series groups...');
-    series = await mergeSeriesGroups(result.seriesGroups, playlistId);
-    console.log(`[Parser] ${series.length} séries finais criadas`);
-  }
+  console.log('[Parser] Buscando séries do DB (já criadas durante streaming)...');
+  const series = await db.series.where('playlistId').equals(playlistId).toArray();
+  console.log(`[Parser] ${series.length} séries encontradas no DB`);
+
+  // ✅ OPCIONAL: Fuzzy merge apenas para cleanup de singletons (precisão extra)
+  // Desabilitado por padrão - descomentar se precisar de precisão máxima
+  // if (result.seriesGroups && result.seriesGroups.length > 0) {
+  //   console.log('[Parser] Fuzzy merge opcional (singletons apenas)...');
+  //   const singletons = result.seriesGroups.filter(g => g.episodeCount === 1);
+  //   if (singletons.length > 0) {
+  //     await mergeSeriesGroups(singletons, playlistId);
+  //     console.log(`[Parser] ${singletons.length} singletons processados`);
+  //   }
+  // }
 
   // FASE 4: Complete
   onProgress?.({
