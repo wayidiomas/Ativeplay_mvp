@@ -31,6 +31,23 @@ export type EarlyReadyCallback = (stats: {
 const YIELD_INTERVAL = 0; // Yield para UI (setTimeout 0ms)
 const EARLY_NAV_THRESHOLD = 500; // ✅ FASE 7.1: Navega após 500 items carregados
 
+// ✅ NOVO: Series Run-Length Encoding (RLE)
+// Detecta quando episodes consecutivos pertencem à mesma série
+interface SeriesRun {
+  seriesKey: string;
+  seriesDbId: string;
+  seriesName: string;
+  group: string;
+  year?: number;
+  logo: string;
+  quality?: string;
+  episodes: Array<{
+    season: number;
+    episode: number;
+    itemId: string;
+  }>;
+}
+
 // ✅ FASE 2: REMOVIDO - Agora usa config adaptativo
 // const BATCH_SIZE = 100;
 // const GC_INTERVAL = 10;
@@ -50,6 +67,84 @@ export interface SeriesGroup {
 function generateGroupId(name: string, mediaKind: MediaKind): string {
   const safeName = name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
   return `group_${safeName}_${mediaKind}`;
+}
+
+/**
+ * ✅ NOVO: Flush Series Run (RLE Optimization)
+ * Processa run de episódios consecutivos da mesma série em bloco
+ *
+ * Benefícios:
+ * - 1 normalização (vs N para cada episódio)
+ * - 1 hash calculation (vs N)
+ * - 1 DB query (vs N)
+ * - 1 DB update (vs N)
+ *
+ * Exemplo: Breaking Bad com 62 episódios = 62x menos operações
+ */
+async function flushSeriesRun(run: SeriesRun, playlistId: string): Promise<void> {
+  if (run.episodes.length === 0) return;
+
+  const { seriesDbId, seriesName, group, logo, year, quality, episodes } = run;
+
+  // Calcula stats agregados do RUN
+  const seasons = new Set(episodes.map(e => e.season));
+  const allSeasons = Array.from(seasons).sort((a, b) => a - b);
+  const firstEp = episodes[0];
+  const lastEp = episodes[episodes.length - 1];
+
+  // ✅ UMA ÚNICA verificação de existência
+  const existing = await db.series.get(seriesDbId);
+
+  if (!existing) {
+    // ✅ CRIA série com stats completos do RUN
+    const newSeries: Series = {
+      id: seriesDbId,
+      playlistId,
+      name: seriesName,
+      logo: logo || '',
+      group,
+      totalEpisodes: episodes.length,
+      totalSeasons: allSeasons.length,
+      firstSeason: allSeasons[0],
+      lastSeason: allSeasons[allSeasons.length - 1],
+      firstEpisode: firstEp.episode,
+      lastEpisode: lastEp.episode,
+      year,
+      quality,
+      createdAt: Date.now(),
+    };
+
+    await db.series.add(newSeries);
+
+    console.log(
+      '[SeriesRLE] Created "' + seriesName + '": ' + episodes.length + ' eps ' +
+      '(S' + String(allSeasons[0]).padStart(2, '0') + '-S' + String(allSeasons[allSeasons.length - 1]).padStart(2, '0') + ')'
+    );
+  } else {
+    // ✅ ATUALIZA série existente com stats agregados do RUN
+    const existingSeasons = new Set<number>();
+    for (let s = existing.firstSeason; s <= existing.lastSeason; s++) {
+      existingSeasons.add(s);
+    }
+    allSeasons.forEach(s => existingSeasons.add(s));
+    const mergedSeasons = Array.from(existingSeasons).sort((a, b) => a - b);
+
+    const updates: Partial<Series> = {
+      totalEpisodes: existing.totalEpisodes + episodes.length,
+      totalSeasons: mergedSeasons.length,
+      firstSeason: mergedSeasons[0],
+      lastSeason: mergedSeasons[mergedSeasons.length - 1],
+      firstEpisode: Math.min(existing.firstEpisode || Infinity, firstEp.episode),
+      lastEpisode: Math.max(existing.lastEpisode || 0, lastEp.episode),
+    };
+
+    await db.series.update(seriesDbId, updates);
+
+    console.log(
+      '[SeriesRLE] Updated "' + seriesName + '": +' + episodes.length + ' eps ' +
+      '(total: ' + (existing.totalEpisodes + episodes.length) + ')'
+    );
+  }
 }
 
 /**
@@ -85,15 +180,14 @@ export async function processBatches(
     groupCount: 0,
   };
 
-  // ✅ FASE 7.2: Cache e batch operations para Series incrementais
-  const seriesDbCache = new Map<string, Series>(); // seriesKey -> Series (evita DB reads)
-  const seriesToCreate = new Map<string, Series>(); // Acumula series para criar em batch
-  const seriesToUpdate = new Map<string, Partial<Series>>(); // Acumula updates para batch
-
   let batch: M3UParsedItem[] = [];
   let totalProcessed = 0;
   let batchCount = 0; // ✅ FASE 1: Para GC interval
   let earlyReadyFired = false; // ✅ FASE 7.1: Controla disparo único do early callback
+
+  // ✅ NOVO: Series Run-Length Encoding (RLE)
+  // Detecta quando episodes consecutivos pertencem à mesma série
+  let currentSeriesRun: SeriesRun | null = null;
 
   try {
     for await (const item of generator) {
@@ -132,15 +226,44 @@ export async function processBatches(
         });
       }
 
-      // ✅ NOVO: Series grouping incremental (hash-based)
+      // ✅ NOVO: Series RLE (Run-Length Encoding) - Detecção de runs consecutivos
       if (item.mediaKind === 'series' && item.parsedTitle?.season) {
         const seriesInfo = ContentClassifier.extractSeriesInfo(item.name);
 
         if (seriesInfo) {
-          // Normaliza nome (remove tags, anos, qualidade, etc)
+          // Normaliza nome APENAS uma vez por RUN (não por item)
           const normalized = normalizeSeriesName(seriesInfo.seriesName);
           const seriesKey = createSeriesKey(normalized, item.group, item.parsedTitle.year);
+          const seriesDbId = `${playlistId}_${seriesKey}`;
 
+          // ✅ DETECÇÃO DE RUN: Verifica se pertence ao mesmo run
+          if (!currentSeriesRun || currentSeriesRun.seriesKey !== seriesKey) {
+            // NOVO RUN: Flush run anterior se houver
+            if (currentSeriesRun) {
+              await flushSeriesRun(currentSeriesRun, playlistId);
+            }
+
+            // Inicia novo run
+            currentSeriesRun = {
+              seriesKey,
+              seriesDbId,
+              seriesName: seriesInfo.seriesName,
+              group: item.group,
+              year: item.parsedTitle.year,
+              logo: item.logo || '',
+              quality: item.parsedTitle.quality,
+              episodes: [],
+            };
+          }
+
+          // ✅ ACUMULA episódio no RUN atual
+          currentSeriesRun.episodes.push({
+            season: seriesInfo.season,
+            episode: seriesInfo.episode,
+            itemId: item.id,
+          });
+
+          // ✅ Mantém compatibilidade com seriesGroupsMap (usado pelo fuzzy merge)
           if (!seriesGroupsMap.has(seriesKey)) {
             seriesGroupsMap.set(seriesKey, {
               seriesKey,
@@ -155,65 +278,12 @@ export async function processBatches(
           group.itemIds.push(item.id);
           group.seasons.add(seriesInfo.season);
           group.episodeCount++;
-
-          // ✅ FASE 7.2: Criação/atualização incremental de Series no DB
-          const seriesDbId = `${playlistId}_${seriesKey}`;
-
-          // Verifica cache antes de DB
-          let existingSeries = seriesDbCache.get(seriesKey);
-
-          if (!existingSeries) {
-            // Cache miss: verifica no DB (apenas primeira vez)
-            existingSeries = await db.series.get(seriesDbId) || undefined;
-
-            if (!existingSeries) {
-              // ✅ NOVA SÉRIE: Acumula para criar em batch (evita conflito de transação)
-              const newSeries: Series = {
-                id: seriesDbId,
-                playlistId,
-                name: seriesInfo.seriesName,
-                logo: item.logo || '',
-                group: item.group,
-                totalEpisodes: 1,
-                totalSeasons: 1,
-                firstSeason: seriesInfo.season,
-                lastSeason: seriesInfo.season,
-                firstEpisode: seriesInfo.episode,
-                lastEpisode: seriesInfo.episode,
-                year: item.parsedTitle.year,
-                quality: item.parsedTitle.quality,
-                createdAt: Date.now(),
-              };
-
-              // Acumula para batch create ao invés de criar imediatamente
-              seriesToCreate.set(seriesDbId, newSeries);
-              seriesDbCache.set(seriesKey, newSeries);
-
-              console.log(`[Series] ➕ ACUMULADA: ${seriesInfo.seriesName} (S${seriesInfo.season}E${seriesInfo.episode})`);
-            } else {
-              // Série existente - adiciona ao cache
-              seriesDbCache.set(seriesKey, existingSeries);
-            }
-          }
-
-          // ✅ SÉRIE EXISTENTE: Acumula updates para batch
-          if (existingSeries) {
-            const cached = seriesDbCache.get(seriesKey)!;
-            const updates: Partial<Series> = {
-              totalEpisodes: cached.totalEpisodes + 1,
-              totalSeasons: Math.max(cached.totalSeasons, seriesInfo.season),
-              lastSeason: Math.max(cached.lastSeason || 0, seriesInfo.season),
-              lastEpisode: Math.max(cached.lastEpisode || 0, seriesInfo.episode),
-              firstSeason: Math.min(cached.firstSeason || Infinity, seriesInfo.season),
-              firstEpisode: Math.min(cached.firstEpisode || Infinity, seriesInfo.episode),
-            };
-
-            // Atualiza cache local
-            Object.assign(cached, updates);
-
-            // Acumula para batch update
-            seriesToUpdate.set(seriesDbId, updates);
-          }
+        }
+      } else {
+        // Item NÃO é série: flush run atual se houver
+        if (currentSeriesRun) {
+          await flushSeriesRun(currentSeriesRun, playlistId);
+          currentSeriesRun = null;
         }
       }
 
@@ -300,48 +370,8 @@ export async function processBatches(
           }
         }
 
-        // ✅ FASE 7.2: Flush series creation a cada batch (ANTES dos updates)
-        if (seriesToCreate.size > 0) {
-          console.log(`[Series] ✅ Criando ${seriesToCreate.size} novas séries...`);
-
-          const seriesToAdd = Array.from(seriesToCreate.values());
-          try {
-            await db.series.bulkAdd(seriesToAdd);
-            console.log(`[Series] ✅ ${seriesToAdd.length} séries criadas com sucesso`);
-          } catch (err) {
-            console.error(`[Series] Erro ao criar séries em batch, tentando individualmente:`, err);
-
-            // Fallback: inserir uma por uma
-            let createdCount = 0;
-            for (const series of seriesToAdd) {
-              try {
-                await db.series.add(series);
-                createdCount++;
-              } catch (addErr) {
-                console.error(`[Series] Erro ao criar série ${series.id}:`, addErr);
-              }
-            }
-            console.log(`[Series] ${createdCount}/${seriesToAdd.length} séries criadas individualmente`);
-          }
-
-          seriesToCreate.clear();
-        }
-
-        // ✅ FASE 7.2: Flush series updates a cada batch (DEPOIS das criações)
-        if (seriesToUpdate.size > 0) {
-          console.log(`[Series] 📝 Atualizando ${seriesToUpdate.size} séries...`);
-
-          for (const [id, updates] of seriesToUpdate.entries()) {
-            try {
-              await db.series.update(id, updates);
-            } catch (err) {
-              console.error(`[Series] Erro ao atualizar ${id}:`, err);
-              // Continua com próximas series mesmo se uma falhar
-            }
-          }
-
-          seriesToUpdate.clear();
-        }
+        // ✅ RLE: Series são criadas/atualizadas via flushSeriesRun() automaticamente
+        // Não precisa mais de batch operations manuais aqui
 
         // ✅ FIX: Flush groups to DB during batch processing (UI lazy loading fix)
         // Salva grupos incrementalmente para que UI possa mostrar conteúdo durante parsing
@@ -493,46 +523,10 @@ export async function processBatches(
 
       totalProcessed += batch.length;
 
-      // ✅ FASE 7.2: Flush final de series creation (último batch) - ANTES dos updates
-      if (seriesToCreate.size > 0) {
-        console.log(`[Series] ✅ Criando ${seriesToCreate.size} novas séries (último batch)...`);
-
-        const seriesToAdd = Array.from(seriesToCreate.values());
-        try {
-          await db.series.bulkAdd(seriesToAdd);
-          console.log(`[Series] ✅ ${seriesToAdd.length} séries criadas com sucesso (final)`);
-        } catch (err) {
-          console.error(`[Series] Erro ao criar séries no último batch:`, err);
-
-          // Fallback: inserir uma por uma
-          let createdCount = 0;
-          for (const series of seriesToAdd) {
-            try {
-              await db.series.add(series);
-              createdCount++;
-            } catch (addErr) {
-              console.error(`[Series] Erro ao criar série ${series.id}:`, addErr);
-            }
-          }
-          console.log(`[Series] ${createdCount}/${seriesToAdd.length} séries criadas individualmente (final)`);
-        }
-
-        seriesToCreate.clear();
-      }
-
-      // ✅ FASE 7.2: Flush final de series updates (último batch) - DEPOIS das criações
-      if (seriesToUpdate.size > 0) {
-        console.log(`[Series] 📝 Atualizando ${seriesToUpdate.size} séries (último batch)...`);
-
-        for (const [id, updates] of seriesToUpdate.entries()) {
-          try {
-            await db.series.update(id, updates);
-          } catch (err) {
-            console.error(`[Series] Erro ao atualizar ${id}:`, err);
-          }
-        }
-
-        seriesToUpdate.clear();
+      // ✅ RLE: Flush final do currentSeriesRun se houver
+      if (currentSeriesRun) {
+        await flushSeriesRun(currentSeriesRun, playlistId);
+        currentSeriesRun = null;
       }
 
       // ✅ FIX: Flush final de groups (último batch)
