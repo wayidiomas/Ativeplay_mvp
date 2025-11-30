@@ -49,6 +49,7 @@ const GROUP_PATTERNS = {
   series: [
     /▶️\s*s[eé]ries?/i, // Prefixo com emoji usado no m3u analisado
     /\b(series?|shows?|novelas?|animes?|doramas?|k-?dramas?)\b/i,
+    /#\s*\|\s*(s[eé]ries|novelas)/i, // prefixo "# |" do segundo M3U (Novelas, Séries)
     // REMOVIDO: /\b(netflix|hbo|amazon|disney|apple|paramount|star)\b/i
     // Motivo: Plataformas têm FILMES e SÉRIES, não devem decidir sozinhas
     // Usar apenas S • prefix (detectado em classifyByTitle)
@@ -196,10 +197,10 @@ export class ContentClassifier {
     if (hasSeries && has24h) return 'live';
 
     // Series primeiro (evita 'Apple TV' cair em live por causa do 'tv')
-    if (hasSeries) return 'series';
+    if (hasSeries || /#\s*\|\s*(s[eé]ries|novelas)/i.test(group)) return 'series';
 
     // Filmes antes de live (evita 'Filmes | Apple TV' cair em live)
-    if (hasMovies) return 'movie';
+    if (hasMovies || /#\s*\|\s*filmes?/i.test(group)) return 'movie';
 
     // Live/TV (restante)
     for (const pattern of GROUP_PATTERNS.live) {
