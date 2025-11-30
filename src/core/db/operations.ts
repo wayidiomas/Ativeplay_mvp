@@ -70,6 +70,12 @@ export async function addPlaylist(
           // Ativa a playlist IMEDIATAMENTE (não bloqueia)
           await setActivePlaylist(existing.id);
 
+          // ✅ CRITICAL: Atualiza Zustand store para trigger navegação
+          const { usePlaylistStore } = await import('@store/playlistStore');
+          usePlaylistStore.getState().setActivePlaylist(existing);
+          console.log('[DB DEBUG] ✅ Store atualizado (cache hit)');
+
+
           // Case 1: Items completos → apenas corrige status se necessário
           if (itemsCount >= totalItems && existing.lastSyncStatus === 'syncing') {
             console.log('[DB DEBUG] Corrigindo status para "success" (items já completos)');
@@ -131,6 +137,14 @@ export async function addPlaylist(
 
           // Ativa playlist IMEDIATAMENTE (navega para home)
           await setActivePlaylist(existing.id);
+
+          // ✅ CRITICAL: Atualiza Zustand store para trigger navegação
+          const playlist = await db.playlists.get(existing.id);
+          if (playlist) {
+            const { usePlaylistStore } = await import('@store/playlistStore');
+            usePlaylistStore.getState().setActivePlaylist(playlist);
+            console.log('[DB DEBUG] ✅ Store atualizado (zero items case), navegação deve disparar agora');
+          }
         };
 
         // Inicia parsing (não bloqueia!)
@@ -201,6 +215,14 @@ export async function addPlaylist(
         if (isFirst) {
           console.log('[DB DEBUG] Ativando primeira playlist...');
           await setActivePlaylist(playlistId);
+
+          // ✅ CRITICAL: Atualiza Zustand store para trigger navegação
+          const playlist = await db.playlists.get(playlistId);
+          if (playlist) {
+            const { usePlaylistStore } = await import('@store/playlistStore');
+            usePlaylistStore.getState().setActivePlaylist(playlist);
+            console.log('[DB DEBUG] ✅ Store atualizado, navegação deve disparar agora');
+          }
         }
       };
 
