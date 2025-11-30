@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useOnboardingStore } from '@store/onboardingStore';
 import { usePlaylistStore } from '@store/playlistStore';
-import { addPlaylist, getActivePlaylist } from '@core/db';
+import { addPlaylist } from '@core/db';
 import styles from './LoadingProgress.module.css';
 
 export function LoadingProgress() {
@@ -29,7 +29,8 @@ export function LoadingProgress() {
 
     async function loadPlaylist() {
       try {
-        console.log('[LOADING DEBUG] Iniciando addPlaylist...');
+        console.log('[LOADING DEBUG] Iniciando addPlaylist (fire-and-forget)...');
+
         // Força progress inicial para movimentar a barra imediatamente
         setProgress({
           phase: 'downloading',
@@ -38,36 +39,19 @@ export function LoadingProgress() {
           percentage: 1,
           message: 'Conectando ao servidor...',
         });
+
+        // ✅ FASE 7.1: addPlaylist retorna IMEDIATAMENTE após early ready (500 items)
+        // Navegação acontece automaticamente via early callback + useEffect abaixo
         await addPlaylist(playlistUrl, undefined, (p) => {
           if (!cancelled) {
             setProgress(p);
           }
         });
 
-        if (cancelled) return;
+        console.log('[LOADING DEBUG] ✓ addPlaylist retornou (parsing continua em background)');
 
-        console.log('[LOADING DEBUG] addPlaylist concluído! Buscando playlist ativa...');
-
-        // Busca playlist ativa
-        const active = await getActivePlaylist();
-        console.log('[LOADING DEBUG] Playlist ativa encontrada:', active);
-
-        if (active) {
-          console.log('[LOADING DEBUG] Setando activePlaylist no Zustand...');
-          setActivePlaylist(active);
-          console.log('[LOADING DEBUG] activePlaylist setado!');
-
-          // ✅ AGUARDA Dexie propagar mudanças para useLiveQuery (fix race condition)
-          console.log('[LOADING DEBUG] Aguardando Dexie notification (100ms)...');
-          await new Promise(resolve => setTimeout(resolve, 100));
-          console.log('[LOADING DEBUG] Dexie notification propagada!');
-        } else {
-          console.log('[LOADING DEBUG] NENHUMA playlist ativa encontrada!');
-        }
-
-        // Navega para home
-        console.log('[LOADING DEBUG] Navegando para /home...');
-        navigate('/home', { replace: true });
+        // ✅ FASE 7.1: Navegação agora é automática via useEffect (linhas 115-124)
+        // quando activePlaylist é setado pelo early callback
       } catch (err) {
         if (cancelled) return;
         console.error('[LOADING DEBUG] ERRO:', err);
@@ -112,16 +96,18 @@ export function LoadingProgress() {
     };
   }, [progress, optimisticPct]);
 
-  // Assim que houver progresso de parsing e playlist ativa, navega para Home sem esperar todo o fluxo
+  // ✅ FASE 7.1: Navegação automática quando playlist ativa é setada (após early ready)
+  // - activePlaylist é setado pelo early callback de operations.ts (após 500 items)
+  // - Navega IMEDIATAMENTE para home (parsing continua em background)
   useEffect(() => {
     if (earlyNavDone.current) return;
     if (!activePlaylist) return;
-    if (!progress) return;
-    if (progress.phase === 'parsing' || progress.phase === 'classifying' || progress.phase === 'indexing' || progress.phase === 'complete') {
-      earlyNavDone.current = true;
-      navigate('/home', { replace: true });
-    }
-  }, [activePlaylist, progress, navigate]);
+
+    // Navega assim que playlist estiver ativa (sem esperar parsing completo)
+    console.log('[LOADING DEBUG] ✅ Playlist ativa detectada! Navegando para /home...');
+    earlyNavDone.current = true;
+    navigate('/home', { replace: true });
+  }, [activePlaylist, navigate]);
 
   const percentage = Math.max(progress?.percentage ?? 0, optimisticPct);
   const message = progress?.message ?? 'Conectando ao servidor...';
