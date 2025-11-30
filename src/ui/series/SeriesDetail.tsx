@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, getSeriesById, getEpisodesBySeries, type Series, type M3UItem } from '@core/db/schema';
+import { getSeriesById, getEpisodesBySeries, type Series, type M3UItem } from '@core/db/schema';
 import { MdArrowBack, MdPlayArrow } from 'react-icons/md';
 import styles from './SeriesDetail.module.css';
 

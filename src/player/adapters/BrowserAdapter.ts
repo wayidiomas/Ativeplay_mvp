@@ -17,6 +17,8 @@ import type {
   PlayerEvent,
 } from '../types';
 
+const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
+
 export class BrowserAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
   private hls: Hls | null = null;
@@ -87,7 +89,9 @@ export class BrowserAdapter implements IPlayerAdapter {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     try {
-      const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      // Usa proxy para URLs externas no HEAD request também
+      const proxiedUrl = this.proxifyUrl(url);
+      const resp = await fetch(proxiedUrl, { method: 'HEAD', signal: controller.signal });
       clearTimeout(timeout);
       if (!resp.ok) return null;
       return resp.headers.get('content-type');
@@ -205,6 +209,15 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.emit('trackschange', this.tracks);
   }
 
+  private proxifyUrl(url: string): string {
+    // Always try to proxy to avoid CORS. If BRIDGE_URL is not set, use same-origin.
+    const base = BRIDGE_URL || `${window.location.protocol}//${window.location.host}`;
+    if (!/^https?:\/\//i.test(url)) return url;
+    if (url.includes('/api/proxy/hls')) return url;
+    const encoded = encodeURIComponent(url);
+    return `${base}/api/proxy/hls?url=${encoded}`;
+  }
+
   // Lifecycle
 
   async open(url: string, options: PlayerOptions = {}): Promise<void> {
@@ -219,14 +232,14 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.nativeFallbackDone = false;
     this.hlsRecoverAttempts = 0;
 
-    this.currentUrl = url;
+    this.currentUrl = this.proxifyUrl(url);
     this.options = options;
     this.setState('loading');
 
     const hasExtension = /\.[a-z0-9]{2,4}(\?|$)/i.test(url);
     let contentType: string | null = null;
     if (!hasExtension) {
-      contentType = await this.peekContentType(url);
+      contentType = await this.peekContentType(this.currentUrl);
     }
 
     const isHls = url.toLowerCase().includes('.m3u8') || (contentType ? /mpegurl/i.test(contentType) : false);
@@ -275,10 +288,14 @@ export class BrowserAdapter implements IPlayerAdapter {
         this.hlsRecoverAttempts = 0;
         this.loadTracks();
       });
-      this.hls.loadSource(url);
+
+      // Usa proxy para URLs externas (evita CORS)
+      console.log('[BrowserAdapter] Loading HLS:', this.currentUrl !== url ? 'via proxy' : 'direct');
+      this.hls.loadSource(this.currentUrl);
     } else {
-      // Uso nativo (Safari ou MP4/TS)
-      this.video.src = url;
+      // Uso nativo (Safari ou MP4/TS) - Usa proxy para URLs externas
+      console.log('[BrowserAdapter] Loading native:', this.currentUrl !== url ? 'via proxy' : 'direct');
+      this.video.src = this.currentUrl;
       this.video.load();
     }
   }
@@ -353,7 +370,10 @@ export class BrowserAdapter implements IPlayerAdapter {
           this.destroyHls();
           this.usingHls = false;
           this.hlsRecoverAttempts = 0;
-          this.video!.src = this.currentUrl;
+          // Usa proxy também no fallback nativo
+          const proxiedUrl = this.proxifyUrl(this.currentUrl);
+          console.log('[BrowserAdapter] Fallback to native:', proxiedUrl !== this.currentUrl ? 'via proxy' : 'direct');
+          this.video!.src = proxiedUrl;
           this.video!.load();
           video.addEventListener('canplay', onCanPlay);
           video.addEventListener('error', onError);

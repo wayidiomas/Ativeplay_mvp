@@ -1,6 +1,6 @@
 /**
  * Playlist Store
- * Estado global para gerenciamento de playlists
+ * Estado global para playlists e caches
  */
 
 import { create } from 'zustand';
@@ -12,23 +12,17 @@ interface SyncProgress {
   percentage: number;
 }
 
+type CacheGridState = { visibleCount: number; scrollTop: number };
+
 interface PlaylistState {
-  // Estado
   activePlaylist: Playlist | null;
   playlists: Playlist[];
   isLoading: boolean;
   error: string | null;
-
-  // Estado de sincronização (early navigation)
   isSyncing: boolean;
   syncProgress: SyncProgress | null;
-
-  // Cache de grupos visitados (10x faster on revisit)
   groupCache: Map<string, M3UItem[]>;
-  // Cache de telas de grid ("ver todos"): mantém visibleCount/scroll
-  mediaGridCache: Map<string, { visibleCount: number; scrollTop: number }>;
-
-  // Actions
+  mediaGridCache: Map<string, CacheGridState>;
   setActivePlaylist: (playlist: Playlist | null) => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setLoading: (loading: boolean) => void;
@@ -37,36 +31,31 @@ interface PlaylistState {
   setSyncProgress: (progress: SyncProgress | null) => void;
   cacheGroupItems: (playlistId: string, group: string, items: M3UItem[]) => void;
   getGroupCache: (playlistId: string, group: string) => M3UItem[] | undefined;
-  setMediaGridCache: (key: string, value: { visibleCount: number; scrollTop: number }) => void;
-  getMediaGridCache: (key: string) => { visibleCount: number; scrollTop: number } | undefined;
+  setMediaGridCache: (key: string, value: CacheGridState) => void;
+  getMediaGridCache: (key: string) => CacheGridState | undefined;
   clearGroupCache: () => void;
   reset: () => void;
 }
 
 const initialState = {
-  activePlaylist: null,
-  playlists: [],
+  activePlaylist: null as Playlist | null,
+  playlists: [] as Playlist[],
   isLoading: false,
-  error: null,
+  error: null as string | null,
   isSyncing: false,
-  syncProgress: null,
+  syncProgress: null as SyncProgress | null,
   groupCache: new Map<string, M3UItem[]>(),
-  mediaGridCache: new Map<string, { visibleCount: number; scrollTop: number }>(),
+  mediaGridCache: new Map<string, CacheGridState>(),
 };
 
-export const usePlaylistStore = create<PlaylistState>((set) => ({
+export const usePlaylistStore = create<PlaylistState>()((set, get) => ({
   ...initialState,
 
   setActivePlaylist: (playlist) => set({ activePlaylist: playlist }),
-
   setPlaylists: (playlists) => set({ playlists }),
-
   setLoading: (isLoading) => set({ isLoading }),
-
   setError: (error) => set({ error }),
-
   setSyncing: (isSyncing) => set({ isSyncing }),
-
   setSyncProgress: (syncProgress) => set({ syncProgress }),
 
   cacheGroupItems: (playlistId, group, items) =>
@@ -78,7 +67,7 @@ export const usePlaylistStore = create<PlaylistState>((set) => ({
     }),
 
   getGroupCache: (playlistId, group) => {
-    const state = usePlaylistStore.getState();
+    const state = get();
     const key = `${playlistId}:${group}`;
     return state.groupCache.get(key);
   },
@@ -91,17 +80,22 @@ export const usePlaylistStore = create<PlaylistState>((set) => ({
     }),
 
   getMediaGridCache: (key) => {
-    const state = usePlaylistStore.getState();
+    const state = get();
     return state.mediaGridCache.get(key);
   },
 
   clearGroupCache: () =>
     set({
       groupCache: new Map<string, M3UItem[]>(),
-      mediaGridCache: new Map<string, { visibleCount: number; scrollTop: number }>(),
+      mediaGridCache: new Map<string, CacheGridState>(),
     }),
 
-  reset: () => set({ ...initialState, groupCache: new Map<string, M3UItem[]>() }),
+  reset: () =>
+    set({
+      ...initialState,
+      groupCache: new Map<string, M3UItem[]>(),
+      mediaGridCache: new Map<string, CacheGridState>(),
+    }),
 }));
 
 export default usePlaylistStore;

@@ -66,7 +66,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     subtitleIndex: -1,
     subtitleEnabled: false,
   };
-  private lastMimeTried: string | null = null;
   private mediaId: string | null = null;
   private isBuffering: boolean = false;
   private lastKnownPosition: number = 0; // ms
@@ -166,7 +165,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   private loadViaLuna(url: string, mime: string, onSuccess: () => void, onFailure: (err: unknown) => void): void {
     this.mediaId = `ativeplay-${Date.now()}`;
-    this.lastMimeTried = mime;
     this.webOS!.service.request('luna://com.webos.media', {
       method: 'load',
       parameters: {

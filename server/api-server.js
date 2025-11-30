@@ -718,11 +718,19 @@ app.get('/api/proxy/hls', async (req, res) => {
 
     clearTimeout(timeoutId);
 
+    const guessContentType = (url) => {
+      const lower = url.toLowerCase();
+      if (lower.includes('.m3u8')) return 'application/vnd.apple.mpegurl';
+      if (lower.includes('.mp4')) return 'video/mp4';
+      if (lower.includes('.mkv')) return 'video/x-matroska';
+      if (lower.includes('.avi')) return 'video/x-msvideo';
+      if (lower.includes('.ts')) return 'video/MP2T';
+      return 'video/MP2T';
+    };
+
     const contentType =
       upstream.headers.get('content-type') ||
-      (targetUrl.toLowerCase().includes('.m3u8')
-        ? 'application/vnd.apple.mpegurl'
-        : 'video/MP2T');
+      guessContentType(targetUrl);
 
     res.status(upstream.status);
     res.set({
@@ -1297,9 +1305,15 @@ app.post('/session/create', async (req, res) => {
     const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutos
 
     // URL que será aberta no celular
-    // Em produção usa BASE_URL (Render), em dev usa IP local
+    // Preferir BASE_URL (config em prod) ou BRIDGE_URL; fallback: IP local
     const localIP = getLocalIP();
-    const baseUrl = process.env.BASE_URL || `http://${localIP}:${PORT}`;
+    const requestOrigin = req.get('origin') || `${req.protocol}://${req.get('host')}`;
+    const baseUrl =
+      process.env.BASE_URL ||
+      process.env.BRIDGE_URL ||
+      process.env.VITE_BRIDGE_URL ||
+      requestOrigin ||
+      `http://${localIP}:${PORT}`;
     const mobileUrl = `${baseUrl}/s/${sessionId}`;
 
     // Cria sessão em Redis

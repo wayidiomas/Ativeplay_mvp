@@ -1031,47 +1031,70 @@ export async function addPlaylist(
         console.log('[DB DEBUG] Items carregados:', itemsCount, '/', totalItems);
         console.log('[DB DEBUG] Status atual:', existing.lastSyncStatus);
 
-        // Case 1: Items completos mas status ainda 'syncing' → corrige status
-        if (itemsCount >= totalItems && existing.lastSyncStatus === 'syncing') {
-          console.log('[DB DEBUG] Corrigindo status para "success" (items já completos)');
-          await db.playlists.update(existing.id, { lastSyncStatus: 'success' });
-        }
+        // 🔥 FIX: PRIORIZA CACHE - Mostra dados imediatamente se tiver QUALQUER item em cache
+        if (itemsCount > 0) {
+          console.log('[DB DEBUG] ✅ CACHE HIT! Mostrando dados imediatamente (',itemsCount,'items)');
 
-        // Case 2: Items incompletos → reinicia sync (sem reprocessar!)
-        else if (itemsCount < totalItems) {
-          console.log('[DB DEBUG] Items incompletos, reiniciando sync...');
+          // Ativa a playlist IMEDIATAMENTE (não bloqueia)
+          await setActivePlaylist(existing.id);
 
-          // Se hash não existe (playlist antiga), busca do servidor
-          let hash = existing.hash;
-          if (!hash) {
-            console.log('[DB DEBUG] Hash não existe, buscando do servidor...');
-            const parsed = await fetchFromServer(existing.url, onProgress, existing.id);
-            hash = parsed.hash;
-            // Salva hash para próxima vez
-            await db.playlists.update(existing.id, { hash });
-          } else {
-            console.log('[DB DEBUG] Usando hash armazenado:', hash);
+          // Case 1: Items completos → apenas corrige status se necessário
+          if (itemsCount >= totalItems && existing.lastSyncStatus === 'syncing') {
+            console.log('[DB DEBUG] Corrigindo status para "success" (items já completos)');
+            await db.playlists.update(existing.id, { lastSyncStatus: 'success' });
           }
 
-          // Atualiza status para syncing
-          await db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
+          // Case 2: Items incompletos → sincroniza resto EM BACKGROUND (não bloqueia!)
+          else if (itemsCount < totalItems) {
+            console.log('[DB DEBUG] Items incompletos, sincronizando em background...');
 
-          // Se tem menos de 500 items, carrega parcial primeiro
-          if (itemsCount < 500) {
-            console.log('[DB DEBUG] Carregando primeiros 500 items...');
-            await syncItemsFromServer(hash, existing.id, onProgress, {
-              loadPartial: true,
-              partialLimit: 500,
-            });
+            // Se hash não existe (playlist antiga), busca do servidor EM BACKGROUND
+            let hash = existing.hash;
+            if (!hash) {
+              console.log('[DB DEBUG] Hash não existe, buscando em background...');
+              // Fire-and-forget: não bloqueia UI
+              fetchFromServer(existing.url, undefined, existing.id)
+                .then(parsed => {
+                  db.playlists.update(existing.id, { hash: parsed.hash });
+                  continueBackgroundSync(parsed.hash, existing.id);
+                })
+                .catch(err => {
+                  console.error('[DB DEBUG] Erro ao buscar hash em background:', err);
+                });
+            } else {
+              console.log('[DB DEBUG] Continuando sync em background com hash:', hash);
+              // Atualiza status para syncing (não aguarda)
+              db.playlists.update(existing.id, { lastSyncStatus: 'syncing' });
+              // Continua sync em background
+              continueBackgroundSync(hash, existing.id).catch((err) => {
+                console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
+              });
+            }
           }
 
-          // Continua sync completo em background
-          continueBackgroundSync(hash, existing.id).catch((err) => {
-            console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
-          });
+          // Retorna IMEDIATAMENTE (usuário vê dados em <1s)
+          return existing.id;
         }
 
-        // Ativa a playlist existente
+        // Case 3: ZERO items no cache → precisa reprocessar (ÚNICA vez que bloqueia)
+        console.log('[DB DEBUG] ⚠️ ZERO items em cache, reprocessando...');
+        const parsed = await fetchFromServer(existing.url, onProgress, existing.id);
+
+        // Salva hash
+        await db.playlists.update(existing.id, { hash: parsed.hash });
+
+        // Carrega parcial
+        await syncItemsFromServer(parsed.hash, existing.id, onProgress, {
+          loadPartial: true,
+          partialLimit: 500,
+        });
+
+        // Background sync completo
+        continueBackgroundSync(parsed.hash, existing.id).catch((err) => {
+          console.error('[DB DEBUG] Erro ao continuar sincronização em background:', err);
+        });
+
+        // Ativa playlist
         await setActivePlaylist(existing.id);
 
         return existing.id;

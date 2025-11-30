@@ -3,7 +3,7 @@
  * Tela de carregamento com progresso do parser
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useOnboardingStore } from '@store/onboardingStore';
 import { usePlaylistStore } from '@store/playlistStore';
@@ -14,6 +14,10 @@ export function LoadingProgress() {
   const navigate = useNavigate();
   const { playlistUrl, progress, setProgress, setError } = useOnboardingStore();
   const setActivePlaylist = usePlaylistStore((s) => s.setActivePlaylist);
+  const activePlaylist = usePlaylistStore((s) => s.activePlaylist);
+  const earlyNavDone = useRef(false);
+  const optimisticTimer = useRef<ReturnType<typeof setInterval>>();
+  const [optimisticPct, setOptimisticPct] = useState(1);
 
   useEffect(() => {
     if (!playlistUrl) {
@@ -26,6 +30,14 @@ export function LoadingProgress() {
     async function loadPlaylist() {
       try {
         console.log('[LOADING DEBUG] Iniciando addPlaylist...');
+        // Força progress inicial para movimentar a barra imediatamente
+        setProgress({
+          phase: 'downloading',
+          current: 1,
+          total: 100,
+          percentage: 1,
+          message: 'Conectando ao servidor...',
+        });
         await addPlaylist(playlistUrl, undefined, (p) => {
           if (!cancelled) {
             setProgress(p);
@@ -72,8 +84,47 @@ export function LoadingProgress() {
     };
   }, [playlistUrl, navigate, setProgress, setError, setActivePlaylist]);
 
-  const percentage = progress?.percentage ?? 0;
-  const message = progress?.message ?? 'Iniciando...';
+  // Otimismo: avança a barra enquanto não chegam updates reais do parser
+  useEffect(() => {
+    if (progress && progress.percentage > optimisticPct) {
+      setOptimisticPct(progress.percentage);
+    }
+
+    // Inicia timer se não há progresso ou está parado em 0
+    if (!progress || progress.percentage < 1) {
+      if (!optimisticTimer.current) {
+        optimisticTimer.current = setInterval(() => {
+          setOptimisticPct((prev) => (prev < 15 ? prev + 1 : prev));
+        }, 400);
+      }
+    } else {
+      if (optimisticTimer.current) {
+        clearInterval(optimisticTimer.current);
+        optimisticTimer.current = undefined;
+      }
+    }
+
+    return () => {
+      if (optimisticTimer.current) {
+        clearInterval(optimisticTimer.current);
+        optimisticTimer.current = undefined;
+      }
+    };
+  }, [progress, optimisticPct]);
+
+  // Assim que houver progresso de parsing e playlist ativa, navega para Home sem esperar todo o fluxo
+  useEffect(() => {
+    if (earlyNavDone.current) return;
+    if (!activePlaylist) return;
+    if (!progress) return;
+    if (progress.phase === 'parsing' || progress.phase === 'classifying' || progress.phase === 'indexing' || progress.phase === 'complete') {
+      earlyNavDone.current = true;
+      navigate('/home', { replace: true });
+    }
+  }, [activePlaylist, progress, navigate]);
+
+  const percentage = Math.max(progress?.percentage ?? 0, optimisticPct);
+  const message = progress?.message ?? 'Conectando ao servidor...';
 
   return (
     <div className={styles.container}>

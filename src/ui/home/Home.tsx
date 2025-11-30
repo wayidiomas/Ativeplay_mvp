@@ -181,7 +181,7 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [searchKind, setSearchKind] = useState<SearchKind>('all');
+  const [searchKind] = useState<SearchKind>('all');
   const [searchResults, setSearchResults] = useState<M3UItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [loadingMoreGroups, setLoadingMoreGroups] = useState(false);
@@ -496,21 +496,17 @@ export function Home({ onSelectGroup, onSelectMediaKind, onSelectItem }: HomePro
 
       // Carrega mais séries se houver (keyset pagination)
       const moreSeries = row.hasMoreSeries
-        ? (() => {
+        ? await (async () => {
             const cacheKey = `${activePlaylist.id}:${row.group.name}`;
             const cachedSeries = seriesCacheRef.current[cacheKey];
             if (cachedSeries) {
-              return Promise.resolve(
-                cachedSeries.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE)
-              );
+              return cachedSeries.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE);
             }
-            return db.series
+            const arr = await db.series
               .where({ playlistId: activePlaylist.id, group: row.group.name })
-              .sortBy('id')
-              .then((arr) => {
-                seriesCacheRef.current[cacheKey] = arr;
-                return arr.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE);
-              });
+              .sortBy('id');
+            seriesCacheRef.current[cacheKey] = arr;
+            return arr.slice(row.series?.length ?? 0, (row.series?.length ?? 0) + ITEMS_LOAD_MORE);
           })()
         : [];
 

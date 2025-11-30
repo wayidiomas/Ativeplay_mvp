@@ -685,9 +685,15 @@ app.post('/session/create', async (req, res) => {
     const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutos
 
     // URL que será aberta no celular
-    // Em produção usa BASE_URL (Render), em dev usa IP local
+    // Em produção usa BASE_URL/BRIDGE_URL; em dev IP local
     const localIP = getLocalIP();
-    const baseUrl = process.env.BASE_URL || `http://${localIP}:${PORT}`;
+    const requestOrigin = req.get('origin') || `${req.protocol}://${req.get('host')}`;
+    const baseUrl =
+      process.env.BASE_URL ||
+      process.env.BRIDGE_URL ||
+      process.env.VITE_BRIDGE_URL ||
+      requestOrigin ||
+      `http://${localIP}:${PORT}`;
     const mobileUrl = `${baseUrl}/s/${sessionId}`;
 
     // Cria sessão

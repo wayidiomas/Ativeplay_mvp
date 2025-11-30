@@ -118,7 +118,7 @@ export function MediaGrid({ group, onBack, onSelectItem }: MediaGridProps) {
   }, []);
 
   // Split items into rows
-  const rows = [];
+  const rows: M3UItem[][] = [];
   if (items) {
     for (let i = 0; i < items.length; i += columnsPerRow) {
       rows.push(items.slice(i, i + columnsPerRow));

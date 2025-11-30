@@ -4,6 +4,7 @@ export {
   type MediaKind,
   type M3UItem,
   type M3UGroup,
+  type Series,
   type Favorite,
   type WatchProgress,
   getPlaylistItems,
