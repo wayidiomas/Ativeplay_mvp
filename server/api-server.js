@@ -770,7 +770,10 @@ app.get('/api/proxy/hls', async (req, res) => {
   }
 });
 
-/**
+// ============================================================================
+// FASE 3: PARSING ENDPOINTS DESABILITADOS (movido para frontend)
+// ============================================================================
+/*/**
  * POST /api/playlist/parse
  * Worker Pool Architecture:
  * - Cache hit → retorna imediatamente
@@ -1292,7 +1295,8 @@ app.get('/api/playlist/progress/:hash', async (req, res) => {
   } catch (error) {
     console.error('[Progress] Erro:', error);
     res.status(500).json({ error: 'Erro ao verificar progresso' });
-  }
+*/ // FIM - PARSING ENDPOINTS DESABILITADOS
+// ============================================================================  }
 });
 
 /**
