@@ -20,16 +20,7 @@ import type {
 
 export type ProgressCallback = (progress: ParserProgress) => void;
 
-// ✅ FASE 7.1: Callback para navegação antecipada (após primeiros items)
-export type EarlyReadyCallback = (stats: {
-  itemsLoaded: number;
-  liveCount: number;
-  movieCount: number;
-  seriesCount: number;
-}) => void | Promise<void>;
-
 const YIELD_INTERVAL = 0; // Yield para UI (setTimeout 0ms)
-const EARLY_NAV_THRESHOLD = 500; // ✅ FASE 7.1: Navega após 500 items carregados
 
 // ✅ NOVO: Series Run-Length Encoding (RLE)
 // Detecta quando episodes consecutivos pertencem à mesma série
@@ -150,19 +141,16 @@ async function flushSeriesRun(run: SeriesRun, playlistId: string): Promise<void>
 /**
  * Processa itens do stream em lotes e insere no banco
  * FASE 1: Adiciona series grouping incremental (hash-based)
- * FASE 7.1: Adiciona early navigation callback
  *
  * @param generator AsyncGenerator que produz itens parseados
  * @param playlistId ID da playlist
  * @param onProgress Callback de progresso
- * @param onEarlyReady Callback disparado ao atingir threshold (500 items)
  * @returns Playlist completa com stats, grupos e seriesGroups
  */
 export async function processBatches(
   generator: AsyncGenerator<M3UParsedItem>,
   playlistId: string,
-  onProgress?: ProgressCallback,
-  onEarlyReady?: EarlyReadyCallback
+  onProgress?: ProgressCallback
 ): Promise<Omit<M3UPlaylist, 'url'> & { seriesGroups: SeriesGroup[] }> {
   // ✅ FASE 2: Config adaptativo baseado no device
   const config = getBatchConfig();
@@ -183,7 +171,6 @@ export async function processBatches(
   let batch: M3UParsedItem[] = [];
   let totalProcessed = 0;
   let batchCount = 0; // ✅ FASE 1: Para GC interval
-  let earlyReadyFired = false; // ✅ FASE 7.1: Controla disparo único do early callback
 
   // ✅ NOVO: Series Run-Length Encoding (RLE)
   // Detecta quando episodes consecutivos pertencem à mesma série
@@ -398,24 +385,6 @@ export async function processBatches(
 
         totalProcessed += batch.length;
         batchCount++; // ✅ NOVO: Incrementa contador de batches
-
-        // ✅ FASE 7.1: Dispara early ready callback após threshold
-        if (!earlyReadyFired && totalProcessed >= EARLY_NAV_THRESHOLD && onEarlyReady) {
-          earlyReadyFired = true;
-          console.log(`[BatchProcessor] ✅ EARLY READY! ${totalProcessed} items carregados, disparando callback...`);
-
-          try {
-            await onEarlyReady({
-              itemsLoaded: totalProcessed,
-              liveCount: stats.liveCount,
-              movieCount: stats.movieCount,
-              seriesCount: stats.seriesCount,
-            });
-          } catch (err) {
-            console.error('[BatchProcessor] Erro no onEarlyReady callback:', err);
-            // Não interrompe o parsing se callback falhar
-          }
-        }
 
         // Report progress (não sabemos total ainda no streaming)
         onProgress?.({

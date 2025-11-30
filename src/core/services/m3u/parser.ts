@@ -10,13 +10,12 @@
  */
 
 import { streamParseM3U } from './streamParser';
-import { processBatches, type EarlyReadyCallback } from './batchProcessor';
+import { processBatches } from './batchProcessor';
 // import { mergeSeriesGroups } from './seriesGrouper'; // ✅ FASE 7.2: Opcional (fuzzy merge desabilitado)
 import type { ParserProgress } from './types';
 import { db } from '@core/db/schema'; // ✅ FASE 7.2: Busca series do DB
 
 export type ProgressCallback = (progress: ParserProgress) => void;
-export type { EarlyReadyCallback }; // ✅ FASE 7.1: Re-export para conveniência
 
 /**
  * Parse M3U completamente no frontend
@@ -24,19 +23,16 @@ export type { EarlyReadyCallback }; // ✅ FASE 7.1: Re-export para conveniênci
  * - Chunked processing com batch adaptativo
  * - Incremental series grouping (hash + fuzzy)
  * - Memory management (GC intervals)
- * - FASE 7.1: Early navigation após threshold
  *
  * @param url - URL do arquivo M3U
  * @param playlistId - ID único da playlist
  * @param onProgress - Callback de progresso (opcional)
- * @param onEarlyReady - Callback disparado ao atingir threshold (500 items) (opcional)
  * @returns Stats, groups e series da playlist
  */
 export async function parseM3ULocal(
   url: string,
   playlistId: string,
-  onProgress?: ProgressCallback,
-  onEarlyReady?: EarlyReadyCallback
+  onProgress?: ProgressCallback
 ): Promise<{
   stats: {
     totalItems: number;
@@ -83,8 +79,8 @@ export async function parseM3ULocal(
   // Cria generator do stream parser
   const generator = streamParseM3U(url);
 
-  // Processa em batches (com hash-based series grouping + early ready callback)
-  const result = await processBatches(generator, playlistId, onProgress, onEarlyReady);
+  // Processa em batches (com hash-based series grouping)
+  const result = await processBatches(generator, playlistId, onProgress);
 
   console.log('[Parser] Batch processing completo:', {
     totalItems: result.stats.totalItems,
@@ -143,10 +139,9 @@ export async function parseM3ULocal(
 export async function fetchAndParseM3U(
   url: string,
   playlistId: string,
-  onProgress?: ProgressCallback,
-  onEarlyReady?: EarlyReadyCallback
+  onProgress?: ProgressCallback
 ): Promise<any> {
-  return parseM3ULocal(url, playlistId, onProgress, onEarlyReady);
+  return parseM3ULocal(url, playlistId, onProgress);
 }
 
 export default { parseM3ULocal, fetchAndParseM3U };

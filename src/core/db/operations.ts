@@ -6,7 +6,7 @@
 
 import { db, type Playlist } from './schema';
 import type { ProgressCallback } from '../services/m3u';
-import { parseM3ULocal, type EarlyReadyCallback } from '../services/m3u/parser'; // ✅ FASE 5: Frontend parsing
+import { parseM3ULocal } from '../services/m3u/parser'; // ✅ FASE 5: Frontend parsing
 
 const MAX_PLAYLISTS = parseInt(import.meta.env.VITE_MAX_PLAYLISTS || '3', 10);
 
@@ -28,7 +28,7 @@ const processingUrls = new Map<string, Promise<string>>();
 /**
  * Adiciona uma nova playlist a partir de uma URL
  * ✅ FASE 5: Usa parseM3ULocal (frontend-only parsing)
- * ✅ FASE 7.1: Fire-and-forget com early navigation
+ * Aguarda parsing completo antes de ativar/navegar
  */
 export async function addPlaylist(
   url: string,
@@ -112,9 +112,8 @@ export async function addPlaylist(
           return existing.id;
         }
 
-        // Case 3: ZERO items no cache → usa fire-and-forget (early navigation)
-        // ✅ FASE 7.1: Não bloqueia mais! Navega após 500 items
-        console.log('[DB DEBUG] ⚠️ ZERO items em cache, iniciando parsing com early navigation...');
+        // Case 3: ZERO items no cache → parsing completo antes de navegar
+        console.log('[DB DEBUG] ⚠️ ZERO items em cache, aguardando parsing completo...');
 
         // Marca como 'syncing' imediatamente
         await db.playlists.update(existing.id, {
@@ -122,51 +121,30 @@ export async function addPlaylist(
           lastUpdated: Date.now(),
         });
 
-        // ✅ FASE 7.1: Fire-and-forget - parseM3ULocal continua em background
-        const earlyNavCallback: EarlyReadyCallback = async (partialStats) => {
-          console.log('[DB DEBUG] ✅ Early Ready! Ativando playlist com', partialStats.itemsLoaded, 'items...');
+        // Aguarda parsing completo
+        const parsed = await parseM3ULocal(existing.url, existing.id, onProgress);
 
-          // Atualiza stats parciais
-          await db.playlists.update(existing.id, {
-            itemCount: partialStats.itemsLoaded,
-            liveCount: partialStats.liveCount,
-            movieCount: partialStats.movieCount,
-            seriesCount: partialStats.seriesCount,
-            lastSyncStatus: 'syncing', // Ainda carregando
-          });
+        // Atualiza com stats finais
+        await db.playlists.update(existing.id, {
+          itemCount: parsed.stats.totalItems,
+          liveCount: parsed.stats.liveCount,
+          movieCount: parsed.stats.movieCount,
+          seriesCount: parsed.stats.seriesCount,
+          lastSyncStatus: 'success',
+          lastUpdated: Date.now(),
+        });
 
-          // Ativa playlist IMEDIATAMENTE (navega para home)
-          await setActivePlaylist(existing.id);
+        // Ativa playlist após parsing completo
+        await setActivePlaylist(existing.id);
 
-          // ✅ CRITICAL: Atualiza Zustand store para trigger navegação
-          const playlist = await db.playlists.get(existing.id);
-          if (playlist) {
-            const { usePlaylistStore } = await import('@store/playlistStore');
-            usePlaylistStore.getState().setActivePlaylist(playlist);
-            console.log('[DB DEBUG] ✅ Store atualizado (zero items case), navegação deve disparar agora');
-          }
-        };
+        // Atualiza Zustand store para trigger navegação
+        const playlist = await db.playlists.get(existing.id);
+        if (playlist) {
+          const { usePlaylistStore } = await import('@store/playlistStore');
+          usePlaylistStore.getState().setActivePlaylist(playlist);
+          console.log('[DB DEBUG] ✅ Store atualizado (parsing completo)');
+        }
 
-        // Inicia parsing (não bloqueia!)
-        parseM3ULocal(existing.url, existing.id, onProgress, earlyNavCallback)
-          .then(async (parsed) => {
-            // Atualiza com stats finais quando completo
-            await db.playlists.update(existing.id, {
-              itemCount: parsed.stats.totalItems,
-              liveCount: parsed.stats.liveCount,
-              movieCount: parsed.stats.movieCount,
-              seriesCount: parsed.stats.seriesCount,
-              lastSyncStatus: 'success',
-              lastUpdated: Date.now(),
-            });
-            console.log('[DB DEBUG] ✓ Parsing completo em background');
-          })
-          .catch(err => {
-            console.error('[DB DEBUG] Erro no parsing:', err);
-            db.playlists.update(existing.id, { lastSyncStatus: 'error' });
-          });
-
-        // Retorna IMEDIATAMENTE (navegação acontece no early callback)
         return existing.id;
       }
 
@@ -176,78 +154,57 @@ export async function addPlaylist(
       // Determina se deve ser ativa (primeira playlist = ativa)
       const isFirst = playlistCount === 0;
 
-      // ✅ FASE 7.1: Cria playlist IMEDIATAMENTE (status 'syncing')
+      // Cria playlist com status inicial
       const playlist: Playlist = {
         id: playlistId,
         name: name || extractNameFromUrl(url),
         url,
         hash: '', // ✅ FASE 5: Hash não é mais necessário (sem servidor)
-        isActive: 0, // Será ativada no early callback
+        isActive: 0, // Será ativada após parsing
         lastUpdated: Date.now(),
-        lastSyncStatus: 'syncing', // ✅ FASE 7.1: Ainda carregando
-        itemCount: 0, // Será atualizado no early callback
+        lastSyncStatus: 'syncing',
+        itemCount: 0,
         liveCount: 0,
         movieCount: 0,
         seriesCount: 0,
         createdAt: Date.now(),
       };
 
-      console.log('[DB DEBUG] ===== CRIANDO PLAYLIST (fire-and-forget) =====');
+      console.log('[DB DEBUG] ===== CRIANDO PLAYLIST =====');
       console.log('[DB DEBUG] PlaylistId:', playlistId);
       console.log('[DB DEBUG] IsFirst:', isFirst);
 
       await db.playlists.add(playlist);
 
-      // ✅ FASE 7.1: Early navigation callback
-      const earlyNavCallback: EarlyReadyCallback = async (partialStats) => {
-        console.log('[DB DEBUG] ✅ Early Ready! Atualizando playlist com', partialStats.itemsLoaded, 'items...');
+      // Aguarda parsing completo
+      const parsed = await parseM3ULocal(url, playlistId, onProgress);
 
-        // Atualiza com stats parciais
-        await db.playlists.update(playlistId, {
-          itemCount: partialStats.itemsLoaded,
-          liveCount: partialStats.liveCount,
-          movieCount: partialStats.movieCount,
-          seriesCount: partialStats.seriesCount,
-          lastSyncStatus: 'syncing', // Ainda carregando
-        });
+      // Atualiza com stats finais
+      console.log('[DB DEBUG] ✓ Parsing completo! Atualizando stats finais...');
+      await db.playlists.update(playlistId, {
+        itemCount: parsed.stats.totalItems,
+        liveCount: parsed.stats.liveCount,
+        movieCount: parsed.stats.movieCount,
+        seriesCount: parsed.stats.seriesCount,
+        lastSyncStatus: 'success',
+        lastUpdated: Date.now(),
+      });
 
-        // Ativa playlist se for a primeira (navega para home)
-        if (isFirst) {
-          console.log('[DB DEBUG] Ativando primeira playlist...');
-          await setActivePlaylist(playlistId);
+      // Ativa playlist se for a primeira
+      if (isFirst) {
+        console.log('[DB DEBUG] Ativando primeira playlist...');
+        await setActivePlaylist(playlistId);
 
-          // ✅ CRITICAL: Atualiza Zustand store para trigger navegação
-          const playlist = await db.playlists.get(playlistId);
-          if (playlist) {
-            const { usePlaylistStore } = await import('@store/playlistStore');
-            usePlaylistStore.getState().setActivePlaylist(playlist);
-            console.log('[DB DEBUG] ✅ Store atualizado, navegação deve disparar agora');
-          }
+        // Atualiza Zustand store para trigger navegação
+        const updatedPlaylist = await db.playlists.get(playlistId);
+        if (updatedPlaylist) {
+          const { usePlaylistStore } = await import('@store/playlistStore');
+          usePlaylistStore.getState().setActivePlaylist(updatedPlaylist);
+          console.log('[DB DEBUG] ✅ Store atualizado (parsing completo)');
         }
-      };
+      }
 
-      // ✅ FASE 7.1: Fire-and-forget - inicia parsing sem bloquear
-      parseM3ULocal(url, playlistId, onProgress, earlyNavCallback)
-        .then(async (parsed) => {
-          // Atualiza com stats finais quando completo
-          console.log('[DB DEBUG] ✓ Parsing completo! Atualizando stats finais...');
-          await db.playlists.update(playlistId, {
-            itemCount: parsed.stats.totalItems,
-            liveCount: parsed.stats.liveCount,
-            movieCount: parsed.stats.movieCount,
-            seriesCount: parsed.stats.seriesCount,
-            lastSyncStatus: 'success',
-            lastUpdated: Date.now(),
-          });
-          console.log('[DB DEBUG] ✓ Playlist finalizada:', playlistId);
-        })
-        .catch(err => {
-          console.error('[DB DEBUG] ❌ Erro no parsing:', err);
-          db.playlists.update(playlistId, { lastSyncStatus: 'error' });
-        });
-
-      // Retorna IMEDIATAMENTE (navegação acontece no early callback)
-      console.log('[DB DEBUG] ✓ Retornando playlistId imediatamente (parsing em background)');
+      console.log('[DB DEBUG] ✓ Playlist finalizada:', playlistId);
       return playlistId;
     } finally {
       // ✅ Remove lock quando terminar (sucesso ou erro)
