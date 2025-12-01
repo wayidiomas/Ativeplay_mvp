@@ -304,7 +304,7 @@ export class BrowserAdapter implements IPlayerAdapter {
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 1000,
         loader,
-      } as Hls.OptionalConfig;
+      };
     }
 
     // VOD/DVR defaults: keep conservative buffer without forcing live-specific options
@@ -312,7 +312,7 @@ export class BrowserAdapter implements IPlayerAdapter {
       lowLatencyMode: false,
       backBufferLength: 120,
       loader,
-    } as Hls.OptionalConfig;
+    };
   }
 
   // Lifecycle
@@ -365,7 +365,7 @@ export class BrowserAdapter implements IPlayerAdapter {
 
     // Detect IPTV TS streams (should NOT use HLS.js)
     const isIptvTs = isIptvTsStream(url) || (contentType ? /mp2t/i.test(contentType) : false);
-    const isLiveStream = options.isLive ?? isIptvTs || isLikelyLiveHls(url);
+    const isLiveStream = options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
 
     const isHls = url.toLowerCase().includes('.m3u8') || (contentType ? /mpegurl/i.test(contentType) : false);
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';

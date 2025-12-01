@@ -235,7 +235,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 1000,
         loader,
-      } as Hls.OptionalConfig;
+      };
     }
 
     return {
@@ -246,7 +246,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       lowLatencyMode: false,
       backBufferLength: 120,
       loader,
-    } as Hls.OptionalConfig;
+    };
   }
 
   private setupVideoListeners(): void {
@@ -529,7 +529,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Detect IPTV TS streams - should NOT use HLS.js
     const isIptvTs = isIptvTsStream(url);
-    const isLiveStream = this.options.isLive ?? isIptvTs || isLikelyLiveHls(url);
+    const isLiveStream = this.options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
