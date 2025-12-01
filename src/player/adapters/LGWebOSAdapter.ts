@@ -885,6 +885,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // Lifecycle
 
   async open(url: string, options: PlayerOptions = {}): Promise<void> {
+    console.log('[LGWebOSAdapter] open() called with:', {
+      url: url?.substring(0, 100),
+      isLive: options.isLive,
+      hasUrl: !!url,
+    });
+
     this.options = options;
     this.setState('loading');
 
@@ -929,10 +935,19 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     // Detect IPTV TS streams - should NOT use HLS.js
     const isIptvTs = isIptvTsStream(url);
     const isLiveStream = this.options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
+    const isHls = isHlsUrl(url);
+
+    console.log('[LGWebOSAdapter] Stream detection:', {
+      isIptvTs,
+      isLiveStream,
+      isHls,
+      hlsSupported: Hls.isSupported(),
+      streamUrl: streamUrl?.substring(0, 100),
+    });
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
-    if (!isIptvTs && isHlsUrl(url) && Hls.isSupported()) {
+    if (!isIptvTs && isHls && Hls.isSupported()) {
       console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
       this.usingHls = true;
 

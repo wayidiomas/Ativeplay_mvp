@@ -57,8 +57,19 @@ export function PlayerContainer({
       if (!BRIDGE_URL) return original;
       if (!/^https?:\/\//i.test(original)) return original;
       if (original.includes('/api/proxy/hls')) return original;
-      const encoded = encodeURIComponent(original);
-      return `${BRIDGE_URL}/api/proxy/hls?url=${encoded}`;
+
+      // Extract referer (origin) from original URL for IPTV provider authentication
+      let referer: string | undefined;
+      try {
+        const parsed = new URL(original);
+        referer = parsed.origin;
+      } catch {
+        // Invalid URL, skip referer
+      }
+
+      const params = new URLSearchParams({ url: original });
+      if (referer) params.set('referer', referer);
+      return `${BRIDGE_URL}/api/proxy/hls?${params}`;
     },
     [BRIDGE_URL]
   );
