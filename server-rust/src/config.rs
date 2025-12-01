@@ -88,11 +88,11 @@ impl Config {
                 .parse()
                 .unwrap_or(3),
 
-            // HLS Proxy
+            // HLS Proxy - 45 seconds for live streams that may have slow manifest generation
             hls_proxy_timeout_ms: env::var("HLS_PROXY_TIMEOUT_MS")
-                .unwrap_or_else(|_| "15000".to_string())
+                .unwrap_or_else(|_| "45000".to_string())
                 .parse()
-                .unwrap_or(15_000), // 15 seconds
+                .unwrap_or(45_000), // 45 seconds (live streams need more time)
 
             // Cache
             parse_cache_dir: env::var("PARSE_CACHE_DIR")

@@ -330,8 +330,23 @@ export class BrowserAdapter implements IPlayerAdapter {
       const proxyUrl = this.proxifyUrl.bind(this);
 
       this.hls = new Hls({
-        lowLatencyMode: true,
-        backBufferLength: 90,
+        // DISABLED lowLatencyMode - causes buffer starvation on unstable live streams
+        lowLatencyMode: false,
+        // Buffer settings optimized for live streams stability
+        maxBufferLength: 60,           // Increased for live stability
+        maxMaxBufferLength: 120,       // Allow more buffering
+        backBufferLength: 30,          // Reduced - don't need much history for live
+        // Live stream specific settings
+        liveSyncDurationCount: 3,      // Stay 3 segments behind live edge
+        liveMaxLatencyDurationCount: 10, // Max 10 segments behind before seeking to live
+        liveDurationInfinity: true,    // Treat live streams as infinite duration
+        // Retry settings for unstable connections
+        manifestLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingMaxRetry: 6,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 1000,
         // Use custom loader to intercept and proxy all requests
         loader: class ProxyLoader extends Hls.DefaultConfig.loader {
           load(context: any, config: any, callbacks: any) {
