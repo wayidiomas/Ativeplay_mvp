@@ -236,21 +236,39 @@ impl NewItem {
     pub fn from_item(item: &PlaylistItem, playlist_id: Uuid, sort_order: i32) -> Self {
         NewItem {
             playlist_id,
-            item_hash: item.id.clone(),
-            name: item.name.clone(),
-            url: item.url.clone(),
-            logo: item.logo.clone(),
-            group_name: item.group.clone(),
+            item_hash: truncate_str(&item.id, 255),
+            name: sanitize_name(&item.name, 1024),
+            url: truncate_str(&item.url, 2048),
+            logo: item.logo.as_ref().map(|s| truncate_str(s, 2048)),
+            group_name: truncate_str(&item.group, 512),
             media_kind: item.media_kind.to_string(),
-            parsed_title: item.parsed_title.as_ref().map(|p| p.title.clone()),
+            parsed_title: item.parsed_title.as_ref().map(|p| truncate_str(&p.title, 1024)),
             parsed_year: item.parsed_title.as_ref().and_then(|p| p.year.map(|y| y as i16)),
-            parsed_quality: item.parsed_title.as_ref().and_then(|p| p.quality.clone()),
-            series_id: item.series_id.clone(),
+            parsed_quality: item.parsed_title.as_ref().and_then(|p| p.quality.as_ref().map(|q| truncate_str(q, 50))),
+            series_id: item.series_id.as_ref().map(|s| truncate_str(s, 255)),
             season_number: item.season_number.map(|s| s as i16),
             episode_number: item.episode_number.map(|e| e as i16),
             sort_order,
         }
     }
+}
+
+/// Truncate a string to fit database VARCHAR limit
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        s.chars().take(max_len).collect()
+    }
+}
+
+/// Sanitize name field - detect and replace base64 image data
+fn sanitize_name(s: &str, max_len: usize) -> String {
+    // Detect base64 image data (JPEG starts with /9j/, PNG with iVBOR)
+    if s.starts_with("/9j/") || s.starts_with("iVBOR") || s.starts_with("data:image") {
+        return "[Image Data]".to_string();
+    }
+    truncate_str(s, max_len)
 }
 
 /// New series to insert
@@ -274,16 +292,16 @@ impl NewSeries {
     pub fn from_series_info(series: &SeriesInfo, playlist_id: Uuid) -> Self {
         NewSeries {
             playlist_id,
-            series_hash: series.id.clone(),
-            name: series.name.clone(),
-            logo: series.logo.clone(),
-            group_name: series.group.clone(),
+            series_hash: truncate_str(&series.id, 255),
+            name: sanitize_name(&series.name, 1024),
+            logo: series.logo.as_ref().map(|s| truncate_str(s, 2048)),
+            group_name: truncate_str(&series.group, 512),
             total_episodes: series.total_episodes as i32,
             total_seasons: series.total_seasons as i32,
             first_season: Some(series.first_season as i16),
             last_season: Some(series.last_season as i16),
             year: series.year.map(|y| y as i16),
-            quality: series.quality.clone(),
+            quality: series.quality.as_ref().map(|q| truncate_str(q, 50)),
         }
     }
 }
