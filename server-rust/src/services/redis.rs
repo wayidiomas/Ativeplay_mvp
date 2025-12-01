@@ -70,8 +70,8 @@ impl RedisService {
     /// Flush all keys from the current database (use with caution!)
     pub async fn flush_db(&self) -> Result<()> {
         let mut conn = self.conn.clone();
-        redis::cmd("FLUSHDB")
-            .query_async::<()>(&mut conn)
+        let _: () = redis::cmd("FLUSHDB")
+            .query_async(&mut conn)
             .await?;
         Ok(())
     }
