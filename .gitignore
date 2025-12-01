@@ -17,3 +17,4 @@ dist/
 m3u_example/
 
 .claude
+server-rust/target/
