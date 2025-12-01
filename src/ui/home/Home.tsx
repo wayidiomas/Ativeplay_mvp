@@ -133,6 +133,32 @@ const SeriesCardContent = memo(({ series, isFocused }: {
 }, (prev, next) => prev.series.id === next.series.id && prev.isFocused === next.isFocused);
 
 /**
+ * FocusableSection - Wrapper that groups header + carousel for proper focus tree
+ * This ensures vertical navigation goes to carousels, not headers
+ */
+const FocusableSection = memo(({ focusKey, carouselFocusKey, className, children }: {
+  focusKey: string;
+  carouselFocusKey: string;
+  className?: string;
+  children: React.ReactNode;
+}) => {
+  const { ref, focusKey: currentFocusKey } = useFocusable({
+    focusKey,
+    isFocusBoundary: false,
+    saveLastFocusedChild: true,
+    preferredChildFocusKey: carouselFocusKey,
+  });
+
+  return (
+    <FocusContext.Provider value={currentFocusKey}>
+      <div ref={ref} className={className}>
+        {children}
+      </div>
+    </FocusContext.Provider>
+  );
+});
+
+/**
  * FocusableSectionHeader - Section header with "Ver tudo" button for TV remote
  */
 const FocusableSectionHeader = memo(({ title, focusKey, onSeeAll }: {
@@ -498,13 +524,10 @@ export function Home() {
   // Set initial focus after content loads
   useEffect(() => {
     if (!loading && rows.length > 0) {
-      // Focus first card in first row
+      // Focus first section - it will delegate to carousel via preferredChildFocusKey
       const firstRow = rows[0];
       if (firstRow) {
-        const firstItem = firstRow.isSeries ? firstRow.series?.[0] : firstRow.items[0];
-        if (firstItem) {
-          setFocus(`card-${firstItem.id}`);
-        }
+        setFocus(`section-${firstRow.group.id}`);
       }
     }
   }, [loading, rows]);
@@ -673,18 +696,24 @@ export function Home() {
         {rows.map((row, rowIndex) => {
           // Trigger loadMoreGroups when focusing cards in last 2 rows
           const isNearEnd = hasMoreGroups && rowIndex >= rows.length - 2;
+          const carouselFocusKey = `carousel-${row.group.id}`;
 
           // For series rows, use series data; for items, use items data
           if (row.isSeries && row.series) {
             return (
-              <div className={styles.section} key={row.group.id}>
+              <FocusableSection
+                key={row.group.id}
+                focusKey={`section-${row.group.id}`}
+                carouselFocusKey={carouselFocusKey}
+                className={styles.section}
+              >
                 <FocusableSectionHeader
                   title={row.group.name}
                   focusKey={`header-${row.group.id}`}
                   onSeeAll={() => handleSeeAll(row.group)}
                 />
                 <VirtualizedCarousel
-                  focusKey={`carousel-${row.group.id}`}
+                  focusKey={carouselFocusKey}
                   items={row.series}
                   hasMore={row.hasMore ?? false}
                   isLoading={loadingRowId === row.group.id}
@@ -699,19 +728,24 @@ export function Home() {
                   cardGap={12}
                   height={280}
                 />
-              </div>
+              </FocusableSection>
             );
           }
 
           return (
-            <div className={styles.section} key={row.group.id}>
+            <FocusableSection
+              key={row.group.id}
+              focusKey={`section-${row.group.id}`}
+              carouselFocusKey={carouselFocusKey}
+              className={styles.section}
+            >
               <FocusableSectionHeader
                 title={row.group.name}
                 focusKey={`header-${row.group.id}`}
                 onSeeAll={() => handleSeeAll(row.group)}
               />
               <VirtualizedCarousel
-                focusKey={`carousel-${row.group.id}`}
+                focusKey={carouselFocusKey}
                 items={row.items}
                 hasMore={row.hasMore ?? false}
                 isLoading={loadingRowId === row.group.id}
@@ -726,7 +760,7 @@ export function Home() {
                 cardGap={12}
                 height={280}
               />
-            </div>
+            </FocusableSection>
           );
         })}
 

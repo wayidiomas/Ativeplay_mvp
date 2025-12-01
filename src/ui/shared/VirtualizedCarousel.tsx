@@ -159,6 +159,11 @@ export function VirtualizedCarousel<T>({
     [focusKey, focusedIndex, items, getItemKey]
   );
 
+  // Compute preferred child focus key (first item)
+  const preferredChildFocusKey = items.length > 0
+    ? `${focusKey}-item-${getItemKey(items[0])}`
+    : undefined;
+
   // Focus context for spatial navigation
   const { ref: focusContainerRef, focusKey: currentFocusKey } = useFocusable({
     focusKey,
@@ -166,6 +171,7 @@ export function VirtualizedCarousel<T>({
     focusBoundaryDirections: ['up', 'down'],
     onArrowPress: handleArrowPress,
     saveLastFocusedChild: true,
+    preferredChildFocusKey,
   });
 
   // Handle item focus - update index, scroll, trigger load more
