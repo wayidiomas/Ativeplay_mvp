@@ -100,6 +100,8 @@ export interface PlayerOptions {
   preferredAudioLanguage?: string;
   preferredSubtitleLanguage?: string;
   enableSubtitles?: boolean;
+  // Hint for player regarding live vs VOD; falls back to URL heuristics if not provided.
+  isLive?: boolean;
 }
 
 // Erro do player

@@ -108,6 +108,19 @@ function isIptvTsStream(url: string): boolean {
   return false;
 }
 
+/**
+ * Heuristic to detect live streams when mediaKind is not explicitly provided.
+ */
+function isLikelyLiveHls(url: string): boolean {
+  const lower = url.toLowerCase();
+  const liveHints = /(live|channel|stream|tv|iptv|24\/7|ao ?vivo)/i;
+  const vodHints = /(vod|movie|filme|episode|episodio|series|season|s0?\d|e0?\d)/i;
+  const hasFileName = /\.[a-z0-9]{2,4}(\?|$)/i.test(lower);
+  if (liveHints.test(lower)) return true;
+  if (vodHints.test(lower)) return false;
+  return !hasFileName;
+}
+
 export class LGWebOSAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
   private hls: Hls | null = null;
@@ -188,6 +201,52 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     const params = new URLSearchParams({ url });
     if (referer) params.set('referer', referer);
     return `${BRIDGE_URL}/api/proxy/hls?${params}`;
+  }
+
+  private buildHlsConfig(isLive: boolean, proxyUrl: (url: string, referer?: string) => string, referer?: string) {
+    const loader = class ProxyLoader extends Hls.DefaultConfig.loader {
+      load(context: any, config: any, callbacks: any) {
+        // Proxy external URLs that aren't already proxied
+        if (context.url && !context.url.includes('/api/proxy/hls') && /^https?:\/\//i.test(context.url)) {
+          context.url = proxyUrl(context.url, referer);
+          console.log('[LGWebOSAdapter] HLS proxied:', context.url.substring(0, 80));
+        }
+        super.load(context, config, callbacks);
+      }
+    };
+
+    if (isLive) {
+      return {
+        enableWebVTT: true,
+        enableIMSC1: true,
+        enableCEA708Captions: true,
+        renderTextTracksNatively: true,
+        lowLatencyMode: false,
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        backBufferLength: 30,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 10,
+        liveDurationInfinity: true,
+        manifestLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingMaxRetry: 6,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 1000,
+        loader,
+      } as Hls.OptionalConfig;
+    }
+
+    return {
+      enableWebVTT: true,
+      enableIMSC1: true,
+      enableCEA708Captions: true,
+      renderTextTracksNatively: true,
+      lowLatencyMode: false,
+      backBufferLength: 120,
+      loader,
+    } as Hls.OptionalConfig;
   }
 
   private setupVideoListeners(): void {
@@ -470,6 +529,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Detect IPTV TS streams - should NOT use HLS.js
     const isIptvTs = isIptvTsStream(url);
+    const isLiveStream = this.options.isLive ?? isIptvTs || isLikelyLiveHls(url);
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
@@ -480,43 +540,8 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       // Create custom loader to proxy all HLS sub-requests (playlists, segments)
       const proxyUrl = this.proxifyUrl.bind(this);
 
-      this.hls = new Hls({
-        // Enable subtitle display
-        enableWebVTT: true,
-        enableIMSC1: true,
-        enableCEA708Captions: true,
-        // Render subtitles natively in the browser
-        renderTextTracksNatively: true,
-        // DISABLED lowLatencyMode - causes buffer starvation on unstable live streams
-        lowLatencyMode: false,
-        // Buffer settings optimized for live streams stability
-        maxBufferLength: 60,           // Increased for live stability
-        maxMaxBufferLength: 120,       // Allow more buffering
-        backBufferLength: 30,          // Reduced - don't need much history for live
-        // Live stream specific settings
-        liveSyncDurationCount: 3,      // Stay 3 segments behind live edge
-        liveMaxLatencyDurationCount: 10, // Max 10 segments behind before seeking to live
-        liveDurationInfinity: true,    // Treat live streams as infinite duration
-        // Retry settings for unstable connections
-        manifestLoadingMaxRetry: 6,
-        manifestLoadingRetryDelay: 1000,
-        levelLoadingMaxRetry: 6,
-        levelLoadingRetryDelay: 1000,
-        fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 1000,
-        // Custom loader to proxy all requests
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        loader: class ProxyLoader extends Hls.DefaultConfig.loader {
-          load(context: any, config: any, callbacks: any) {
-            // Proxy external URLs that aren't already proxied
-            if (context.url && !context.url.includes('/api/proxy/hls') && /^https?:\/\//i.test(context.url)) {
-              context.url = proxyUrl(context.url, referer);
-              console.log('[LGWebOSAdapter] HLS proxied:', context.url.substring(0, 80));
-            }
-            super.load(context, config, callbacks);
-          }
-        },
-      });
+      const hlsConfig = this.buildHlsConfig(isLiveStream, proxyUrl, referer);
+      this.hls = new Hls(hlsConfig);
 
       this.setupHlsListeners();
       this.hls.attachMedia(this.video);

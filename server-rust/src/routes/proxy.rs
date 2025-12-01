@@ -10,6 +10,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
+use tokio::time::timeout;
 
 use crate::AppState;
 
@@ -174,9 +175,9 @@ pub async fn hls_proxy(
         ));
     }
 
-    // Create client with timeout
+    // Create client with no global response timeout (live TS needs to stream indefinitely)
+    // Connection-level timeout is handled by reqwest defaults; manifest fetches are guarded below.
     let client = Client::builder()
-        .timeout(Duration::from_millis(state.config.hls_proxy_timeout_ms))
         .user_agent(&state.config.user_agent)
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
@@ -212,8 +213,30 @@ pub async fn hls_proxy(
         request = request.header(reqwest_header::REFERER, referer);
     }
 
-    // Execute request
-    let upstream_response = request.send().await.map_err(|e| {
+    // Determine upfront if this looks like a manifest; only manifests get a total timeout.
+    let looks_like_manifest = query.url.to_lowercase().contains(".m3u");
+
+    // Execute request (manifest fetch wrapped with timeout, segments stream indefinitely)
+    let upstream_response = if looks_like_manifest {
+        timeout(
+            Duration::from_millis(state.config.hls_proxy_timeout_ms),
+            request.send(),
+        )
+        .await
+        .map_err(|_| {
+            tracing::error!("HLS proxy timeout for manifest {}", query.url);
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(serde_json::json!({
+                    "error": "Falha ao proxyficar HLS",
+                    "detail": "Timeout ao baixar manifest"
+                })),
+            )
+        })?
+    } else {
+        request.send().await
+    }
+    .map_err(|e| {
         let status = if e.is_timeout() {
             StatusCode::GATEWAY_TIMEOUT
         } else {

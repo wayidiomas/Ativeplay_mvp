@@ -23,6 +23,7 @@ interface PlayerContainerProps {
   url: string;
   title?: string;
   startPosition?: number;
+  isLive?: boolean;
   onClose?: () => void;
   onEnded?: () => void;
 }
@@ -45,6 +46,7 @@ export function PlayerContainer({
   url,
   title = '',
   startPosition = 0,
+  isLive = false,
   onClose,
   onEnded,
 }: PlayerContainerProps) {
@@ -111,8 +113,8 @@ export function PlayerContainer({
   // Open video on mount
   useEffect(() => {
     const streamUrl = buildStreamUrl(url);
-    open(streamUrl, { startPosition, autoPlay: true });
-  }, [url, startPosition, open, buildStreamUrl]);
+    open(streamUrl, { startPosition, autoPlay: true, isLive });
+  }, [url, startPosition, isLive, open, buildStreamUrl]);
 
   // Handle ended event
   useEffect(() => {
@@ -290,7 +292,7 @@ export function PlayerContainer({
           {!isFormatError && (
             <button
               className={styles.retryButton}
-              onClick={() => open(buildStreamUrl(url), { startPosition: currentTime })}
+              onClick={() => open(buildStreamUrl(url), { startPosition: currentTime, isLive })}
               autoFocus
             >
               Tentar Novamente

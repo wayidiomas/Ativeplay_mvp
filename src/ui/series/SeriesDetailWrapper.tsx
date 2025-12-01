@@ -29,6 +29,7 @@ export function SeriesDetailWrapper() {
       <PlayerContainer
         url={selectedItem.url}
         title={selectedItem.parsedTitle?.title || selectedItem.name}
+        isLive={selectedItem.mediaKind === 'live'}
         onClose={handleClosePlayer}
         onEnded={handleVideoEnded}
       />
