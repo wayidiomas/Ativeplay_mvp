@@ -40,6 +40,13 @@ const EpisodeCard = memo(({ episode, fullData, focusKey, onSelect }: EpisodeCard
     onEnterPress: onSelect,
   });
 
+  // Auto-scroll into view when focused (for TV remote navigation)
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focused]);
+
   return (
     <button
       ref={ref}

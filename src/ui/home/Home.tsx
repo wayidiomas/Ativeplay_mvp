@@ -65,6 +65,13 @@ const MediaCard = memo(({ item, onSelect, focusKey }: {
     onEnterPress: () => onSelect(item),
   });
 
+  // Auto-scroll into view when focused (for TV remote navigation)
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focused]);
+
   return (
     <button
       type="button"
@@ -108,6 +115,13 @@ const SeriesCard = memo(({ series, onNavigate, focusKey }: {
     focusKey,
     onEnterPress: () => onNavigate(series.id),
   });
+
+  // Auto-scroll into view when focused (for TV remote navigation)
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focused]);
 
   return (
     <button
