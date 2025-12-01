@@ -1,11 +1,11 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
-use image::{ImageBuffer, Luma};
+use image::Luma;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -205,4 +205,198 @@ pub async fn send_url(
         "success": true,
         "message": "URL enviada com sucesso!"
     })))
+}
+
+/// GET /s/:id - Mobile HTML page to enter playlist URL
+pub async fn mobile_page(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Check if session exists in Redis
+    let session = state.redis.get_session(&id).await.ok().flatten();
+
+    if session.is_none() {
+        return Html(expired_html());
+    }
+
+    Html(form_html(&id))
+}
+
+fn form_html(session_id: &str) -> String {
+    format!(r#"<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AtivePlay - Adicionar Playlist</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }}
+        .container {{
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 32px;
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }}
+        h1 {{
+            color: #fff;
+            font-size: 24px;
+            margin-bottom: 8px;
+            text-align: center;
+        }}
+        .subtitle {{
+            color: rgba(255,255,255,0.6);
+            font-size: 14px;
+            text-align: center;
+            margin-bottom: 24px;
+        }}
+        .input-group {{
+            margin-bottom: 16px;
+        }}
+        label {{
+            display: block;
+            color: rgba(255,255,255,0.8);
+            font-size: 14px;
+            margin-bottom: 8px;
+        }}
+        input {{
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            font-size: 16px;
+        }}
+        input::placeholder {{ color: rgba(255,255,255,0.4); }}
+        input:focus {{
+            outline: none;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99,102,241,0.2);
+        }}
+        button {{
+            width: 100%;
+            padding: 14px;
+            border-radius: 8px;
+            border: none;
+            background: #6366f1;
+            color: #fff;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 8px;
+        }}
+        button:hover {{ background: #5558e3; }}
+        button:disabled {{
+            background: #4b4b5c;
+            cursor: not-allowed;
+        }}
+        .status {{
+            text-align: center;
+            margin-top: 16px;
+            font-size: 14px;
+            min-height: 20px;
+        }}
+        .status.success {{ color: #22c55e; }}
+        .status.error {{ color: #ef4444; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AtivePlay</h1>
+        <p class="subtitle">Insira o link da sua playlist M3U</p>
+        <form id="form">
+            <div class="input-group">
+                <label for="url">URL da Playlist</label>
+                <input type="url" id="url" name="url"
+                    placeholder="http://exemplo.com/playlist.m3u" required>
+            </div>
+            <button type="submit" id="submit">Enviar para TV</button>
+        </form>
+        <p class="status" id="status"></p>
+    </div>
+    <script>
+        const form = document.getElementById('form');
+        const status = document.getElementById('status');
+        const submit = document.getElementById('submit');
+        const sessionId = '{session_id}';
+
+        form.addEventListener('submit', async (e) => {{
+            e.preventDefault();
+            const url = document.getElementById('url').value.trim();
+            if (!url) return;
+
+            submit.disabled = true;
+            submit.textContent = 'Enviando...';
+            status.textContent = '';
+            status.className = 'status';
+
+            try {{
+                const res = await fetch('/session/' + sessionId + '/send', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ url }})
+                }});
+
+                if (res.ok) {{
+                    status.textContent = 'Enviado! Verifique sua TV.';
+                    status.className = 'status success';
+                    submit.textContent = 'Enviado!';
+                }} else {{
+                    throw new Error('Falha ao enviar');
+                }}
+            }} catch (err) {{
+                status.textContent = 'Erro ao enviar. Tente novamente.';
+                status.className = 'status error';
+                submit.disabled = false;
+                submit.textContent = 'Enviar para TV';
+            }}
+        }});
+    </script>
+</body>
+</html>"#)
+}
+
+fn expired_html() -> String {
+    r#"<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sessao Expirada</title>
+    <style>
+        body {
+            font-family: -apple-system, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            text-align: center;
+            padding: 20px;
+        }
+        .icon { font-size: 48px; margin-bottom: 16px; }
+        h2 { margin-bottom: 8px; }
+        p { color: rgba(255,255,255,0.6); }
+    </style>
+</head>
+<body>
+    <div>
+        <div class="icon">&#8987;</div>
+        <h2>Sessao Expirada</h2>
+        <p>Gere um novo QR code na sua TV e escaneie novamente.</p>
+    </div>
+</body>
+</html>"#.to_string()
 }

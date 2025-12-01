@@ -115,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/session/create", post(routes::session::create_session))
         .route("/session/{id}/poll", get(routes::session::poll_session))
         .route("/session/{id}/send", post(routes::session::send_url))
+        .route("/s/{id}", get(routes::session::mobile_page))
         // Playlist endpoints
         .route("/api/playlist/parse", post(routes::playlist::parse_playlist))
         .route(
