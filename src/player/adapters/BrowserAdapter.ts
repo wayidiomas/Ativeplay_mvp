@@ -799,7 +799,8 @@ export class BrowserAdapter implements IPlayerAdapter {
       originalLower.includes('m3u') ||
       originalLower.includes('playlist') ||
       originalLower.includes('chunklist') ||
-      (!hasExtension && !preferNative)); // sem extensão: tenta HLS primeiro fora do Safari
+      (!hasExtension && !preferNative) || // sem extensão: tenta HLS primeiro fora do Safari
+      !isLiveStream); // VOD content should use HLS.js for better proxy/error handling
 
     if (Hls.isSupported() && isProbablyHls && !preferNative) {
       console.log('[BrowserAdapter] Using HLS.js to load:', this.currentUrl.substring(0, 100));

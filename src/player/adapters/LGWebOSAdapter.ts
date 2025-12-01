@@ -971,7 +971,11 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
-    if (!isIptvTs && isHls && Hls.isSupported()) {
+    // VOD content should also use HLS.js even without .m3u8 in URL
+    // because the proxy handles content properly and HLS.js has better error recovery
+    const shouldUseHlsJs = !isIptvTs && (isHls || !isLiveStream) && Hls.isSupported();
+
+    if (shouldUseHlsJs) {
       console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
       this.usingHls = true;
 
