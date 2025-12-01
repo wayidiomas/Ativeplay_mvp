@@ -91,6 +91,32 @@ export class BrowserAdapter implements IPlayerAdapter {
   };
   private isBuffering: boolean = false;
 
+  // HLS full restart tracking
+  private hlsFullRestartAttempts: number = 0;
+  private hlsConsecutiveFatalErrors: number = 0;
+  private hlsLastFatalErrorTime: number = 0;
+
+  // Raw TS stream recovery
+  private tsRecoveryInterval: ReturnType<typeof setInterval> | null = null;
+  private lastPlaybackTime: number = 0;
+  private frozenCheckCount: number = 0;
+  private tsRecoveryAttempts: number = 0;
+  private isRawTsStream: boolean = false;
+
+  // Live edge monitoring
+  private liveEdgeMonitorInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Constants
+  private static readonly HLS_FATAL_ERROR_WINDOW_MS = 60000;
+  private static readonly HLS_FATAL_ERRORS_BEFORE_RESTART = 3;
+  private static readonly HLS_MAX_FULL_RESTARTS = 2;
+  private static readonly TS_CHECK_INTERVAL_MS = 5000;
+  private static readonly TS_FROZEN_THRESHOLD = 3;
+  private static readonly TS_MAX_RECOVERY_ATTEMPTS = 5;
+  private static readonly TS_RECOVERY_BACKOFF_BASE = 2000;
+  private static readonly LIVE_EDGE_CHECK_INTERVAL_MS = 30000;
+  private static readonly LIVE_EDGE_MAX_DRIFT_SECONDS = 30;
+
   constructor(containerId?: string) {
     if (typeof window !== 'undefined') {
       this.createVideoElement(containerId);
@@ -346,6 +372,14 @@ export class BrowserAdapter implements IPlayerAdapter {
       }
     };
 
+    // Buffer hole tolerance - more tolerant for IPTV streams
+    const bufferHoleConfig = {
+      maxBufferHole: 0.5,           // Allow 500ms gaps (default: 0.5)
+      maxFragLookUpTolerance: 0.5,  // Tolerance for fragment matching
+      nudgeOffset: 0.2,             // Larger nudge to skip past holes
+      nudgeMaxRetry: 5,             // More nudge attempts before failing
+    };
+
     if (isLive) {
       // Live: keep a steady ~20-30s buffer and retry fast on stalls
       return {
@@ -368,6 +402,7 @@ export class BrowserAdapter implements IPlayerAdapter {
         levelLoadingRetryDelay: 800,
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 800,
+        ...bufferHoleConfig,
         loader,
       };
     }
@@ -381,8 +416,287 @@ export class BrowserAdapter implements IPlayerAdapter {
       capLevelOnFPSDrop: true,
       capLevelToPlayerSize: true,
       highBufferWatchdogPeriod: 2,
+      ...bufferHoleConfig,
       loader,
     };
+  }
+
+  /**
+   * Perform full HLS restart - destroy and recreate HLS instance
+   */
+  private async performFullHlsRestart(): Promise<void> {
+    if (!this.video) return;
+
+    this.hlsFullRestartAttempts++;
+    this.hlsConsecutiveFatalErrors = 0;
+    this.hlsRecoverAttempts = 0;
+
+    const savedUrl = this.currentUrl;
+    const savedOptions = { ...this.options };
+    const savedPosition = this.options.isLive ? undefined : this.video.currentTime;
+
+    this.emit('bufferingstart');
+    this.setState('buffering');
+
+    // Destroy current HLS instance completely
+    this.destroyHls();
+    this.usingHls = false;
+
+    // Clear video element
+    this.video.src = '';
+    this.video.load();
+
+    // Wait for cleanup
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    console.log('[BrowserAdapter] Recreating HLS instance...');
+
+    // Extract referer
+    let referer: string | undefined;
+    try {
+      const parsed = new URL(savedUrl);
+      referer = parsed.origin;
+    } catch {
+      // Invalid URL
+    }
+
+    const isLiveStream = savedOptions.isLive ?? isLikelyLiveHls(savedUrl);
+    const proxyUrl = this.proxifyUrl.bind(this);
+    const hlsConfig = this.buildHlsConfig(isLiveStream, proxyUrl, referer);
+
+    this.hls = new Hls(hlsConfig);
+    this.usingHls = true;
+    this.setupHlsErrorHandler();
+    this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      this.hlsRecoverAttempts = 0;
+      this.loadTracks();
+    });
+    this.hls.attachMedia(this.video);
+    this.hls.loadSource(savedUrl);
+
+    // For VOD, restore position after manifest parsed
+    if (savedPosition !== undefined && savedPosition > 0) {
+      this.hls.once(Hls.Events.MANIFEST_PARSED, () => {
+        if (this.video && savedPosition > 0) {
+          this.video.currentTime = savedPosition;
+        }
+      });
+    }
+
+    // Restart live edge monitor if needed
+    if (isLiveStream) {
+      this.startLiveEdgeMonitor();
+    }
+
+    console.log('[BrowserAdapter] Full HLS restart completed');
+  }
+
+  /**
+   * Setup HLS error handler with full restart logic
+   */
+  private setupHlsErrorHandler(): void {
+    if (!this.hls) return;
+
+    this.hls.on(Hls.Events.ERROR, (_event, data) => {
+      console.error('[BrowserAdapter] HLS error', data);
+      if (!data.fatal) return;
+
+      const now = Date.now();
+
+      // Track consecutive fatal errors for full restart decision
+      if (now - this.hlsLastFatalErrorTime > BrowserAdapter.HLS_FATAL_ERROR_WINDOW_MS) {
+        this.hlsConsecutiveFatalErrors = 0;
+      }
+      this.hlsLastFatalErrorTime = now;
+      this.hlsConsecutiveFatalErrors++;
+
+      // Check if full restart is needed (3+ fatal errors in 60s window)
+      if (this.hlsConsecutiveFatalErrors >= BrowserAdapter.HLS_FATAL_ERRORS_BEFORE_RESTART) {
+        if (this.hlsFullRestartAttempts < BrowserAdapter.HLS_MAX_FULL_RESTARTS) {
+          console.log(`[BrowserAdapter] Triggering full HLS restart (attempt ${this.hlsFullRestartAttempts + 1}/${BrowserAdapter.HLS_MAX_FULL_RESTARTS})`);
+          this.performFullHlsRestart();
+          return;
+        } else {
+          console.error('[BrowserAdapter] Max full HLS restarts exhausted');
+          this.setState('error');
+          this.emit('error', {
+            code: 'HLS_FATAL',
+            message: 'Stream HLS falhou apos multiplas reinicializacoes',
+          });
+          return;
+        }
+      }
+
+      // Live streams need more retry attempts due to transient network issues
+      const maxAttempts = this.options.isLive ? 10 : 3;
+      const backoffMs = Math.min(1000 * Math.pow(2, this.hlsRecoverAttempts), 30000);
+
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        if (this.hlsRecoverAttempts < maxAttempts) {
+          this.hlsRecoverAttempts++;
+          console.log(`[BrowserAdapter] Network error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
+          setTimeout(() => this.hls?.startLoad(), backoffMs);
+          return;
+        }
+      }
+
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (this.hlsRecoverAttempts < maxAttempts) {
+          this.hlsRecoverAttempts++;
+          console.log(`[BrowserAdapter] Media error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
+          setTimeout(() => this.hls?.recoverMediaError(), backoffMs);
+          return;
+        }
+      }
+
+      // All recovery attempts exhausted
+      this.hlsConsecutiveFatalErrors++;
+      console.error(`[BrowserAdapter] HLS fatal error after ${this.hlsRecoverAttempts} attempts:`, data.details);
+      this.setState('error');
+      this.emit('error', { code: 'HLS_FATAL', message: data.details });
+    });
+  }
+
+  // ============================================================================
+  // Raw TS Stream Recovery (frozen picture detection)
+  // ============================================================================
+
+  private startTsRecoveryMonitor(): void {
+    if (this.tsRecoveryInterval) return;
+
+    this.lastPlaybackTime = this.video?.currentTime ?? 0;
+    this.frozenCheckCount = 0;
+
+    this.tsRecoveryInterval = setInterval(() => {
+      this.checkTsFrozen();
+    }, BrowserAdapter.TS_CHECK_INTERVAL_MS);
+
+    console.log('[BrowserAdapter] TS recovery monitor started');
+  }
+
+  private stopTsRecoveryMonitor(): void {
+    if (this.tsRecoveryInterval) {
+      clearInterval(this.tsRecoveryInterval);
+      this.tsRecoveryInterval = null;
+    }
+  }
+
+  private checkTsFrozen(): void {
+    if (!this.video || !this.isRawTsStream) return;
+    if (this.video.paused || this.state !== 'playing') {
+      this.frozenCheckCount = 0;
+      this.lastPlaybackTime = this.video.currentTime;
+      return;
+    }
+
+    const currentTime = this.video.currentTime;
+    const timeProgressed = Math.abs(currentTime - this.lastPlaybackTime) > 0.1;
+
+    if (!timeProgressed) {
+      this.frozenCheckCount++;
+      const frozenSeconds = this.frozenCheckCount * (BrowserAdapter.TS_CHECK_INTERVAL_MS / 1000);
+      console.log(`[BrowserAdapter] TS stream stall detected: ${frozenSeconds}s`);
+
+      if (this.frozenCheckCount >= BrowserAdapter.TS_FROZEN_THRESHOLD) {
+        this.handleTsFrozen();
+      }
+    } else {
+      this.frozenCheckCount = 0;
+      this.tsRecoveryAttempts = 0;
+    }
+
+    this.lastPlaybackTime = currentTime;
+  }
+
+  private async handleTsFrozen(): Promise<void> {
+    if (this.tsRecoveryAttempts >= BrowserAdapter.TS_MAX_RECOVERY_ATTEMPTS) {
+      console.error('[BrowserAdapter] Max TS reconnect attempts reached');
+      this.setState('error');
+      this.emit('error', {
+        code: 'NETWORK_ERROR',
+        message: 'Stream de video falhou apos multiplas tentativas',
+      });
+      return;
+    }
+
+    this.tsRecoveryAttempts++;
+    const backoffMs = BrowserAdapter.TS_RECOVERY_BACKOFF_BASE *
+      Math.pow(2, this.tsRecoveryAttempts - 1);
+
+    console.log(`[BrowserAdapter] TS reconnect attempt ${this.tsRecoveryAttempts}/${BrowserAdapter.TS_MAX_RECOVERY_ATTEMPTS}, backoff ${backoffMs}ms`);
+
+    this.emit('bufferingstart');
+    this.setState('buffering');
+    this.frozenCheckCount = 0;
+
+    if (this.video) {
+      this.video.src = '';
+      this.video.load();
+    }
+
+    await new Promise(resolve => setTimeout(resolve, backoffMs));
+
+    if (this.video && this.currentUrl) {
+      this.video.src = this.currentUrl;
+      this.video.load();
+
+      try {
+        await this.video.play();
+        console.log('[BrowserAdapter] TS stream reconnected successfully');
+        this.lastPlaybackTime = this.video.currentTime;
+      } catch (e) {
+        console.warn('[BrowserAdapter] TS reconnect play failed:', e);
+      }
+    }
+  }
+
+  // ============================================================================
+  // Live Edge Monitoring
+  // ============================================================================
+
+  private startLiveEdgeMonitor(): void {
+    if (this.liveEdgeMonitorInterval || !this.options.isLive || !this.usingHls) return;
+
+    this.liveEdgeMonitorInterval = setInterval(() => {
+      this.checkLiveEdgeDrift();
+    }, BrowserAdapter.LIVE_EDGE_CHECK_INTERVAL_MS);
+
+    console.log('[BrowserAdapter] Live edge monitor started');
+  }
+
+  private stopLiveEdgeMonitor(): void {
+    if (this.liveEdgeMonitorInterval) {
+      clearInterval(this.liveEdgeMonitorInterval);
+      this.liveEdgeMonitorInterval = null;
+    }
+  }
+
+  private checkLiveEdgeDrift(): void {
+    if (!this.hls || !this.video || !this.options.isLive) return;
+    if (this.video.paused || this.state !== 'playing') return;
+
+    const latency = this.hls.latency;
+
+    if (latency !== undefined && latency !== null && latency > BrowserAdapter.LIVE_EDGE_MAX_DRIFT_SECONDS) {
+      console.log(`[BrowserAdapter] Live edge drift detected: ${latency.toFixed(1)}s behind`);
+      this.repositionToLiveEdge();
+    }
+  }
+
+  private repositionToLiveEdge(): void {
+    if (!this.hls || !this.video) return;
+
+    console.log('[BrowserAdapter] Repositioning to live edge...');
+
+    const liveSyncPos = this.hls.liveSyncPosition;
+    if (liveSyncPos !== undefined && liveSyncPos !== null && liveSyncPos > 0) {
+      this.video.currentTime = liveSyncPos;
+      console.log(`[BrowserAdapter] Repositioned to liveSyncPosition: ${liveSyncPos.toFixed(1)}s`);
+      return;
+    }
+
+    console.log('[BrowserAdapter] Reloading from live edge');
+    this.hls.startLoad(-1);
   }
 
   // Lifecycle
@@ -392,12 +706,25 @@ export class BrowserAdapter implements IPlayerAdapter {
       throw new Error('Video element nao disponivel');
     }
 
+    // Stop any existing monitors
+    this.stopTsRecoveryMonitor();
+    this.stopLiveEdgeMonitor();
+
     // Limpa instancias anteriores
     this.destroyHls();
     this.usingHls = false;
     this.fallbackAttempted = false;
     this.nativeFallbackDone = false;
     this.hlsRecoverAttempts = 0;
+
+    // Reset recovery counters
+    this.hlsFullRestartAttempts = 0;
+    this.hlsConsecutiveFatalErrors = 0;
+    this.hlsLastFatalErrorTime = 0;
+    this.tsRecoveryAttempts = 0;
+    this.frozenCheckCount = 0;
+    this.lastPlaybackTime = 0;
+    this.isRawTsStream = false;
 
     // Extract referer from URL origin for IPTV providers that require it
     let referer: string | undefined;
@@ -459,37 +786,10 @@ export class BrowserAdapter implements IPlayerAdapter {
       this.hls = new Hls(hlsConfig);
       this.usingHls = true;
       this.hls.attachMedia(this.video);
-      this.hls.on(Hls.Events.ERROR, (_event, data) => {
-        console.error('[BrowserAdapter] HLS error', data);
-        if (!data.fatal) return;
 
-        // Live streams need more retry attempts due to transient network issues
-        const maxAttempts = this.options.isLive ? 10 : 3;
-        const backoffMs = Math.min(1000 * Math.pow(2, this.hlsRecoverAttempts), 30000);
+      // Setup HLS error handler with full restart logic
+      this.setupHlsErrorHandler();
 
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          if (this.hlsRecoverAttempts < maxAttempts) {
-            this.hlsRecoverAttempts++;
-            console.log(`[BrowserAdapter] Network error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
-            setTimeout(() => this.hls?.startLoad(), backoffMs);
-            return;
-          }
-        }
-
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          if (this.hlsRecoverAttempts < maxAttempts) {
-            this.hlsRecoverAttempts++;
-            console.log(`[BrowserAdapter] Media error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
-            setTimeout(() => this.hls?.recoverMediaError(), backoffMs);
-            return;
-          }
-        }
-
-        // All recovery attempts exhausted
-        console.error(`[BrowserAdapter] HLS fatal error after ${this.hlsRecoverAttempts} attempts:`, data.details);
-        this.setState('error');
-        this.emit('error', { code: 'HLS_FATAL', message: data.details });
-      });
       this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
         this.hlsRecoverAttempts = 0;
         this.loadTracks();
@@ -498,10 +798,18 @@ export class BrowserAdapter implements IPlayerAdapter {
       // Usa proxy para URLs externas (evita CORS)
       console.log('[BrowserAdapter] Loading HLS:', this.currentUrl !== url ? 'via proxy' : 'direct');
       this.hls.loadSource(this.currentUrl);
+
+      // Start live edge monitor for HLS live streams
+      if (isLiveStream) {
+        this.startLiveEdgeMonitor();
+      }
     } else {
       // Uso nativo (Safari ou MP4/TS/IPTV) - Usa proxy para URLs externas
       if (isIptvTs) {
         console.log('[BrowserAdapter] Loading IPTV TS stream:', this.currentUrl !== url ? 'via proxy' : 'direct', this.currentUrl.substring(0, 100));
+        // Mark as raw TS stream and start frozen picture detection
+        this.isRawTsStream = true;
+        this.startTsRecoveryMonitor();
       } else {
         console.log('[BrowserAdapter] Loading native:', this.currentUrl !== url ? 'via proxy' : 'direct', this.currentUrl.substring(0, 100));
       }
@@ -658,6 +966,10 @@ export class BrowserAdapter implements IPlayerAdapter {
   }
 
   close(): void {
+    // Stop all monitors
+    this.stopTsRecoveryMonitor();
+    this.stopLiveEdgeMonitor();
+
     if (this.bufferingRecoveryTimeout) {
       clearTimeout(this.bufferingRecoveryTimeout);
       this.bufferingRecoveryTimeout = null;
@@ -671,6 +983,13 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.setState('idle');
     this.tracks = { audio: [], subtitle: [], video: [] };
     this.currentTracks = { audioIndex: 0, subtitleIndex: -1, subtitleEnabled: false };
+
+    // Reset recovery counters
+    this.frozenCheckCount = 0;
+    this.tsRecoveryAttempts = 0;
+    this.hlsFullRestartAttempts = 0;
+    this.hlsConsecutiveFatalErrors = 0;
+    this.isRawTsStream = false;
   }
 
   destroy(): void {
