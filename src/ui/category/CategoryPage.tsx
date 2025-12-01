@@ -1,9 +1,11 @@
 /**
- * Category Page - Grid view of all items in a category with infinite scroll
+ * Category Page - Grid view of all items in a category with virtualized scroll
  * For series groups, shows series cards; for others, shows item cards
+ *
+ * Uses VirtualizedGrid for efficient TV remote navigation.
  */
 
-import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
+import { useState, useEffect, useCallback, memo, useMemo } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import {
   useFocusable,
@@ -26,50 +28,42 @@ import {
 } from '@core/services/api';
 import { usePlaylistStore } from '@store/playlistStore';
 import { PlayerContainer } from '@ui/player';
+import { VirtualizedGrid } from '@ui/shared/VirtualizedGrid';
 import styles from './CategoryPage.module.css';
 
 const ITEMS_PER_PAGE = 50;
 
 // ============================================================================
-// Card Components
+// Card Content Components (focus handled by VirtualizedGrid)
 // ============================================================================
 
-const ItemCard = memo(({ item, mediaKind, onSelect, focusKey }: {
+/**
+ * Helper to get icon based on media kind
+ */
+const getMediaIcon = (mediaKind: MediaKind) => {
+  switch (mediaKind) {
+    case 'movie': return <MdMovie size={32} />;
+    case 'series': return <MdTv size={32} />;
+    case 'live': return <MdLiveTv size={32} />;
+    default: return <MdHelpOutline size={32} />;
+  }
+};
+
+/**
+ * ItemCardContent - Pure visual component for item cards
+ * Focus state is passed from VirtualizedGrid wrapper
+ */
+const ItemCardContent = memo(({ item, mediaKind, isFocused }: {
   item: PlaylistItem;
   mediaKind: MediaKind;
-  onSelect: (item: PlaylistItem) => void;
-  focusKey: string;
+  isFocused: boolean;
 }) => {
   const [imageError, setImageError] = useState(false);
 
-  const { ref, focused } = useFocusable({
-    focusKey,
-    onEnterPress: () => onSelect(item),
-  });
-
-  // Auto-scroll into view when focused (for TV remote navigation)
-  useEffect(() => {
-    if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-    }
-  }, [focused]);
-
-  const getIcon = () => {
-    switch (mediaKind) {
-      case 'movie': return <MdMovie size={32} />;
-      case 'series': return <MdTv size={32} />;
-      case 'live': return <MdLiveTv size={32} />;
-      default: return <MdHelpOutline size={32} />;
-    }
-  };
-
   return (
-    <button
-      ref={ref}
-      className={`${styles.card} ${focused ? styles.focused : ''}`}
-      onClick={() => onSelect(item)}
-      tabIndex={-1}
-      data-focused={focused}
+    <div
+      className={`${styles.card} ${isFocused ? styles.focused : ''}`}
+      data-focused={isFocused}
     >
       {item.logo && !imageError ? (
         <img
@@ -81,7 +75,7 @@ const ItemCard = memo(({ item, mediaKind, onSelect, focusKey }: {
         />
       ) : (
         <div className={styles.placeholder}>
-          {getIcon()}
+          {getMediaIcon(mediaKind)}
         </div>
       )}
       <div className={styles.overlay}>
@@ -92,36 +86,24 @@ const ItemCard = memo(({ item, mediaKind, onSelect, focusKey }: {
           <span className={styles.itemYear}>{item.parsedTitle.year}</span>
         )}
       </div>
-    </button>
+    </div>
   );
-}, (prev, next) => prev.item.id === next.item.id && prev.focusKey === next.focusKey);
+}, (prev, next) => prev.item.id === next.item.id && prev.isFocused === next.isFocused);
 
-const SeriesCard = memo(({ series, onSelect, focusKey }: {
+/**
+ * SeriesCardContent - Pure visual component for series cards
+ * Focus state is passed from VirtualizedGrid wrapper
+ */
+const SeriesCardContent = memo(({ series, isFocused }: {
   series: SeriesInfo;
-  onSelect: (series: SeriesInfo) => void;
-  focusKey: string;
+  isFocused: boolean;
 }) => {
   const [imageError, setImageError] = useState(false);
 
-  const { ref, focused } = useFocusable({
-    focusKey,
-    onEnterPress: () => onSelect(series),
-  });
-
-  // Auto-scroll into view when focused (for TV remote navigation)
-  useEffect(() => {
-    if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-    }
-  }, [focused]);
-
   return (
-    <button
-      ref={ref}
-      className={`${styles.card} ${focused ? styles.focused : ''}`}
-      onClick={() => onSelect(series)}
-      tabIndex={-1}
-      data-focused={focused}
+    <div
+      className={`${styles.card} ${isFocused ? styles.focused : ''}`}
+      data-focused={isFocused}
     >
       {series.logo && !imageError ? (
         <img
@@ -142,9 +124,9 @@ const SeriesCard = memo(({ series, onSelect, focusKey }: {
           {series.totalEpisodes} ep. {series.totalSeasons > 1 && `• ${series.totalSeasons} temp.`}
         </span>
       </div>
-    </button>
+    </div>
   );
-}, (prev, next) => prev.series.id === next.series.id && prev.focusKey === next.focusKey);
+}, (prev, next) => prev.series.id === next.series.id && prev.isFocused === next.isFocused);
 
 // ============================================================================
 // Main Component
@@ -191,8 +173,6 @@ export function CategoryPage() {
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
 
-  const observerRef = useRef<HTMLDivElement>(null);
-  const mainRef = useRef<HTMLDivElement>(null);
 
   // Filter series by group (memoized)
   const filteredSeries = useMemo(() => {
@@ -287,47 +267,6 @@ export function CategoryPage() {
     }, 100);
   }, [isSeries, loadingMore, filteredSeries.length]);
 
-  // Manual load more trigger for TV remotes (focus on loader or pressing Enter)
-  const handleManualLoadMore = useCallback(() => {
-    if (!hasMore || loading || loadingMore) return;
-
-    if (isSeries) {
-      loadMoreSeries();
-    } else {
-      loadItems(offset, true);
-    }
-  }, [hasMore, loading, loadingMore, isSeries, loadMoreSeries, loadItems, offset]);
-
-  const scrollToBottom = useCallback(() => {
-    if (mainRef.current) {
-      mainRef.current.scrollTo({ top: mainRef.current.scrollHeight, behavior: 'smooth' });
-    }
-  }, []);
-
-  // Infinite scroll with IntersectionObserver
-  useEffect(() => {
-    if (!hasMore || loadingMore || loading) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          if (isSeries) {
-            loadMoreSeries();
-          } else {
-            loadItems(offset, true);
-          }
-        }
-      },
-      { threshold: 0.1 }
-    );
-
-    if (observerRef.current) {
-      observer.observe(observerRef.current);
-    }
-
-    return () => observer.disconnect();
-  }, [hasMore, loadingMore, loading, offset, loadItems, isSeries, loadMoreSeries]);
-
   // Navigate back
   const handleBack = useCallback(() => {
     navigate(-1);
@@ -375,24 +314,14 @@ export function CategoryPage() {
   const displayItems = isSeries ? displayedSeries : items;
   const isEmpty = displayItems.length === 0;
 
-  // Focusable "load more" control to unblock Down navigation on TVs
-  const { ref: loadMoreRef, focused: loadMoreFocused } = useFocusable({
-    focusKey: 'category-load-more',
-    onFocus: () => {
-      scrollToBottom();
-      handleManualLoadMore();
-    },
-    onEnterPress: () => handleManualLoadMore(),
-  });
-
   // Set initial focus when content loads
   useEffect(() => {
     if (!loading && displayItems.length > 0) {
-      // Focus first card
-      const firstKey = isSeries
-        ? `category-series-${displayedSeries[0]?.id}`
-        : `category-item-${items[0]?.id}`;
-      setFocus(firstKey);
+      // Focus first card in grid
+      const firstItem = isSeries ? displayedSeries[0] : items[0];
+      if (firstItem) {
+        setFocus(`category-grid-item-${firstItem.id}`);
+      }
     }
   }, [loading, displayItems.length, isSeries]);
 
@@ -430,7 +359,7 @@ export function CategoryPage() {
           </div>
         </header>
 
-        <main ref={mainRef} className={styles.main}>
+        <main className={styles.main}>
           {loading ? (
             <div className={styles.loading}>
               <div className={styles.spinner} />
@@ -441,47 +370,42 @@ export function CategoryPage() {
               <MdHelpOutline size={64} />
               <p>Nenhum item encontrado</p>
             </div>
-          ) : (
-            <>
-              <div className={styles.grid}>
-                {isSeries ? (
-                  displayedSeries.map((series) => (
-                    <SeriesCard
-                      key={series.id}
-                      series={series}
-                      onSelect={handleSelectSeries}
-                      focusKey={`category-series-${series.id}`}
-                    />
-                  ))
-                ) : (
-                  items.map((item) => (
-                    <ItemCard
-                      key={item.id}
-                      item={item}
-                      mediaKind={mediaKind}
-                      onSelect={handleSelectItem}
-                      focusKey={`category-item-${item.id}`}
-                    />
-                  ))
-                )}
-              </div>
-
-              {/* Infinite scroll trigger */}
-              {hasMore && (
-                <div ref={observerRef} className={styles.loadingMore}>
-                  {loadingMore && <div className={styles.spinner} />}
-                  <button
-                    ref={loadMoreRef}
-                    className={`${styles.loadMoreButton} ${loadMoreFocused ? styles.focused : ''}`}
-                    onClick={handleManualLoadMore}
-                    data-focused={loadMoreFocused}
-                    tabIndex={-1}
-                  >
-                    {loadingMore ? 'Carregando...' : 'Carregar mais itens'}
-                  </button>
-                </div>
+          ) : isSeries ? (
+            <VirtualizedGrid
+              focusKey="category-grid"
+              items={displayedSeries}
+              hasMore={hasMore}
+              isLoading={loadingMore}
+              onLoadMore={loadMoreSeries}
+              getItemKey={(series) => series.id}
+              renderItem={(series, _index, _focusKey, isFocused) => (
+                <SeriesCardContent series={series} isFocused={isFocused} />
               )}
-            </>
+              onItemSelect={(series) => handleSelectSeries(series)}
+              columnCount={5}
+              cardWidth={200}
+              cardHeight={280}
+              cardGap={16}
+              className={styles.gridContainer}
+            />
+          ) : (
+            <VirtualizedGrid
+              focusKey="category-grid"
+              items={items}
+              hasMore={hasMore}
+              isLoading={loadingMore}
+              onLoadMore={() => loadItems(offset, true)}
+              getItemKey={(item) => item.id}
+              renderItem={(item, _index, _focusKey, isFocused) => (
+                <ItemCardContent item={item} mediaKind={mediaKind} isFocused={isFocused} />
+              )}
+              onItemSelect={(item) => handleSelectItem(item)}
+              columnCount={5}
+              cardWidth={200}
+              cardHeight={280}
+              cardGap={16}
+              className={styles.gridContainer}
+            />
           )}
         </main>
       </div>

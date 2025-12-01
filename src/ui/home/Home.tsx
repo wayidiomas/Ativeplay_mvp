@@ -1,6 +1,8 @@
 /**
  * Home Screen - Stateless version using Rust backend API
  * All data comes from backend - no IndexedDB/Dexie
+ *
+ * Uses VirtualizedCarousel for efficient TV remote navigation.
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,11 +31,11 @@ import {
   MdSearch,
   MdExitToApp,
   MdNavigateNext,
-  MdNavigateBefore,
   MdHelpOutline,
   MdErrorOutline,
 } from 'react-icons/md';
 import { SkeletonCard } from '@ui/shared';
+import { VirtualizedCarousel } from '@ui/shared/VirtualizedCarousel';
 import { PlayerContainer } from '@ui/player';
 import styles from './Home.module.css';
 
@@ -50,14 +52,94 @@ interface Row {
 }
 
 // ============================================================================
-// Card Components with Spatial Navigation
+// Card Content Components (focus handled by VirtualizedCarousel)
 // ============================================================================
 
-const MediaCard = memo(({ item, onSelect, focusKey, onFocused }: {
+/**
+ * MediaCardContent - Pure visual component for media items
+ * Focus state is passed from VirtualizedCarousel wrapper
+ */
+const MediaCardContent = memo(({ item, isFocused }: {
+  item: PlaylistItem;
+  isFocused: boolean;
+}) => {
+  const [imageError, setImageError] = useState(false);
+
+  return (
+    <div
+      className={`${styles.card} ${isFocused ? styles.focused : ''}`}
+      data-focused={isFocused}
+    >
+      {item.logo && !imageError ? (
+        <img
+          src={item.logo}
+          alt={item.name}
+          className={styles.cardPoster}
+          loading="lazy"
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <div className={styles.cardPlaceholder}>
+          {item.mediaKind === 'live' ? <MdLiveTv size={32} /> : <MdMovie size={32} />}
+        </div>
+      )}
+      <div className={styles.cardOverlay}>
+        <div className={styles.cardTitle}>{item.parsedTitle?.title || item.name}</div>
+        <div className={styles.cardMeta}>
+          {item.parsedTitle?.year && <span>{item.parsedTitle.year}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}, (prev, next) => prev.item.id === next.item.id && prev.isFocused === next.isFocused);
+
+/**
+ * SeriesCardContent - Pure visual component for series items
+ * Focus state is passed from VirtualizedCarousel wrapper
+ */
+const SeriesCardContent = memo(({ series, isFocused }: {
+  series: SeriesInfo;
+  isFocused: boolean;
+}) => {
+  const [imageError, setImageError] = useState(false);
+
+  return (
+    <div
+      className={`${styles.card} ${isFocused ? styles.focused : ''}`}
+      data-focused={isFocused}
+    >
+      {series.logo && !imageError ? (
+        <img
+          src={series.logo}
+          alt={series.name}
+          className={styles.cardPoster}
+          loading="lazy"
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <div className={styles.cardPlaceholder}>
+          <MdTv size={32} />
+        </div>
+      )}
+      <div className={styles.cardOverlay}>
+        <div className={styles.cardTitle}>{series.name}</div>
+        <div className={styles.cardMeta}>
+          <span>{series.totalEpisodes} ep.</span>
+          {series.totalSeasons > 1 && <span>{series.totalSeasons} temp.</span>}
+        </div>
+      </div>
+    </div>
+  );
+}, (prev, next) => prev.series.id === next.series.id && prev.isFocused === next.isFocused);
+
+/**
+ * Legacy MediaCard with focus handling for search results
+ * (search doesn't use virtualization yet)
+ */
+const MediaCard = memo(({ item, onSelect, focusKey }: {
   item: PlaylistItem;
   onSelect: (item: PlaylistItem) => void;
   focusKey: string;
-  onFocused?: () => void;
 }) => {
   const [imageError, setImageError] = useState(false);
 
@@ -70,9 +152,8 @@ const MediaCard = memo(({ item, onSelect, focusKey, onFocused }: {
   useEffect(() => {
     if (focused && ref.current) {
       ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-      onFocused?.();
     }
-  }, [focused, onFocused]);
+  }, [focused]);
 
   return (
     <button
@@ -106,60 +187,6 @@ const MediaCard = memo(({ item, onSelect, focusKey, onFocused }: {
   );
 }, (prev, next) => prev.item.id === next.item.id && prev.focusKey === next.focusKey);
 
-const SeriesCard = memo(({ series, onNavigate, focusKey, onFocused }: {
-  series: SeriesInfo;
-  onNavigate: (id: string) => void;
-  focusKey: string;
-  onFocused?: () => void;
-}) => {
-  const [imageError, setImageError] = useState(false);
-
-  const { ref, focused } = useFocusable({
-    focusKey,
-    onEnterPress: () => onNavigate(series.id),
-  });
-
-  // Auto-scroll into view when focused (for TV remote navigation)
-  useEffect(() => {
-    if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-      onFocused?.();
-    }
-  }, [focused, onFocused]);
-
-  return (
-    <button
-      type="button"
-      ref={ref}
-      className={`${styles.card} ${focused ? styles.focused : ''}`}
-      onClick={() => onNavigate(series.id)}
-      tabIndex={0}
-      data-focused={focused}
-    >
-      {series.logo && !imageError ? (
-        <img
-          src={series.logo}
-          alt={series.name}
-          className={styles.cardPoster}
-          loading="lazy"
-          onError={() => setImageError(true)}
-        />
-      ) : (
-        <div className={styles.cardPlaceholder}>
-          <MdTv size={32} />
-        </div>
-      )}
-      <div className={styles.cardOverlay}>
-        <div className={styles.cardTitle}>{series.name}</div>
-        <div className={styles.cardMeta}>
-          <span>{series.totalEpisodes} ep.</span>
-          {series.totalSeasons > 1 && <span>{series.totalSeasons} temp.</span>}
-        </div>
-      </div>
-    </button>
-  );
-}, (prev, next) => prev.series.id === next.series.id && prev.focusKey === next.focusKey);
-
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -191,7 +218,6 @@ export function Home() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const lastItemCount = useRef<number>(0);
-  const groupsEndRef = useRef<HTMLDivElement>(null);
   const GROUPS_PER_PAGE = 10;
 
   // Redirect if no hash
@@ -505,26 +531,6 @@ export function Home() {
     setHasMoreGroups(endIndex < allFilteredGroups.length);
   }, [hash, hasMoreGroups, loading, loadedGroupsCount, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache]);
 
-  // IntersectionObserver for infinite scroll of groups
-  useEffect(() => {
-    if (!hasMoreGroups || loading) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          loadMoreGroups();
-        }
-      },
-      { threshold: 0.1 }
-    );
-
-    if (groupsEndRef.current) {
-      observer.observe(groupsEndRef.current);
-    }
-
-    return () => observer.disconnect();
-  }, [hasMoreGroups, loading, loadMoreGroups]);
-
   // Handler for "Ver tudo" (See All) button
   const handleSeeAll = useCallback((group: PlaylistGroup) => {
     navigate(`/category/${encodeURIComponent(group.id)}`, {
@@ -586,27 +592,6 @@ export function Home() {
     }
   }, [hash, rows, loadingRowId, seriesCache]);
 
-  // Handle carousel scroll - check if near end and load more
-  const handleCarouselScroll = useCallback((rowIndex: number, direction: 'left' | 'right') => {
-    const row = rows[rowIndex];
-    if (!row) return;
-
-    const el = document.getElementById(`row-${row.group.id}`);
-    if (!el) return;
-
-    if (direction === 'right') {
-      el.scrollBy({ left: 600, behavior: 'smooth' });
-
-      // Check if scrolled near end (within 1200px of end)
-      const isNearEnd = el.scrollLeft + el.clientWidth + 1200 >= el.scrollWidth;
-      if (isNearEnd && row.hasMore) {
-        loadMoreRowItems(rowIndex);
-      }
-    } else {
-      el.scrollBy({ left: -600, behavior: 'smooth' });
-    }
-  }, [rows, loadMoreRowItems]);
-
   // ============================================================================
   // Render
   // ============================================================================
@@ -653,7 +638,39 @@ export function Home() {
         {rows.map((row, rowIndex) => {
           // Trigger loadMoreGroups when focusing cards in last 2 rows
           const isNearEnd = hasMoreGroups && rowIndex >= rows.length - 2;
-          const onCardFocused = isNearEnd ? loadMoreGroups : undefined;
+
+          // For series rows, use series data; for items, use items data
+          if (row.isSeries && row.series) {
+            return (
+              <div className={styles.section} key={row.group.id}>
+                <div className={styles.sectionHeader}>
+                  <h2 className={styles.sectionTitle}>{row.group.name}</h2>
+                  <button
+                    className={styles.sectionMore}
+                    onClick={() => handleSeeAll(row.group)}
+                  >
+                    Ver tudo <MdNavigateNext />
+                  </button>
+                </div>
+                <VirtualizedCarousel
+                  focusKey={`carousel-${row.group.id}`}
+                  items={row.series}
+                  hasMore={row.hasMore ?? false}
+                  isLoading={loadingRowId === row.group.id}
+                  onLoadMore={() => loadMoreRowItems(rowIndex)}
+                  getItemKey={(series) => series.id}
+                  renderItem={(series, _index, _focusKey, isFocused) => (
+                    <SeriesCardContent series={series} isFocused={isFocused} />
+                  )}
+                  onItemFocus={isNearEnd ? () => loadMoreGroups() : undefined}
+                  onItemSelect={(series) => handleSelectSeries(series.id)}
+                  cardWidth={200}
+                  cardGap={12}
+                  height={280}
+                />
+              </div>
+            );
+          }
 
           return (
             <div className={styles.section} key={row.group.id}>
@@ -666,53 +683,29 @@ export function Home() {
                   Ver tudo <MdNavigateNext />
                 </button>
               </div>
-              <div className={styles.carousel}>
-                <button
-                  className={styles.carouselArrow}
-                  onClick={() => handleCarouselScroll(rowIndex, 'left')}
-                >
-                  <MdNavigateBefore />
-                </button>
-                <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
-                  {row.isSeries && row.series?.map((series) => (
-                    <SeriesCard
-                      key={series.id}
-                      series={series}
-                      onNavigate={handleSelectSeries}
-                      focusKey={`card-${series.id}`}
-                      onFocused={onCardFocused}
-                    />
-                  ))}
-                  {row.items.map((item) => (
-                    <MediaCard
-                      key={item.id}
-                      item={item}
-                      onSelect={handleSelectItem}
-                      focusKey={`card-${item.id}`}
-                      onFocused={onCardFocused}
-                    />
-                  ))}
-                  {/* Loading indicator for progressive carousel loading */}
-                  {loadingRowId === row.group.id && (
-                    <div className={styles.carouselLoading}>
-                      <div className={styles.spinner} />
-                    </div>
-                  )}
-                </div>
-                <button
-                  className={styles.carouselArrow}
-                  onClick={() => handleCarouselScroll(rowIndex, 'right')}
-                >
-                  <MdNavigateNext />
-                </button>
-              </div>
+              <VirtualizedCarousel
+                focusKey={`carousel-${row.group.id}`}
+                items={row.items}
+                hasMore={row.hasMore ?? false}
+                isLoading={loadingRowId === row.group.id}
+                onLoadMore={() => loadMoreRowItems(rowIndex)}
+                getItemKey={(item) => item.id}
+                renderItem={(item, _index, _focusKey, isFocused) => (
+                  <MediaCardContent item={item} isFocused={isFocused} />
+                )}
+                onItemFocus={isNearEnd ? () => loadMoreGroups() : undefined}
+                onItemSelect={(item) => handleSelectItem(item)}
+                cardWidth={200}
+                cardGap={12}
+                height={280}
+              />
             </div>
           );
         })}
 
-        {/* Infinite scroll trigger and loading indicator */}
-        {hasMoreGroups && (
-          <div ref={groupsEndRef} className={styles.loadingMore}>
+        {/* Loading indicator when more groups are being loaded */}
+        {hasMoreGroups && loading && (
+          <div className={styles.loadingMore}>
             <div className={styles.spinner} />
             <span>Carregando mais categorias...</span>
           </div>
