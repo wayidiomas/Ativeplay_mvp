@@ -495,8 +495,9 @@ pub async fn get_parse_status(
         }
         Ok(None) => {
             // Check if playlist exists in DB (already complete from previous parse)
+            // Only consider it complete if it actually has items
             match db::get_playlist_by_hash(&state.pool, &hash).await {
-                Ok(Some(playlist)) => {
+                Ok(Some(playlist)) if playlist.total_items > 0 => {
                     Json(ParseStatusResponse {
                         status: "complete".to_string(),
                         items_parsed: Some(playlist.total_items as u64),
