@@ -133,6 +133,41 @@ const SeriesCardContent = memo(({ series, isFocused }: {
 }, (prev, next) => prev.series.id === next.series.id && prev.isFocused === next.isFocused);
 
 /**
+ * FocusableSectionHeader - Section header with "Ver tudo" button for TV remote
+ */
+const FocusableSectionHeader = memo(({ title, focusKey, onSeeAll }: {
+  title: string;
+  focusKey: string;
+  onSeeAll: () => void;
+}) => {
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: onSeeAll,
+  });
+
+  // Scroll into view when focused
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [focused]);
+
+  return (
+    <div className={styles.sectionHeader}>
+      <h2 className={styles.sectionTitle}>{title}</h2>
+      <button
+        ref={ref}
+        className={`${styles.sectionMore} ${focused ? styles.focused : ''}`}
+        onClick={onSeeAll}
+        data-focused={focused}
+      >
+        Ver tudo <MdNavigateNext />
+      </button>
+    </div>
+  );
+});
+
+/**
  * Legacy MediaCard with focus handling for search results
  * (search doesn't use virtualization yet)
  */
@@ -643,15 +678,11 @@ export function Home() {
           if (row.isSeries && row.series) {
             return (
               <div className={styles.section} key={row.group.id}>
-                <div className={styles.sectionHeader}>
-                  <h2 className={styles.sectionTitle}>{row.group.name}</h2>
-                  <button
-                    className={styles.sectionMore}
-                    onClick={() => handleSeeAll(row.group)}
-                  >
-                    Ver tudo <MdNavigateNext />
-                  </button>
-                </div>
+                <FocusableSectionHeader
+                  title={row.group.name}
+                  focusKey={`header-${row.group.id}`}
+                  onSeeAll={() => handleSeeAll(row.group)}
+                />
                 <VirtualizedCarousel
                   focusKey={`carousel-${row.group.id}`}
                   items={row.series}
@@ -674,15 +705,11 @@ export function Home() {
 
           return (
             <div className={styles.section} key={row.group.id}>
-              <div className={styles.sectionHeader}>
-                <h2 className={styles.sectionTitle}>{row.group.name}</h2>
-                <button
-                  className={styles.sectionMore}
-                  onClick={() => handleSeeAll(row.group)}
-                >
-                  Ver tudo <MdNavigateNext />
-                </button>
-              </div>
+              <FocusableSectionHeader
+                title={row.group.name}
+                focusKey={`header-${row.group.id}`}
+                onSeeAll={() => handleSeeAll(row.group)}
+              />
               <VirtualizedCarousel
                 focusKey={`carousel-${row.group.id}`}
                 items={row.items}

@@ -74,18 +74,36 @@ const GridItemWrapper = memo(function GridItemWrapper({
   onSelect?: () => void;
   children: React.ReactNode;
 }) {
-  const { ref, focused } = useFocusable({
+  const { ref, focused, focusSelf } = useFocusable({
     focusKey,
     onEnterPress: onSelect,
     onFocus: () => onFocused(index),
   });
+
+  // Scroll into view when focused
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focused]);
+
+  // Handle click - focus first, then select
+  const handleClick = useCallback(() => {
+    focusSelf();
+    if (onSelect) {
+      onSelect();
+    }
+  }, [focusSelf, onSelect]);
 
   return (
     <div
       ref={ref}
       data-focused={focused}
       data-index={index}
-      style={{ height: '100%', outline: 'none' }}
+      style={{ height: '100%', outline: 'none', cursor: 'pointer' }}
+      onClick={handleClick}
+      role="button"
+      tabIndex={0}
     >
       {children}
     </div>
