@@ -101,16 +101,19 @@ CREATE INDEX IF NOT EXISTS idx_items_client_kind ON playlist_items(playlist_id, 
 -- 8. UPDATE TRIGGERS: Add updated_at triggers for new timestamp columns
 -- ============================================================================
 
+DROP TRIGGER IF EXISTS update_items_updated_at ON playlist_items;
 CREATE TRIGGER update_items_updated_at
     BEFORE UPDATE ON playlist_items
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_groups_updated_at ON playlist_groups;
 CREATE TRIGGER update_groups_updated_at
     BEFORE UPDATE ON playlist_groups
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_series_updated_at ON series;
 CREATE TRIGGER update_series_updated_at
     BEFORE UPDATE ON series
     FOR EACH ROW

@@ -29,8 +29,9 @@ RUN cargo build --release && rm -rf src target/release/deps/ativeplay*
 # Now copy the actual source code
 COPY server-rust/src ./src
 
-# Copy migrations (cache bust: 2024-12-01-v2)
+# Copy migrations - force rebuild
 COPY server-rust/migrations ./migrations
+# Cache bust: 2025-12-01-v3
 
 # Build the actual application
 RUN cargo build --release
