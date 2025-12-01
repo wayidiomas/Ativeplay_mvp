@@ -113,37 +113,37 @@ async fn main() -> anyhow::Result<()> {
         .route("/live", get(routes::health::live))
         // Session endpoints (QR code)
         .route("/session/create", post(routes::session::create_session))
-        .route("/session/{id}/poll", get(routes::session::poll_session))
-        .route("/session/{id}/send", post(routes::session::send_url))
-        .route("/s/{id}", get(routes::session::mobile_page))
+        .route("/session/:id/poll", get(routes::session::poll_session))
+        .route("/session/:id/send", post(routes::session::send_url))
+        .route("/s/:id", get(routes::session::mobile_page))
         // Playlist endpoints
         .route("/api/playlist/parse", post(routes::playlist::parse_playlist))
         .route(
-            "/api/playlist/{hash}/groups",
+            "/api/playlist/:hash/groups",
             get(routes::playlist::get_groups),
         )
         .route(
-            "/api/playlist/{hash}/items",
+            "/api/playlist/:hash/items",
             get(routes::playlist::get_items),
         )
         .route(
-            "/api/playlist/{hash}/series",
+            "/api/playlist/:hash/series",
             get(routes::playlist::get_series),
         )
         .route(
-            "/api/playlist/{hash}/stats",
+            "/api/playlist/:hash/stats",
             get(routes::playlist::get_stats),
         )
         .route(
-            "/api/playlist/{hash}/validate",
+            "/api/playlist/:hash/validate",
             get(routes::playlist::validate_cache),
         )
         .route(
-            "/api/playlist/{hash}/series/{series_id}/episodes",
+            "/api/playlist/:hash/series/:series_id/episodes",
             get(routes::playlist::get_series_episodes),
         )
         .route(
-            "/api/playlist/{hash}/search",
+            "/api/playlist/:hash/search",
             get(routes::playlist::search_items),
         )
         // HLS Proxy
