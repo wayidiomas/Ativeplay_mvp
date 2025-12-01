@@ -192,6 +192,7 @@ export function CategoryPage() {
   const [offset, setOffset] = useState(0);
 
   const observerRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
 
   // Filter series by group (memoized)
   const filteredSeries = useMemo(() => {
@@ -286,6 +287,23 @@ export function CategoryPage() {
     }, 100);
   }, [isSeries, loadingMore, filteredSeries.length]);
 
+  // Manual load more trigger for TV remotes (focus on loader or pressing Enter)
+  const handleManualLoadMore = useCallback(() => {
+    if (!hasMore || loading || loadingMore) return;
+
+    if (isSeries) {
+      loadMoreSeries();
+    } else {
+      loadItems(offset, true);
+    }
+  }, [hasMore, loading, loadingMore, isSeries, loadMoreSeries, loadItems, offset]);
+
+  const scrollToBottom = useCallback(() => {
+    if (mainRef.current) {
+      mainRef.current.scrollTo({ top: mainRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, []);
+
   // Infinite scroll with IntersectionObserver
   useEffect(() => {
     if (!hasMore || loadingMore || loading) return;
@@ -357,6 +375,16 @@ export function CategoryPage() {
   const displayItems = isSeries ? displayedSeries : items;
   const isEmpty = displayItems.length === 0;
 
+  // Focusable "load more" control to unblock Down navigation on TVs
+  const { ref: loadMoreRef, focused: loadMoreFocused } = useFocusable({
+    focusKey: 'category-load-more',
+    onFocus: () => {
+      scrollToBottom();
+      handleManualLoadMore();
+    },
+    onEnterPress: () => handleManualLoadMore(),
+  });
+
   // Set initial focus when content loads
   useEffect(() => {
     if (!loading && displayItems.length > 0) {
@@ -402,7 +430,7 @@ export function CategoryPage() {
           </div>
         </header>
 
-        <main className={styles.main}>
+        <main ref={mainRef} className={styles.main}>
           {loading ? (
             <div className={styles.loading}>
               <div className={styles.spinner} />
@@ -441,12 +469,16 @@ export function CategoryPage() {
               {/* Infinite scroll trigger */}
               {hasMore && (
                 <div ref={observerRef} className={styles.loadingMore}>
-                  {loadingMore && (
-                    <>
-                      <div className={styles.spinner} />
-                      <span>Carregando mais...</span>
-                    </>
-                  )}
+                  {loadingMore && <div className={styles.spinner} />}
+                  <button
+                    ref={loadMoreRef}
+                    className={`${styles.loadMoreButton} ${loadMoreFocused ? styles.focused : ''}`}
+                    onClick={handleManualLoadMore}
+                    data-focused={loadMoreFocused}
+                    tabIndex={-1}
+                  >
+                    {loadingMore ? 'Carregando...' : 'Carregar mais itens'}
+                  </button>
                 </div>
               )}
             </>

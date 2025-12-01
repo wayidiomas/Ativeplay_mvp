@@ -12,6 +12,7 @@ const spatialDebug = import.meta.env.VITE_SPATIAL_DEBUG === 'true';
 init({
   debug: spatialDebug,
   visualDebug: false,
+  throttle: 50, // avoid duplicate key events on slow TV remotes
 });
 
 createRoot(document.getElementById('root')!).render(

@@ -199,6 +199,28 @@
   font-size: 14px;
 }
 
+.loadMoreButton {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+  min-width: 180px;
+}
+
+.loadMoreButton:focus {
+  outline: none;
+}
+
+.loadMoreButton.focused,
+.loadMoreButton[data-focused="true"] {
+  border: 2px solid #e50914;
+  box-shadow: 0 0 12px rgba(229, 9, 20, 0.45);
+  background: rgba(229, 9, 20, 0.12);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
