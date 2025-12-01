@@ -178,6 +178,9 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // Live edge monitoring
   private liveEdgeMonitorInterval: ReturnType<typeof setInterval> | null = null;
 
+  // VOD direct playback fallback
+  private triedDirectFallback: boolean = false;
+
   // Constants
   private static readonly HLS_FATAL_ERROR_WINDOW_MS = 60000;
   private static readonly HLS_FATAL_ERRORS_BEFORE_RESTART = 3;
@@ -608,6 +611,15 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       // All recovery attempts exhausted - count as fatal for restart tracking
       this.hlsConsecutiveFatalErrors++;
       console.error(`[LGWebOSAdapter] HLS fatal error after ${this.hlsRecoverAttempts} attempts:`, data.details);
+
+      // For VOD content, try falling back to direct playback
+      // This handles cases where the content isn't actually HLS (e.g., direct MP4)
+      if (!this.options.isLive && !this.triedDirectFallback) {
+        console.log('[LGWebOSAdapter] VOD HLS failed, attempting direct playback fallback');
+        this.tryDirectPlaybackFallback();
+        return;
+      }
+
       this.setState('error');
       this.emit('error', {
         code: 'HLS_ERROR',
@@ -678,6 +690,60 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     }
 
     console.log('[LGWebOSAdapter] Full HLS restart completed');
+  }
+
+  /**
+   * Try direct playback as fallback when HLS.js fails for VOD content
+   * This handles cases where the content isn't actually HLS (e.g., direct MP4/MKV)
+   */
+  private tryDirectPlaybackFallback(): void {
+    if (!this.video || this.triedDirectFallback) return;
+
+    this.triedDirectFallback = true;
+    const savedUrl = this.currentUrl;
+
+    console.log('[LGWebOSAdapter] Attempting direct playback fallback for:', savedUrl.substring(0, 100));
+
+    // Destroy HLS instance
+    if (this.hls) {
+      this.hls.destroy();
+      this.hls = null;
+    }
+    this.usingHls = false;
+
+    // Reset counters
+    this.hlsRecoverAttempts = 0;
+    this.hlsConsecutiveFatalErrors = 0;
+    this.hlsFullRestartAttempts = 0;
+
+    // Try direct playback
+    this.video.src = savedUrl;
+    this.video.load();
+
+    // Setup one-time error handler for fallback
+    const onError = () => {
+      this.video?.removeEventListener('error', onError);
+      this.video?.removeEventListener('canplay', onCanPlay);
+      console.error('[LGWebOSAdapter] Direct playback fallback also failed');
+      this.setState('error');
+      this.emit('error', {
+        code: 'PLAYBACK_ERROR',
+        message: 'Conteudo nao suportado - formato de video incompativel',
+      });
+    };
+
+    const onCanPlay = () => {
+      this.video?.removeEventListener('error', onError);
+      this.video?.removeEventListener('canplay', onCanPlay);
+      console.log('[LGWebOSAdapter] Direct playback fallback successful');
+      this.setState('ready');
+      if (this.options.autoPlay) {
+        this.play();
+      }
+    };
+
+    this.video.addEventListener('error', onError);
+    this.video.addEventListener('canplay', onCanPlay);
   }
 
   // ============================================================================
@@ -927,6 +993,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     }
     this.usingHls = false;
     this.isRawTsStream = false;
+    this.triedDirectFallback = false;
 
     // Reset all recovery counters
     this.hlsRecoverAttempts = 0;
@@ -1100,6 +1167,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.frozenCheckCount = 0;
     this.tsRecoveryAttempts = 0;
     this.isRawTsStream = false;
+    this.triedDirectFallback = false;
     this.lastPlaybackTime = 0;
   }
 

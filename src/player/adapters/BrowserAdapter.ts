@@ -574,9 +574,72 @@ export class BrowserAdapter implements IPlayerAdapter {
       // All recovery attempts exhausted
       this.hlsConsecutiveFatalErrors++;
       console.error(`[BrowserAdapter] HLS fatal error after ${this.hlsRecoverAttempts} attempts:`, data.details);
+
+      // For VOD content, try falling back to direct playback
+      // This handles cases where the content isn't actually HLS (e.g., direct MP4)
+      if (!this.options.isLive && !this.fallbackAttempted) {
+        console.log('[BrowserAdapter] VOD HLS failed, attempting direct playback fallback');
+        this.tryDirectPlaybackFallback();
+        return;
+      }
+
       this.setState('error');
       this.emit('error', { code: 'HLS_FATAL', message: data.details });
     });
+  }
+
+  /**
+   * Try direct playback as fallback when HLS.js fails for VOD content
+   * This handles cases where the content isn't actually HLS (e.g., direct MP4)
+   */
+  private tryDirectPlaybackFallback(): void {
+    if (!this.video || this.fallbackAttempted) return;
+
+    this.fallbackAttempted = true;
+    const savedUrl = this.currentUrl;
+
+    console.log('[BrowserAdapter] Attempting direct playback fallback for:', savedUrl.substring(0, 100));
+
+    // Destroy HLS instance
+    if (this.hls) {
+      this.hls.destroy();
+      this.hls = null;
+    }
+    this.usingHls = false;
+
+    // Reset counters
+    this.hlsRecoverAttempts = 0;
+    this.hlsConsecutiveFatalErrors = 0;
+    this.hlsFullRestartAttempts = 0;
+
+    // Try direct playback
+    this.video.src = savedUrl;
+    this.video.load();
+
+    // Setup one-time error handler for fallback
+    const onError = () => {
+      this.video?.removeEventListener('error', onError);
+      this.video?.removeEventListener('canplay', onCanPlay);
+      console.error('[BrowserAdapter] Direct playback fallback also failed');
+      this.setState('error');
+      this.emit('error', {
+        code: 'PLAYBACK_ERROR',
+        message: 'Conteudo nao suportado - formato de video incompativel',
+      });
+    };
+
+    const onCanPlay = () => {
+      this.video?.removeEventListener('error', onError);
+      this.video?.removeEventListener('canplay', onCanPlay);
+      console.log('[BrowserAdapter] Direct playback fallback successful');
+      this.setState('ready');
+      if (this.options.autoPlay) {
+        this.play();
+      }
+    };
+
+    this.video.addEventListener('error', onError);
+    this.video.addEventListener('canplay', onCanPlay);
   }
 
   // ============================================================================
