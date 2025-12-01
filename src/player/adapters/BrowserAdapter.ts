@@ -177,7 +177,9 @@ export class BrowserAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('pause', () => {
-      if (!this.isBuffering) {
+      // Don't set paused state if we're buffering or if it's a live stream
+      // (live stream pause handling is done separately with auto-resume)
+      if (!this.isBuffering && !this.options.isLive) {
         this.setState('paused');
       }
     });
@@ -188,12 +190,36 @@ export class BrowserAdapter implements IPlayerAdapter {
       this.emit('bufferingstart');
     });
 
+    // Handle stalled event - browser is trying to fetch but data is not forthcoming
+    this.video.addEventListener('stalled', () => {
+      console.log('[BrowserAdapter] Video stalled, attempting recovery...');
+      if (this.options.isLive && this.hls) {
+        // For live streams, try to restart loading
+        this.hls.startLoad();
+      }
+    });
+
     this.video.addEventListener('playing', () => {
       if (this.isBuffering) {
         this.isBuffering = false;
         this.emit('bufferingend');
       }
       this.setState('playing');
+    });
+
+    // Auto-resume for live streams when paused unexpectedly
+    this.video.addEventListener('pause', () => {
+      if (this.options.isLive && !this.isBuffering) {
+        // Live stream paused unexpectedly - try to resume after a short delay
+        console.log('[BrowserAdapter] Live stream paused unexpectedly, attempting resume...');
+        setTimeout(() => {
+          if (this.video && this.video.paused && this.options.isLive) {
+            this.video.play().catch(e => {
+              console.warn('[BrowserAdapter] Auto-resume failed:', e);
+            });
+          }
+        }, 1000);
+      }
     });
 
     this.video.addEventListener('timeupdate', () => {
