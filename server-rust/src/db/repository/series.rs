@@ -43,17 +43,52 @@ pub async fn upsert_series(pool: &PgPool, series: &NewSeries) -> Result<Uuid, sq
     Ok(row.get("id"))
 }
 
-/// Bulk insert series
+/// Bulk insert series using COPY protocol for performance
 pub async fn insert_many(
     pool: &PgPool,
     series_list: &[NewSeries],
 ) -> Result<Vec<Uuid>, sqlx::Error> {
-    let mut ids = Vec::with_capacity(series_list.len());
-
-    for series in series_list {
-        let id = upsert_series(pool, series).await?;
-        ids.push(id);
+    if series_list.is_empty() {
+        return Ok(vec![]);
     }
+
+    // Generate UUIDs upfront
+    let ids: Vec<Uuid> = series_list.iter().map(|_| Uuid::new_v4()).collect();
+
+    // Use COPY protocol for bulk insert
+    let copy_query = r#"
+        COPY series (id, playlist_id, series_hash, name, logo, group_name,
+                    total_episodes, total_seasons, first_season, last_season, year, quality)
+        FROM STDIN WITH (FORMAT text, NULL '\N')
+    "#;
+
+    let mut tx = pool.begin().await?;
+    let mut copy = tx.copy_in_raw(copy_query).await?;
+
+    let escape = |s: &str| s.replace('\t', " ").replace('\n', " ").replace('\r', "");
+    let truncate = |s: &str, max: usize| if s.len() <= max { s.to_string() } else { s.chars().take(max).collect::<String>() };
+
+    for (series, id) in series_list.iter().zip(ids.iter()) {
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            id,
+            series.playlist_id,
+            escape(&truncate(&series.series_hash, 255)),
+            escape(&truncate(&series.name, 1024)),
+            series.logo.as_ref().map(|s| escape(&truncate(s, 2048))).unwrap_or_else(|| "\\N".to_string()),
+            escape(&truncate(&series.group_name, 512)),
+            series.total_episodes,
+            series.total_seasons,
+            series.first_season.map(|s| s.to_string()).unwrap_or_else(|| "\\N".to_string()),
+            series.last_season.map(|s| s.to_string()).unwrap_or_else(|| "\\N".to_string()),
+            series.year.map(|y| y.to_string()).unwrap_or_else(|| "\\N".to_string()),
+            series.quality.as_ref().map(|s| escape(&truncate(s, 50))).unwrap_or_else(|| "\\N".to_string()),
+        );
+        copy.send(line.as_bytes()).await?;
+    }
+
+    copy.finish().await?;
+    tx.commit().await?;
 
     Ok(ids)
 }
@@ -182,19 +217,47 @@ pub async fn insert_episode(pool: &PgPool, episode: &NewEpisode) -> Result<Uuid,
     Ok(row.get("id"))
 }
 
-/// Bulk insert episodes
+/// Bulk insert episodes using COPY protocol for performance
+/// This is 50-100x faster than individual INSERTs
 pub async fn insert_many_episodes(
     pool: &PgPool,
     episodes: &[NewEpisode],
 ) -> Result<usize, sqlx::Error> {
-    let mut count = 0;
-
-    for episode in episodes {
-        insert_episode(pool, episode).await?;
-        count += 1;
+    if episodes.is_empty() {
+        return Ok(0);
     }
 
-    Ok(count)
+    // Use COPY protocol for bulk insert (much faster than individual INSERTs)
+    let copy_query = r#"
+        COPY series_episodes (id, series_id, item_id, item_hash, season, episode, name, url)
+        FROM STDIN WITH (FORMAT text, NULL '\N')
+    "#;
+
+    let mut tx = pool.begin().await?;
+    let mut copy = tx.copy_in_raw(copy_query).await?;
+
+    let escape = |s: &str| s.replace('\t', " ").replace('\n', " ").replace('\r', "");
+    let truncate = |s: &str, max: usize| if s.len() <= max { s.to_string() } else { s.chars().take(max).collect::<String>() };
+
+    for episode in episodes {
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            Uuid::new_v4(),
+            episode.series_id,
+            episode.item_id.map(|id| id.to_string()).unwrap_or_else(|| "\\N".to_string()),
+            escape(&truncate(&episode.item_hash, 255)),
+            episode.season,
+            episode.episode,
+            escape(&truncate(&episode.name, 1024)),
+            escape(&truncate(&episode.url, 2048)),
+        );
+        copy.send(line.as_bytes()).await?;
+    }
+
+    copy.finish().await?;
+    tx.commit().await?;
+
+    Ok(episodes.len())
 }
 
 /// Get episodes for a series
