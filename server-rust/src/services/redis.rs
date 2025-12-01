@@ -67,6 +67,15 @@ impl RedisService {
         Ok(exists)
     }
 
+    /// Flush all keys from the current database (use with caution!)
+    pub async fn flush_db(&self) -> Result<()> {
+        let mut conn = self.conn.clone();
+        redis::cmd("FLUSHDB")
+            .query_async::<()>(&mut conn)
+            .await?;
+        Ok(())
+    }
+
     /// Get TTL of a key in seconds (-2 if not exists, -1 if no TTL)
     pub async fn ttl(&self, key: &str) -> Result<i64> {
         let mut conn = self.conn.clone();

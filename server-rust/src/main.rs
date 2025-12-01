@@ -5,7 +5,7 @@ mod routes;
 mod services;
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::net::SocketAddr;
@@ -146,6 +146,14 @@ async fn main() -> anyhow::Result<()> {
             "/api/playlist/:hash/search",
             get(routes::playlist::search_items),
         )
+        // Admin endpoints (protected by ADMIN_KEY)
+        .route(
+            "/api/admin/playlist/:hash",
+            delete(routes::admin::delete_playlist),
+        )
+        .route("/api/admin/all", delete(routes::admin::delete_all_data))
+        .route("/api/admin/stats", get(routes::admin::get_db_stats))
+        .route("/api/admin/expired", delete(routes::admin::delete_expired))
         // HLS Proxy
         .route("/api/proxy/hls", get(routes::proxy::hls_proxy))
         // Middleware

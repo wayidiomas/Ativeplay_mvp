@@ -290,3 +290,11 @@ pub async fn get_by_hash(
 
     Ok(row)
 }
+
+/// Count all items for a playlist
+pub async fn count_by_playlist(
+    pool: &PgPool,
+    playlist_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    count_items(pool, playlist_id, None, None).await
+}
