@@ -96,7 +96,6 @@ export default defineConfig(({ command }) => ({
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
-          db: ['dexie', 'dexie-react-hooks'],
           navigation: ['@noriginmedia/norigin-spatial-navigation'],
         },
       },

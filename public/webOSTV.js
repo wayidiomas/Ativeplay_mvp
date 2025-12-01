@@ -7,6 +7,12 @@
 (function(window) {
   'use strict';
 
+  // If webOS is already defined by the native SDK, don't overwrite
+  if (window.webOS && window.webOS.service && window.webOS.service.request) {
+    console.log('[webOSTV] Native webOS SDK already available, using existing implementation');
+    return;
+  }
+
   // Only initialize on actual webOS devices
   var isWebOS = (function() {
     var ua = navigator.userAgent || '';
@@ -23,7 +29,7 @@
     return;
   }
 
-  console.log('[webOSTV] Initializing webOS bridge...');
+  console.log('[webOSTV] Initializing webOS bridge (no native SDK found)...');
 
   // Luna Service Bridge
   var PalmServiceBridge = window.PalmServiceBridge;

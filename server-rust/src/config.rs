@@ -110,9 +110,9 @@ impl Config {
                 .parse()
                 .unwrap_or(900), // 15 minutes
 
-            // Misc
+            // Misc - Use VLC user agent to avoid IPTV server blocks
             user_agent: env::var("USER_AGENT")
-                .unwrap_or_else(|_| "AtivePlay-Server/1.0 (Rust)".to_string()),
+                .unwrap_or_else(|_| "VLC/3.0.20 LibVLC/3.0.20".to_string()),
         }
     }
 }

@@ -1,8 +1,11 @@
 /**
  * LG webOS Adapter
- * Implementa IPlayerAdapter usando HTML5 Video + Luna Service para LG TVs
+ * Implementa IPlayerAdapter usando HTML5 Video + HLS.js para LG TVs
+ * HLS.js fornece APIs próprias para seleção de faixas de áudio e legenda
+ * que funcionam independentemente do browser (resolve limitação do webOS)
  */
 
+import Hls from 'hls.js';
 import type { IPlayerAdapter } from './IPlayerAdapter';
 import type {
   PlayerState,
@@ -19,7 +22,7 @@ import type {
 // Proxy URL for CORS/mixed-content bypass
 const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
 
-// Tipos do Luna Service
+// Tipos do Luna Service (mantido para futuras funcionalidades)
 interface LunaServiceRequest {
   method: string;
   parameters: Record<string, unknown>;
@@ -35,6 +38,20 @@ interface WebOSAPI {
   deviceInfo: (callback: (info: { modelName: string; version: string }) => void) => void;
 }
 
+// AudioTrackList não é padrão em todos os browsers
+interface AudioTrack {
+  enabled: boolean;
+  id: string;
+  kind: string;
+  label: string;
+  language: string;
+}
+
+interface AudioTrackList {
+  length: number;
+  [index: number]: AudioTrack;
+}
+
 declare global {
   interface Window {
     webOS?: WebOSAPI;
@@ -43,20 +60,57 @@ declare global {
 
 function parseLanguageCode(code: string): string {
   const languageMap: Record<string, string> = {
-    por: 'Portugues',
-    pt: 'Portugues',
-    'pt-br': 'Portugues (BR)',
+    por: 'Português',
+    pt: 'Português',
+    'pt-br': 'Português (BR)',
+    'pt-BR': 'Português (BR)',
     eng: 'English',
     en: 'English',
-    spa: 'Espanol',
-    es: 'Espanol',
+    spa: 'Español',
+    es: 'Español',
+    jpn: 'Japanese',
+    ja: 'Japanese',
+    kor: 'Korean',
+    ko: 'Korean',
+    fra: 'Français',
+    fr: 'Français',
+    deu: 'Deutsch',
+    de: 'Deutsch',
+    ita: 'Italiano',
+    it: 'Italiano',
+    rus: 'Русский',
+    ru: 'Русский',
+    zho: '中文',
+    zh: '中文',
     und: 'Indefinido',
   };
   return languageMap[code.toLowerCase()] || code;
 }
 
+/**
+ * Detecta se a URL é um stream HLS
+ */
+function isHlsUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return lower.includes('.m3u8') || lower.includes('format=m3u8') || lower.includes('output=m3u8');
+}
+
+/**
+ * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
+ */
+function isIptvTsStream(url: string): boolean {
+  // Pattern: ends with /ts (not .ts file extension)
+  if (/\/ts(\?|$)/i.test(url)) return true;
+  // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
+  if (/\/\d+\/\d+\/\d+(\?|$)/.test(url)) return true;
+  // Query param indicating TS output
+  if (url.includes('output=ts')) return true;
+  return false;
+}
+
 export class LGWebOSAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
+  private hls: Hls | null = null;
   private webOS: WebOSAPI | null = null;
   private isWebOS: boolean = false;
   private state: PlayerState = 'idle';
@@ -69,25 +123,24 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     subtitleIndex: -1,
     subtitleEnabled: false,
   };
-  private mediaId: string | null = null;
   private isBuffering: boolean = false;
-  private lastKnownPosition: number = 0; // ms
-  private tsFormatAttempted: boolean = false;
-  private originalUrl: string = ''; // Original URL before proxy
+  private usingHls: boolean = false;
 
   constructor(containerId?: string) {
     if (typeof window !== 'undefined') {
       this.webOS = window.webOS || null;
       this.isWebOS = !!this.webOS;
-      // Em webOS usamos Luna Service; no browser usamos HTML5 video.
-      if (!this.isWebOS) {
-        this.createVideoElement(containerId);
+      this.createVideoElement(containerId);
+
+      if (this.isWebOS) {
+        console.log('[LGWebOSAdapter] Running on webOS with HLS.js for track selection');
       }
     }
   }
 
   private createVideoElement(containerId?: string): void {
     this.video = document.createElement('video');
+    this.video.crossOrigin = 'anonymous';
     this.video.style.cssText = `
       position: absolute;
       top: 0;
@@ -126,44 +179,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   /**
-   * Detect if URL is an IPTV live stream pattern
-   * Common patterns:
-   * - /play/TOKEN/ts (Xtream Codes TS)
-   * - /username/password/stream_id (Xtream Codes API)
-   * - /live/TOKEN.ts
-   */
-  private isIptvLiveStream(url: string): boolean {
-    // Pattern: ends with /ts (not .ts)
-    if (/\/ts(\?|$)/i.test(url)) return true;
-    // Pattern: numeric Xtream Codes path /digits/digits/digits
-    if (/\/\d+\/\d+\/\d+(\?|$)/.test(url)) return true;
-    // Pattern: /live/ path segment
-    if (/\/live\//i.test(url)) return true;
-    // Pattern: /play/ with token
-    if (/\/play\/[^/]+\/?(ts)?(\?|$)/i.test(url)) return true;
-    return false;
-  }
-
-  private inferMimeFromUrl(url: string): string | null {
-    const lower = url.toLowerCase();
-    // Traditional file extensions
-    if (lower.endsWith('.m3u8') || lower.includes('.m3u8?')) return 'application/x-mpegURL';
-    if (lower.endsWith('.ts') || lower.includes('.ts?')) return 'video/mp2t';
-    if (lower.endsWith('.mp4') || lower.includes('.mp4?')) return 'video/mp4';
-    if (lower.endsWith('.mkv') || lower.includes('.mkv?')) return 'video/x-matroska';
-    if (lower.endsWith('.avi') || lower.includes('.avi?')) return 'video/x-msvideo';
-
-    // IPTV patterns: path ends with /ts (Transport Stream)
-    if (/\/ts(\?|$)/i.test(url)) return 'video/mp2t';
-
-    // Query param patterns
-    if (url.includes('output=ts')) return 'video/mp2t';
-    if (url.includes('output=m3u8') || url.includes('output=hls')) return 'application/x-mpegURL';
-
-    return null;
-  }
-
-  /**
    * Proxify URL to bypass CORS/mixed-content on TVs
    */
   private proxifyUrl(url: string, referer?: string): string {
@@ -175,87 +190,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     return `${BRIDGE_URL}/api/proxy/hls?${params}`;
   }
 
-  /**
-   * Try TS format as fallback for IPTV streams
-   * Many IPTV providers support output=ts instead of m3u8
-   */
-  private tryTsFormat(url: string): string | null {
-    if (url.includes('output=m3u8') || url.includes('output=hls')) {
-      return url.replace(/output=(m3u8|hls)/i, 'output=ts');
-    }
-    if (url.includes('.m3u8')) {
-      return url.replace(/\.m3u8(\?|$)/i, '.ts$1');
-    }
-    return null;
-  }
-
-  private async peekContentType(url: string): Promise<string | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    try {
-      const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
-      clearTimeout(timeout);
-      if (!resp.ok) return null;
-      return resp.headers.get('content-type');
-    } catch {
-      clearTimeout(timeout);
-      return null;
-    }
-  }
-
-  private async resolveMime(url: string): Promise<{ primary: string; fallback: string | null }> {
-    const inferred = this.inferMimeFromUrl(url);
-    if (inferred) {
-      // Se já tem extensão conhecida, define fallback para um tipo alternativo comum
-      const fallback = inferred === 'application/x-mpegURL' ? 'video/mp2t' : 'application/x-mpegURL';
-      return { primary: inferred, fallback };
-    }
-
-    // Check if it matches IPTV live stream patterns
-    const isIptv = this.isIptvLiveStream(url);
-
-    // Try to get content-type from HEAD request
-    const contentType = await this.peekContentType(url);
-    if (contentType) {
-      if (/mpegurl/i.test(contentType)) return { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
-      if (/mp2t/i.test(contentType)) return { primary: 'video/mp2t', fallback: 'application/x-mpegURL' };
-      if (/mp4/i.test(contentType)) return { primary: 'video/mp4', fallback: 'application/x-mpegURL' };
-      if (/octet-stream/i.test(contentType)) {
-        // Binary stream - likely TS for IPTV
-        return isIptv
-          ? { primary: 'video/mp2t', fallback: 'application/x-mpegURL' }
-          : { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
-      }
-    }
-
-    // For IPTV patterns without extension: prioritize TS (most common for live)
-    if (isIptv) {
-      console.log('[LGWebOSAdapter] IPTV pattern detected, trying TS first');
-      return { primary: 'video/mp2t', fallback: 'application/x-mpegURL' };
-    }
-
-    // Default: try HLS first, fallback to TS
-    return { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
-  }
-
-  private loadViaLuna(url: string, mime: string, onSuccess: () => void, onFailure: (err: unknown) => void): void {
-    this.mediaId = `ativeplay-${Date.now()}`;
-    this.webOS!.service.request('luna://com.webos.media', {
-      method: 'load',
-      parameters: {
-        mediaId: this.mediaId,
-        uri: url,
-        type: 'media',
-        options: {
-          autoplay: false,
-          mimetype: mime,
-        },
-      },
-      onSuccess: onSuccess,
-      onFailure: onFailure,
-    });
-  }
-
   private setupVideoListeners(): void {
     if (!this.video) return;
 
@@ -264,7 +198,10 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('loadedmetadata', () => {
-      this.loadTracks();
+      // Para HLS, as tracks são carregadas via eventos do HLS.js
+      if (!this.usingHls) {
+        this.loadTracksFromElement();
+      }
       if (this.video) {
         this.emit('durationchange', { duration: this.video.duration * 1000 });
       }
@@ -310,38 +247,159 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('error', () => {
-      this.setState('error');
       const error = this.video?.error;
+      const errorCode = error?.code;
+
+      // Map MediaError codes to readable messages
+      let errorMessage = 'Erro de reproducao';
+      let errorType = 'PLAYBACK_ERROR';
+
+      switch (errorCode) {
+        case MediaError.MEDIA_ERR_ABORTED:
+          errorMessage = 'Reproducao cancelada pelo usuario';
+          errorType = 'ABORTED';
+          break;
+        case MediaError.MEDIA_ERR_NETWORK:
+          errorMessage = 'Erro de rede ao carregar o video';
+          errorType = 'NETWORK_ERROR';
+          break;
+        case MediaError.MEDIA_ERR_DECODE:
+          errorMessage = 'Erro ao decodificar o video';
+          errorType = 'DECODE_ERROR';
+          break;
+        case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          errorMessage = 'Formato de video nao suportado';
+          errorType = 'FORMAT_NOT_SUPPORTED';
+          break;
+      }
+
+      console.error('[LGWebOSAdapter] Video error:', {
+        code: errorCode,
+        type: errorType,
+        message: error?.message,
+        url: this.currentUrl,
+        usingHls: this.usingHls,
+      });
+
+      this.setState('error');
       this.emit('error', {
-        code: 'PLAYBACK_ERROR',
-        message: error?.message || 'Erro de reproducao',
+        code: errorType,
+        message: errorMessage,
+        details: error?.message,
       });
     });
   }
 
-  private loadTracks(): void {
-    // Use Luna Service to get tracks on real webOS
-    if (this.webOS && this.mediaId) {
-      this.loadTracksViaLuna();
-    } else {
-      this.loadTracksFromElement();
-    }
-    this.emit('trackschange', this.tracks);
+  /**
+   * Setup HLS.js event listeners for track management
+   */
+  private setupHlsListeners(): void {
+    if (!this.hls) return;
+
+    // Audio tracks loaded
+    this.hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => {
+      console.log('[LGWebOSAdapter] HLS audio tracks updated:', data.audioTracks.length);
+      this.tracks.audio = data.audioTracks.map((track, index) => ({
+        index,
+        language: track.lang || 'und',
+        label: track.name || parseLanguageCode(track.lang || 'und') || `Audio ${index + 1}`,
+        isDefault: track.default || index === 0,
+      }));
+      this.currentTracks.audioIndex = this.hls?.audioTrack ?? 0;
+      this.emit('trackschange', this.tracks);
+    });
+
+    // Subtitle tracks loaded
+    this.hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
+      console.log('[LGWebOSAdapter] HLS subtitle tracks updated:', data.subtitleTracks.length);
+      this.tracks.subtitle = data.subtitleTracks.map((track, index) => ({
+        index,
+        language: track.lang || 'und',
+        label: track.name || parseLanguageCode(track.lang || 'und') || `Legenda ${index + 1}`,
+        isDefault: track.default || false,
+      }));
+      // HLS.js subtitleTrack = -1 means disabled
+      const currentSubTrack = this.hls?.subtitleTrack ?? -1;
+      this.currentTracks.subtitleIndex = currentSubTrack;
+      this.currentTracks.subtitleEnabled = currentSubTrack >= 0;
+      this.emit('trackschange', this.tracks);
+    });
+
+    // Audio track switched
+    this.hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
+      console.log('[LGWebOSAdapter] HLS audio track switched to:', data.id);
+      this.currentTracks.audioIndex = data.id;
+      this.emit('audiotrackchange', { index: data.id, track: this.tracks.audio[data.id] });
+    });
+
+    // Subtitle track switched
+    this.hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
+      console.log('[LGWebOSAdapter] HLS subtitle track switched to:', data.id);
+      this.currentTracks.subtitleIndex = data.id;
+      this.currentTracks.subtitleEnabled = data.id >= 0;
+      this.emit('subtitletrackchange', {
+        index: data.id,
+        enabled: data.id >= 0,
+        track: data.id >= 0 ? this.tracks.subtitle[data.id] : undefined,
+      });
+    });
+
+    // Manifest parsed - get initial track info
+    this.hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+      console.log('[LGWebOSAdapter] HLS manifest parsed:', {
+        audioTracks: data.audioTracks,
+        subtitles: data.subtitleTracks,
+        levels: data.levels.length,
+      });
+
+      // Set video track info from levels
+      if (data.levels.length > 0) {
+        this.tracks.video = data.levels.map((level, index) => ({
+          index,
+          width: level.width,
+          height: level.height,
+          bitrate: level.bitrate,
+        }));
+      }
+    });
+
+    // Error handling
+    this.hls.on(Hls.Events.ERROR, (_event, data) => {
+      console.error('[LGWebOSAdapter] HLS error:', data.type, data.details);
+      if (data.fatal) {
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            console.log('[LGWebOSAdapter] Fatal network error, trying to recover...');
+            this.hls?.startLoad();
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            console.log('[LGWebOSAdapter] Fatal media error, trying to recover...');
+            this.hls?.recoverMediaError();
+            break;
+          default:
+            this.setState('error');
+            this.emit('error', {
+              code: 'HLS_ERROR',
+              message: `HLS error: ${data.details}`,
+            });
+            break;
+        }
+      }
+    });
   }
 
   private loadTracksFromElement(): void {
     if (!this.video) return;
 
-    // Audio tracks (non-standard, Safari/Chromium TVs podem expor)
-    const audioTracks: any = (this.video as any).audioTracks;
+    // Audio tracks (fallback for non-HLS)
+    const audioTracks = (this.video as HTMLVideoElement & { audioTracks?: AudioTrackList }).audioTracks;
     if (audioTracks && audioTracks.length) {
-      this.tracks.audio = Array.from(audioTracks).map((track: any, index: number) => ({
+      this.tracks.audio = Array.from(audioTracks).map((track, index) => ({
         index,
         language: track.language || 'und',
         label: track.label || parseLanguageCode(track.language || 'und') || `Audio ${index + 1}`,
         isDefault: track.enabled || index === 0,
       }));
-      // Atualiza current audio conforme enabled
       const current = this.tracks.audio.find((_t, idx) => audioTracks[idx]?.enabled) || this.tracks.audio[0];
       if (current) this.currentTracks.audioIndex = current.index;
     } else {
@@ -376,90 +434,22 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.tracks.video = [
       { index: 0, width: this.video.videoWidth, height: this.video.videoHeight },
     ];
-  }
 
-  private loadTracksViaLuna(): void {
-    if (!this.webOS || !this.mediaId) return;
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method: 'getTrackInfo',
-      parameters: { mediaId: this.mediaId },
-      onSuccess: (response: unknown) => {
-        const data = response as {
-          audioTrackList?: Array<{ language: string; codec?: string }>;
-          subtitleTrackList?: Array<{ language: string }>;
-        };
-
-        if (data.audioTrackList) {
-          this.tracks.audio = data.audioTrackList.map((track, index) => ({
-            index,
-            language: track.language,
-            label: parseLanguageCode(track.language) || `Audio ${index + 1}`,
-            codec: track.codec,
-            isDefault: index === 0,
-          }));
-          this.currentTracks.audioIndex = 0;
-        }
-
-        if (data.subtitleTrackList) {
-          this.tracks.subtitle = data.subtitleTrackList.map((track, index) => ({
-            index,
-            language: track.language,
-            label: parseLanguageCode(track.language) || `Legenda ${index + 1}`,
-            isDefault: false,
-          }));
-          this.currentTracks.subtitleIndex = -1;
-          this.currentTracks.subtitleEnabled = false;
-        }
-
-        this.emit('trackschange', this.tracks);
-      },
-    });
-  }
-
-  private setTrackViaLuna(type: 'audio' | 'subtitle', index: number): void {
-    if (!this.webOS || !this.mediaId) return;
-
-    const method = type === 'audio' ? 'selectTrack' : 'setSubtitleEnable';
-    const parameters: Record<string, unknown> = { mediaId: this.mediaId };
-
-    if (type === 'audio') {
-      parameters.type = 'audio';
-      parameters.index = index;
-    } else {
-      parameters.enable = index >= 0;
-      if (index >= 0) {
-        parameters.index = index;
-      }
-    }
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method,
-      parameters,
-      onSuccess: () => {
-        if (type === 'audio') {
-          this.currentTracks.audioIndex = index;
-          this.emit('audiotrackchange', { index, track: this.tracks.audio[index] });
-        } else {
-          this.currentTracks.subtitleIndex = index;
-          this.currentTracks.subtitleEnabled = index >= 0;
-          this.emit('subtitletrackchange', {
-            index,
-            enabled: index >= 0,
-            track: index >= 0 ? this.tracks.subtitle[index] : undefined,
-          });
-        }
-      },
-    });
+    this.emit('trackschange', this.tracks);
   }
 
   // Lifecycle
 
   async open(url: string, options: PlayerOptions = {}): Promise<void> {
-    this.originalUrl = url;
-    this.tsFormatAttempted = false;
     this.options = options;
     this.setState('loading');
+
+    // Clean up previous HLS instance
+    if (this.hls) {
+      this.hls.destroy();
+      this.hls = null;
+    }
+    this.usingHls = false;
 
     // Extract referer from original URL
     let referer: string | undefined;
@@ -474,74 +464,70 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     const streamUrl = this.proxifyUrl(url, referer);
     this.currentUrl = streamUrl;
 
-    if (this.isWebOS && this.webOS) {
-      // Usa Luna Service para carregar mídia nativa com detecção de mimetype e fallback
-      const { primary, fallback } = await this.resolveMime(url); // Use original URL for mime detection
-      return new Promise((resolve, reject) => {
-        const tryLoad = (urlToLoad: string, mimeToUse: string, nextFallback: string | null) => {
-          this.loadViaLuna(
-            urlToLoad,
-            mimeToUse,
-            () => {
-              this.setState('ready');
-              this.lastKnownPosition = this.options.startPosition || 0;
-              // Atualiza faixas de áudio/legenda após load
-              this.loadTracksViaLuna();
-              resolve();
-            },
-            (error) => {
-              if (nextFallback) {
-                // Tenta fallback alternativo antes de falhar
-                tryLoad(urlToLoad, nextFallback, null);
-                return;
-              }
-
-              // Try TS format as last resort for IPTV streams
-              const tsUrl = this.tryTsFormat(this.originalUrl);
-              if (tsUrl && !this.tsFormatAttempted) {
-                this.tsFormatAttempted = true;
-                console.log('[LGWebOSAdapter] Trying TS format:', tsUrl);
-                const tsStreamUrl = this.proxifyUrl(tsUrl, referer);
-                tryLoad(tsStreamUrl, 'video/mp2t', null);
-                return;
-              }
-
-              this.setState('error');
-              reject(error);
-            }
-          );
-        };
-
-        tryLoad(streamUrl, primary, fallback);
-      });
-    }
-
-    // Fallback: HTML5 video (browser/dev)
     if (!this.video) {
       throw new Error('Video element nao disponivel');
     }
 
-    this.video.src = streamUrl;
-    this.video.load();
+    // Detect IPTV TS streams - should NOT use HLS.js
+    const isIptvTs = isIptvTsStream(url);
+
+    // Use HLS.js for HLS streams (provides track selection APIs)
+    // But NOT for raw IPTV TS streams
+    if (!isIptvTs && isHlsUrl(url) && Hls.isSupported()) {
+      console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
+      this.usingHls = true;
+
+      // Create custom loader to proxy all HLS sub-requests (playlists, segments)
+      const proxyUrl = this.proxifyUrl.bind(this);
+
+      this.hls = new Hls({
+        // Enable subtitle display
+        enableWebVTT: true,
+        enableIMSC1: true,
+        enableCEA708Captions: true,
+        // Render subtitles natively in the browser
+        renderTextTracksNatively: true,
+        // Low latency settings
+        lowLatencyMode: true,
+        // Buffer settings
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        backBufferLength: 90,
+        // Custom loader to proxy all requests
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        loader: class ProxyLoader extends Hls.DefaultConfig.loader {
+          load(context: any, config: any, callbacks: any) {
+            // Proxy external URLs that aren't already proxied
+            if (context.url && !context.url.includes('/api/proxy/hls') && /^https?:\/\//i.test(context.url)) {
+              context.url = proxyUrl(context.url, referer);
+              console.log('[LGWebOSAdapter] HLS proxied:', context.url.substring(0, 80));
+            }
+            super.load(context, config, callbacks);
+          }
+        },
+      });
+
+      this.setupHlsListeners();
+      this.hls.attachMedia(this.video);
+      this.hls.loadSource(streamUrl);
+    } else if (!isIptvTs && isHlsUrl(url) && this.video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS support (Safari, some Smart TVs)
+      console.log('[LGWebOSAdapter] Using native HLS support:', streamUrl.substring(0, 100));
+      this.video.src = streamUrl;
+      this.video.load();
+    } else {
+      // Direct playback for non-HLS streams (including IPTV TS)
+      if (isIptvTs) {
+        console.log('[LGWebOSAdapter] Loading IPTV TS stream:', streamUrl.substring(0, 100));
+      } else {
+        console.log('[LGWebOSAdapter] Using HTML5 video for stream:', streamUrl.substring(0, 100));
+      }
+      this.video.src = streamUrl;
+      this.video.load();
+    }
   }
 
   async prepare(): Promise<void> {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      // Nada extra: load já prepara; aqui apenas aplica startPosition/autoPlay
-      if (this.options.startPosition) {
-        this.webOS.service.request('luna://com.webos.media', {
-          method: 'seek',
-          parameters: { mediaId: this.mediaId, position: this.options.startPosition },
-        });
-        this.lastKnownPosition = this.options.startPosition;
-      }
-
-      if (this.options.autoPlay) {
-        this.play();
-      }
-      return;
-    }
-
     if (!this.video) {
       throw new Error('Video element nao disponivel');
     }
@@ -584,12 +570,11 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   close(): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'unload',
-        parameters: { mediaId: this.mediaId },
-      });
+    if (this.hls) {
+      this.hls.destroy();
+      this.hls = null;
     }
+    this.usingHls = false;
 
     if (this.video) {
       this.video.pause();
@@ -599,7 +584,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.setState('idle');
     this.tracks = { audio: [], subtitle: [], video: [] };
     this.currentTracks = { audioIndex: 0, subtitleIndex: -1, subtitleEnabled: false };
-    this.mediaId = null;
   }
 
   destroy(): void {
@@ -614,16 +598,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // Playback Controls
 
   play(): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'play',
-        parameters: { mediaId: this.mediaId },
-        onSuccess: () => this.setState('playing'),
-        onFailure: () => this.setState('error'),
-      });
-      return;
-    }
-
     if (this.video) {
       this.video.play().catch((e) => {
         console.error('[LGWebOSAdapter] Error playing:', e);
@@ -632,30 +606,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   pause(): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'pause',
-        parameters: { mediaId: this.mediaId },
-        onSuccess: () => this.setState('paused'),
-      });
-      return;
-    }
-
     if (this.video) {
       this.video.pause();
     }
   }
 
   stop(): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'stop',
-        parameters: { mediaId: this.mediaId },
-        onSuccess: () => this.setState('idle'),
-      });
-      return;
-    }
-
     if (this.video) {
       this.video.pause();
       this.video.currentTime = 0;
@@ -664,37 +620,18 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   seek(position: number): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'seek',
-        parameters: { mediaId: this.mediaId, position },
-      });
-      this.lastKnownPosition = position;
-      return;
-    }
-
     if (this.video) {
       this.video.currentTime = position / 1000;
     }
   }
 
   seekForward(ms: number): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      const newPos = Math.max(0, this.lastKnownPosition + ms);
-      this.seek(newPos);
-      return;
-    }
     if (this.video) {
       this.video.currentTime += ms / 1000;
     }
   }
 
   seekBackward(ms: number): void {
-    if (this.isWebOS && this.webOS && this.mediaId) {
-      const newPos = Math.max(0, this.lastKnownPosition - ms);
-      this.seek(newPos);
-      return;
-    }
     if (this.video) {
       this.video.currentTime = Math.max(0, this.video.currentTime - ms / 1000);
     }
@@ -713,15 +650,17 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   setAudioTrack(index: number): void {
     if (index < 0 || index >= this.tracks.audio.length) return;
 
-    if (this.webOS && this.mediaId) {
-      this.setTrackViaLuna('audio', index);
+    if (this.usingHls && this.hls) {
+      // Use HLS.js API for audio track switching
+      console.log('[LGWebOSAdapter] Switching HLS audio track to:', index);
+      this.hls.audioTrack = index;
     } else {
-      // HTML5 audioTracks
-      const audioTracks: any = (this.video as any)?.audioTracks;
+      // HTML5 audioTracks fallback
+      const audioTracks = (this.video as HTMLVideoElement & { audioTracks?: AudioTrackList })?.audioTracks;
       if (audioTracks && audioTracks.length) {
-        Array.from(audioTracks).forEach((t: any, idx: number) => {
-          t.enabled = idx === index;
-        });
+        for (let i = 0; i < audioTracks.length; i++) {
+          audioTracks[i].enabled = i === index;
+        }
       }
       this.currentTracks.audioIndex = index;
       this.emit('audiotrackchange', { index, track: this.tracks.audio[index] });
@@ -729,36 +668,20 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   setSubtitleTrack(index: number): void {
-    if (this.webOS && this.mediaId) {
-      // Seleciona faixa e ativa/desativa legendas no Luna Service
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'selectTrack',
-        parameters: {
-          mediaId: this.mediaId,
-          type: 'subtitle',
-          index,
-        },
-        onSuccess: () => {
-          this.webOS!.service.request('luna://com.webos.media', {
-            method: 'setSubtitleEnable',
-            parameters: { mediaId: this.mediaId, enable: index >= 0 },
-          });
-          this.currentTracks.subtitleIndex = index;
-          this.currentTracks.subtitleEnabled = index >= 0;
-          this.emit('subtitletrackchange', {
-            index,
-            enabled: index >= 0,
-            track: index >= 0 ? this.tracks.subtitle[index] : undefined,
-          });
-        },
-      });
+    if (this.usingHls && this.hls) {
+      // Use HLS.js API for subtitle track switching
+      console.log('[LGWebOSAdapter] Switching HLS subtitle track to:', index);
+      this.hls.subtitleTrack = index;
+      // Also control visibility
+      this.hls.subtitleDisplay = index >= 0;
     } else {
+      // HTML5 textTracks fallback
       if (!this.video) return;
       const textTracks = this.video.textTracks;
       if (textTracks && textTracks.length) {
-        Array.from(textTracks).forEach((t, idx) => {
-          t.mode = idx === index ? 'showing' : 'hidden';
-        });
+        for (let i = 0; i < textTracks.length; i++) {
+          textTracks[i].mode = i === index ? 'showing' : 'hidden';
+        }
       }
       this.currentTracks.subtitleIndex = index;
       this.currentTracks.subtitleEnabled = index >= 0;
@@ -771,47 +694,21 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   setSubtitleEnabled(enabled: boolean): void {
-    if (enabled && this.currentTracks.subtitleIndex >= 0) {
-      this.setSubtitleTrack(this.currentTracks.subtitleIndex);
-    } else if (!enabled) {
-      this.setSubtitleTrack(-1);
-    }
-  }
-
-  /**
-   * Ajusta estilo de legenda (quando suportado pelo Luna Service).
-   * @param style fontSize: 0-4, color: 'white'|'yellow'|'red'|'green'|'cyan', position: 'bottom'|'top'
-   */
-  setSubtitleStyle(style: { fontSize?: number; color?: 'white' | 'yellow' | 'red' | 'green' | 'cyan'; position?: 'bottom' | 'top' }): void {
-    if (!this.webOS || !this.mediaId) return;
-
-    const colorMap: Record<string, number> = {
-      yellow: 0,
-      red: 1,
-      white: 2,
-      green: 3,
-      cyan: 4,
-    };
-
-    if (style.fontSize !== undefined) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'setSubtitleFontSize',
-        parameters: { mediaId: this.mediaId, fontSize: Math.min(4, Math.max(0, style.fontSize)) },
-      });
-    }
-
-    if (style.color !== undefined) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'setSubtitleColor',
-        parameters: { mediaId: this.mediaId, color: colorMap[style.color] ?? 2 },
-      });
-    }
-
-    if (style.position !== undefined) {
-      this.webOS.service.request('luna://com.webos.media', {
-        method: 'setSubtitlePosition',
-        parameters: { mediaId: this.mediaId, position: style.position === 'top' ? 4 : 0 },
-      });
+    if (this.usingHls && this.hls) {
+      this.hls.subtitleDisplay = enabled;
+      if (!enabled) {
+        this.hls.subtitleTrack = -1;
+      } else if (this.currentTracks.subtitleIndex >= 0) {
+        this.hls.subtitleTrack = this.currentTracks.subtitleIndex;
+      } else if (this.tracks.subtitle.length > 0) {
+        this.hls.subtitleTrack = 0;
+      }
+    } else {
+      if (enabled && this.currentTracks.subtitleIndex >= 0) {
+        this.setSubtitleTrack(this.currentTracks.subtitleIndex);
+      } else if (!enabled) {
+        this.setSubtitleTrack(-1);
+      }
     }
   }
 
@@ -826,17 +723,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   getPlaybackInfo(): PlaybackInfo {
-    if (this.isWebOS) {
-      return {
-        currentTime: this.lastKnownPosition,
-        duration: 0,
-        bufferedTime: 0,
-        playbackRate: 1,
-        volume: 100,
-        isMuted: false,
-      };
-    }
-
     if (!this.video) {
       return {
         currentTime: 0,
@@ -926,6 +812,20 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   restore(): void {
     // Nada especifico para webOS
+  }
+
+  /**
+   * Get HLS.js instance for advanced control (if using HLS)
+   */
+  getHlsInstance(): Hls | null {
+    return this.hls;
+  }
+
+  /**
+   * Check if currently using HLS.js
+   */
+  isUsingHls(): boolean {
+    return this.usingHls;
   }
 }
 

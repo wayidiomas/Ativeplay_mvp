@@ -53,10 +53,11 @@ interface Row {
 // Card Components with Spatial Navigation
 // ============================================================================
 
-const MediaCard = memo(({ item, onSelect, focusKey }: {
+const MediaCard = memo(({ item, onSelect, focusKey, onFocused }: {
   item: PlaylistItem;
   onSelect: (item: PlaylistItem) => void;
   focusKey: string;
+  onFocused?: () => void;
 }) => {
   const [imageError, setImageError] = useState(false);
 
@@ -69,8 +70,9 @@ const MediaCard = memo(({ item, onSelect, focusKey }: {
   useEffect(() => {
     if (focused && ref.current) {
       ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      onFocused?.();
     }
-  }, [focused]);
+  }, [focused, onFocused]);
 
   return (
     <button
@@ -104,10 +106,11 @@ const MediaCard = memo(({ item, onSelect, focusKey }: {
   );
 }, (prev, next) => prev.item.id === next.item.id && prev.focusKey === next.focusKey);
 
-const SeriesCard = memo(({ series, onNavigate, focusKey }: {
+const SeriesCard = memo(({ series, onNavigate, focusKey, onFocused }: {
   series: SeriesInfo;
   onNavigate: (id: string) => void;
   focusKey: string;
+  onFocused?: () => void;
 }) => {
   const [imageError, setImageError] = useState(false);
 
@@ -120,8 +123,9 @@ const SeriesCard = memo(({ series, onNavigate, focusKey }: {
   useEffect(() => {
     if (focused && ref.current) {
       ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      onFocused?.();
     }
-  }, [focused]);
+  }, [focused, onFocused]);
 
   return (
     <button
@@ -182,6 +186,7 @@ export function Home() {
   const [selectedItem, setSelectedItem] = useState<PlaylistItem | null>(null);
   const [hasMoreGroups, setHasMoreGroups] = useState(false);
   const [allFilteredGroups, setAllFilteredGroups] = useState<PlaylistGroup[]>([]);
+  const [loadedGroupsCount, setLoadedGroupsCount] = useState(0); // Track groups loaded (not rows, since empty rows are filtered)
   const [loadingRowId, setLoadingRowId] = useState<string | null>(null);
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -293,6 +298,7 @@ export function Home() {
 
         // Load only first page of groups
         const groupsToLoad = filteredGroups.slice(0, GROUPS_PER_PAGE);
+        setLoadedGroupsCount(groupsToLoad.length);
         setHasMoreGroups(filteredGroups.length > GROUPS_PER_PAGE);
 
         // For each group, load initial items
@@ -369,6 +375,7 @@ export function Home() {
     setSelectedNav(item);
     setRows([]); // Clear rows when switching tabs
     setAllFilteredGroups([]);
+    setLoadedGroupsCount(0);
     setHasMoreGroups(false);
     setLoading(true);
   }, []);
@@ -446,7 +453,9 @@ export function Home() {
     if (!hash || !hasMoreGroups || loading) return;
 
     const currentHash = hash;
-    const startIndex = rows.length;
+    // Use loadedGroupsCount instead of rows.length to avoid duplicates
+    // (rows.length can be less than loaded groups if some rows were empty)
+    const startIndex = loadedGroupsCount;
     const endIndex = startIndex + GROUPS_PER_PAGE;
     const groupsToLoad = allFilteredGroups.slice(startIndex, endIndex);
 
@@ -492,8 +501,9 @@ export function Home() {
 
     const nonEmptyRows = newRowsData.filter(r => r.items.length > 0 || (r.series && r.series.length > 0));
     setRows(prev => [...prev, ...nonEmptyRows]);
+    setLoadedGroupsCount(endIndex); // Track actual groups loaded
     setHasMoreGroups(endIndex < allFilteredGroups.length);
-  }, [hash, hasMoreGroups, loading, rows.length, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache]);
+  }, [hash, hasMoreGroups, loading, loadedGroupsCount, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache]);
 
   // IntersectionObserver for infinite scroll of groups
   useEffect(() => {
@@ -640,57 +650,65 @@ export function Home() {
 
     return (
       <>
-        {rows.map((row, rowIndex) => (
-          <div className={styles.section} key={row.group.id}>
-            <div className={styles.sectionHeader}>
-              <h2 className={styles.sectionTitle}>{row.group.name}</h2>
-              <button
-                className={styles.sectionMore}
-                onClick={() => handleSeeAll(row.group)}
-              >
-                Ver tudo <MdNavigateNext />
-              </button>
-            </div>
-            <div className={styles.carousel}>
-              <button
-                className={styles.carouselArrow}
-                onClick={() => handleCarouselScroll(rowIndex, 'left')}
-              >
-                <MdNavigateBefore />
-              </button>
-              <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
-                {row.isSeries && row.series?.map((series) => (
-                  <SeriesCard
-                    key={series.id}
-                    series={series}
-                    onNavigate={handleSelectSeries}
-                    focusKey={`card-${series.id}`}
-                  />
-                ))}
-                {row.items.map((item) => (
-                  <MediaCard
-                    key={item.id}
-                    item={item}
-                    onSelect={handleSelectItem}
-                    focusKey={`card-${item.id}`}
-                  />
-                ))}
-                {/* Loading indicator for progressive carousel loading */}
-                {loadingRowId === row.group.id && (
-                  <div className={styles.carouselLoading}>
-                    <div className={styles.spinner} />
-                  </div>
-                )}
+        {rows.map((row, rowIndex) => {
+          // Trigger loadMoreGroups when focusing cards in last 2 rows
+          const isNearEnd = hasMoreGroups && rowIndex >= rows.length - 2;
+          const onCardFocused = isNearEnd ? loadMoreGroups : undefined;
+
+          return (
+            <div className={styles.section} key={row.group.id}>
+              <div className={styles.sectionHeader}>
+                <h2 className={styles.sectionTitle}>{row.group.name}</h2>
+                <button
+                  className={styles.sectionMore}
+                  onClick={() => handleSeeAll(row.group)}
+                >
+                  Ver tudo <MdNavigateNext />
+                </button>
               </div>
-              <button
-                className={styles.carouselArrow}
-                onClick={() => handleCarouselScroll(rowIndex, 'right')}
-              >
-                <MdNavigateNext />
-              </button>
+              <div className={styles.carousel}>
+                <button
+                  className={styles.carouselArrow}
+                  onClick={() => handleCarouselScroll(rowIndex, 'left')}
+                >
+                  <MdNavigateBefore />
+                </button>
+                <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
+                  {row.isSeries && row.series?.map((series) => (
+                    <SeriesCard
+                      key={series.id}
+                      series={series}
+                      onNavigate={handleSelectSeries}
+                      focusKey={`card-${series.id}`}
+                      onFocused={onCardFocused}
+                    />
+                  ))}
+                  {row.items.map((item) => (
+                    <MediaCard
+                      key={item.id}
+                      item={item}
+                      onSelect={handleSelectItem}
+                      focusKey={`card-${item.id}`}
+                      onFocused={onCardFocused}
+                    />
+                  ))}
+                  {/* Loading indicator for progressive carousel loading */}
+                  {loadingRowId === row.group.id && (
+                    <div className={styles.carouselLoading}>
+                      <div className={styles.spinner} />
+                    </div>
+                  )}
+                </div>
+                <button
+                  className={styles.carouselArrow}
+                  onClick={() => handleCarouselScroll(rowIndex, 'right')}
+                >
+                  <MdNavigateNext />
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {/* Infinite scroll trigger and loading indicator */}
         {hasMoreGroups && (
