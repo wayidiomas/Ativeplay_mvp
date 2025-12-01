@@ -29,6 +29,18 @@ interface PlayerContainerProps {
 
 type MenuType = 'audio' | 'subtitle' | null;
 
+/**
+ * Detect container formats not natively supported by HTML5 video
+ */
+function getUnsupportedFormat(url: string): string | null {
+  const lower = url.toLowerCase();
+  if (lower.endsWith('.mkv') || lower.includes('.mkv?')) return 'MKV';
+  if (lower.endsWith('.avi') || lower.includes('.avi?')) return 'AVI';
+  if (lower.endsWith('.wmv') || lower.includes('.wmv?')) return 'WMV';
+  if (lower.endsWith('.flv') || lower.includes('.flv?')) return 'FLV';
+  return null;
+}
+
 export function PlayerContainer({
   url,
   title = '',
@@ -254,21 +266,38 @@ export function PlayerContainer({
 
   // Render error state
   if (state === 'error') {
+    const unsupportedFormat = getUnsupportedFormat(url);
+    const isFormatError = unsupportedFormat !== null;
+
     return (
       <div className={styles.container} ref={containerRef}>
         <div id="player-container" className={styles.videoContainer} />
         <div className={styles.errorOverlay}>
           <MdErrorOutline className={styles.errorIcon} />
-          <h2 className={styles.errorTitle}>Erro na Reprodução</h2>
+          <h2 className={styles.errorTitle}>
+            {isFormatError ? 'Formato Não Suportado' : 'Erro na Reprodução'}
+          </h2>
           <p className={styles.errorMessage}>
-            Não foi possível reproduzir o vídeo
+            {isFormatError
+              ? `O formato ${unsupportedFormat} não é suportado pelo navegador. Reproduza diretamente na TV.`
+              : 'Não foi possível reproduzir o vídeo'}
           </p>
+          {!isFormatError && (
+            <button
+              className={styles.retryButton}
+              onClick={() => open(buildStreamUrl(url), { startPosition: currentTime })}
+              autoFocus
+            >
+              Tentar Novamente
+            </button>
+          )}
           <button
             className={styles.retryButton}
-            onClick={() => open(url, { startPosition: currentTime })}
-            autoFocus
+            onClick={onClose}
+            style={{ marginTop: isFormatError ? 0 : '0.5rem' }}
+            autoFocus={isFormatError}
           >
-            Tentar Novamente
+            Voltar
           </button>
         </div>
       </div>

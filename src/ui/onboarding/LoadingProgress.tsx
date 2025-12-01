@@ -1,23 +1,28 @@
 /**
  * LoadingProgress
- * Tela de carregamento com progresso do parser
+ * Sends playlist URL to Rust backend for parsing
+ * Backend handles all heavy lifting - frontend just shows progress
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useOnboardingStore } from '@store/onboardingStore';
 import { usePlaylistStore } from '@store/playlistStore';
-import { addPlaylist } from '@core/db';
+import { parsePlaylist } from '@core/services/api';
 import styles from './LoadingProgress.module.css';
+
+type Phase = 'connecting' | 'parsing' | 'complete' | 'error';
 
 export function LoadingProgress() {
   const navigate = useNavigate();
-  const { playlistUrl, progress, setProgress, setError } = useOnboardingStore();
-  const setActivePlaylist = usePlaylistStore((s) => s.setActivePlaylist);
-  const activePlaylist = usePlaylistStore((s) => s.activePlaylist);
-  const earlyNavDone = useRef(false);
+  const { playlistUrl, setError } = useOnboardingStore();
+  const setPlaylist = usePlaylistStore((s) => s.setPlaylist);
+
+  const [phase, setPhase] = useState<Phase>('connecting');
+  const [message, setMessage] = useState('Conectando ao servidor...');
+  const [percentage, setPercentage] = useState(5);
+  const parseStarted = useRef(false);
   const optimisticTimer = useRef<ReturnType<typeof setInterval>>();
-  const [optimisticPct, setOptimisticPct] = useState(1);
 
   useEffect(() => {
     if (!playlistUrl) {
@@ -25,92 +30,81 @@ export function LoadingProgress() {
       return;
     }
 
-    let cancelled = false;
+    if (parseStarted.current) return;
+    parseStarted.current = true;
 
-    async function loadPlaylist() {
+    // Optimistic progress while waiting for backend
+    optimisticTimer.current = setInterval(() => {
+      setPercentage((prev) => {
+        if (prev < 30) return prev + 2;
+        if (prev < 60) return prev + 1;
+        if (prev < 85) return prev + 0.5;
+        return prev;
+      });
+    }, 300);
+
+    async function sendToBackend() {
       try {
-        console.log('[LOADING DEBUG] Iniciando addPlaylist (fire-and-forget)...');
+        console.log('[LoadingProgress] Sending to backend:', playlistUrl);
+        setPhase('parsing');
+        setMessage('Processando playlist...');
 
-        // Força progress inicial para movimentar a barra imediatamente
-        setProgress({
-          phase: 'downloading',
-          current: 1,
-          total: 100,
-          percentage: 1,
-          message: 'Conectando ao servidor...',
-        });
+        // Backend does all the parsing
+        const result = await parsePlaylist(playlistUrl);
 
-        // ✅ FASE 7.1: addPlaylist retorna IMEDIATAMENTE após early ready (500 items)
-        // Navegação acontece automaticamente via early callback + useEffect abaixo
-        await addPlaylist(playlistUrl, undefined, (p) => {
-          if (!cancelled) {
-            setProgress(p);
-          }
-        });
+        // Clear optimistic timer
+        if (optimisticTimer.current) {
+          clearInterval(optimisticTimer.current);
+        }
 
-        console.log('[LOADING DEBUG] ✓ addPlaylist retornou (parsing continua em background)');
+        if (result.success) {
+          console.log('[LoadingProgress] Parse complete:', result);
+          setPhase('complete');
+          setPercentage(100);
+          setMessage('Concluido!');
 
-        // ✅ FASE 7.1: Navegação agora é automática via useEffect (linhas 115-124)
-        // quando activePlaylist é setado pelo early callback
+          // Save to store for persistence
+          setPlaylist({
+            hash: result.hash,
+            url: playlistUrl,
+            name: extractNameFromUrl(playlistUrl),
+            stats: result.stats,
+            savedAt: Date.now(),
+          });
+
+          // Navigate to home
+          setTimeout(() => {
+            navigate('/home', { replace: true });
+          }, 500);
+        } else {
+          throw new Error('Parse failed');
+        }
       } catch (err) {
-        if (cancelled) return;
-        console.error('[LOADING DEBUG] ERRO:', err);
-        const message = err instanceof Error ? err.message : 'Erro ao carregar playlist';
-        setError(message);
-        navigate('/onboarding/error', { replace: true });
+        console.error('[LoadingProgress] Error:', err);
+
+        if (optimisticTimer.current) {
+          clearInterval(optimisticTimer.current);
+        }
+
+        setPhase('error');
+        const errorMsg = err instanceof Error ? err.message : 'Erro ao processar playlist';
+        setMessage(errorMsg);
+        setError(errorMsg);
+
+        setTimeout(() => {
+          navigate('/onboarding/error', { replace: true });
+        }, 1500);
       }
     }
 
-    loadPlaylist();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [playlistUrl, navigate, setProgress, setError, setActivePlaylist]);
-
-  // Otimismo: avança a barra enquanto não chegam updates reais do parser
-  useEffect(() => {
-    if (progress && progress.percentage > optimisticPct) {
-      setOptimisticPct(progress.percentage);
-    }
-
-    // Inicia timer se não há progresso ou está parado em 0
-    if (!progress || progress.percentage < 1) {
-      if (!optimisticTimer.current) {
-        optimisticTimer.current = setInterval(() => {
-          setOptimisticPct((prev) => (prev < 15 ? prev + 1 : prev));
-        }, 400);
-      }
-    } else {
-      if (optimisticTimer.current) {
-        clearInterval(optimisticTimer.current);
-        optimisticTimer.current = undefined;
-      }
-    }
+    sendToBackend();
 
     return () => {
       if (optimisticTimer.current) {
         clearInterval(optimisticTimer.current);
-        optimisticTimer.current = undefined;
       }
     };
-  }, [progress, optimisticPct]);
-
-  // ✅ FASE 7.1: Navegação automática quando playlist ativa é setada (após early ready)
-  // - activePlaylist é setado pelo early callback de operations.ts (após 500 items)
-  // - Navega IMEDIATAMENTE para home (parsing continua em background)
-  useEffect(() => {
-    if (earlyNavDone.current) return;
-    if (!activePlaylist) return;
-
-    // Navega assim que playlist estiver ativa (sem esperar parsing completo)
-    console.log('[LOADING DEBUG] ✅ Playlist ativa detectada! Navegando para /home...');
-    earlyNavDone.current = true;
-    navigate('/home', { replace: true });
-  }, [activePlaylist, navigate]);
-
-  const percentage = Math.max(progress?.percentage ?? 0, optimisticPct);
-  const message = progress?.message ?? 'Conectando ao servidor...';
+  }, [playlistUrl, navigate, setError, setPlaylist]);
 
   return (
     <div className={styles.container}>
@@ -121,46 +115,29 @@ export function LoadingProgress() {
           <div className={styles.progressBar}>
             <div
               className={styles.progressFill}
-              style={{ width: `${percentage}%` }}
+              style={{ width: `${Math.round(percentage)}%` }}
             />
           </div>
-          <span className={styles.percentage}>{percentage}%</span>
+          <span className={styles.percentage}>{Math.round(percentage)}%</span>
         </div>
 
         <p className={styles.message}>{message}</p>
 
         <div className={styles.phaseIndicator}>
           <PhaseStep
-            label="Download"
-            active={progress?.phase === 'downloading'}
-            completed={
-              progress?.phase === 'parsing' ||
-              progress?.phase === 'classifying' ||
-              progress?.phase === 'indexing' ||
-              progress?.phase === 'complete'
-            }
+            label="Conectar"
+            active={phase === 'connecting'}
+            completed={phase !== 'connecting'}
           />
           <PhaseStep
-            label="Analise"
-            active={progress?.phase === 'parsing'}
-            completed={
-              progress?.phase === 'classifying' ||
-              progress?.phase === 'indexing' ||
-              progress?.phase === 'complete'
-            }
+            label="Processar"
+            active={phase === 'parsing'}
+            completed={phase === 'complete'}
           />
           <PhaseStep
-            label="Classificacao"
-            active={progress?.phase === 'classifying'}
-            completed={
-              progress?.phase === 'indexing' ||
-              progress?.phase === 'complete'
-            }
-          />
-          <PhaseStep
-            label="Salvando"
-            active={progress?.phase === 'indexing'}
-            completed={progress?.phase === 'complete'}
+            label="Concluido"
+            active={phase === 'complete'}
+            completed={false}
           />
         </div>
       </div>
@@ -185,6 +162,16 @@ function PhaseStep({
       <span className={styles.phaseLabel}>{label}</span>
     </div>
   );
+}
+
+function extractNameFromUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.replace('www.', '');
+    return hostname.charAt(0).toUpperCase() + hostname.slice(1);
+  } catch {
+    return 'Minha Playlist';
+  }
 }
 
 export default LoadingProgress;

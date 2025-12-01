@@ -1,183 +1,124 @@
 /**
- * Playlist Store
- * Estado global para playlists e caches
+ * Playlist Store - Stateless Version
+ * All data comes from Rust backend API
+ * Only stores hash in localStorage for auto-resume
  */
 
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { Playlist, M3UItem, M3UGroup, Series } from '@core/db';
+import type {
+  PlaylistStats,
+  PlaylistGroup,
+  SeriesInfo,
+  StoredPlaylist,
+} from '@core/services/api';
 
-interface SyncProgress {
-  current: number;
-  total: number;
-  percentage: number;
-}
-
-type CacheGridState = { visibleCount: number; scrollTop: number };
-
-// ✅ NOVO: Interface Row para cache de navegação (mesma do Home.tsx)
-export interface Row {
-  group: M3UGroup;
-  items: M3UItem[];
-  series?: Series[];
-  isSeries?: boolean;
-  lastSeriesId?: string;
-  lastItemId?: string;
-  hasMoreSeries?: boolean;
-  hasMoreItems?: boolean;
-}
-
-// ✅ NOVO: Cache de navegação por tab
-export interface TabCache {
-  rows: Row[];
-  timestamp: number;
-  nextIndex: number;
-  hasMore: boolean;
-}
-
-// ✅ NOVO: Cache completo por playlist + tab
-export interface NavigationCache {
-  [playlistId: string]: {
-    movies?: TabCache;
-    series?: TabCache;
-    live?: TabCache;
-  };
-}
+// ============================================================================
+// Types
+// ============================================================================
 
 interface PlaylistState {
-  activePlaylist: Playlist | null;
-  playlists: Playlist[];
+  // Current playlist info (from backend)
+  hash: string | null;
+  url: string | null;
+  name: string | null;
+  stats: PlaylistStats | null;
+
+  // UI state
   isLoading: boolean;
   error: string | null;
-  isSyncing: boolean;
-  syncProgress: SyncProgress | null;
-  groupCache: Map<string, M3UItem[]>;
-  mediaGridCache: Map<string, CacheGridState>;
 
-  // ✅ NOVO: Cache de navegação persistente
-  navigationCache: NavigationCache;
+  // Cache for current session (not persisted)
+  groupsCache: PlaylistGroup[] | null;
+  seriesCache: SeriesInfo[] | null;
 
-  setActivePlaylist: (playlist: Playlist | null) => void;
-  setPlaylists: (playlists: Playlist[]) => void;
+  // Actions
+  setPlaylist: (playlist: StoredPlaylist) => void;
+  setStats: (stats: PlaylistStats) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
-  setSyncing: (syncing: boolean) => void;
-  setSyncProgress: (progress: SyncProgress | null) => void;
-  cacheGroupItems: (playlistId: string, group: string, items: M3UItem[]) => void;
-  getGroupCache: (playlistId: string, group: string) => M3UItem[] | undefined;
-  setMediaGridCache: (key: string, value: CacheGridState) => void;
-  getMediaGridCache: (key: string) => CacheGridState | undefined;
-  clearGroupCache: () => void;
-
-  // ✅ NOVO: Ações para cache de navegação
-  setTabCache: (playlistId: string, tab: 'movies' | 'series' | 'live', cache: TabCache) => void;
-  getTabCache: (playlistId: string, tab: 'movies' | 'series' | 'live') => TabCache | undefined;
-  clearNavigationCache: (playlistId?: string) => void;
-
+  setGroupsCache: (groups: PlaylistGroup[]) => void;
+  setSeriesCache: (series: SeriesInfo[]) => void;
+  clearCache: () => void;
   reset: () => void;
 }
 
+// ============================================================================
+// Initial State
+// ============================================================================
+
 const initialState = {
-  activePlaylist: null as Playlist | null,
-  playlists: [] as Playlist[],
+  hash: null as string | null,
+  url: null as string | null,
+  name: null as string | null,
+  stats: null as PlaylistStats | null,
   isLoading: false,
   error: null as string | null,
-  isSyncing: false,
-  syncProgress: null as SyncProgress | null,
-  groupCache: new Map<string, M3UItem[]>(),
-  mediaGridCache: new Map<string, CacheGridState>(),
-  navigationCache: {} as NavigationCache,
+  groupsCache: null as PlaylistGroup[] | null,
+  seriesCache: null as SeriesInfo[] | null,
 };
+
+// ============================================================================
+// Store
+// ============================================================================
 
 export const usePlaylistStore = create<PlaylistState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       ...initialState,
 
-      setActivePlaylist: (playlist) => set({ activePlaylist: playlist }),
-      setPlaylists: (playlists) => set({ playlists }),
+      setPlaylist: (playlist) =>
+        set({
+          hash: playlist.hash,
+          url: playlist.url,
+          name: playlist.name,
+          stats: playlist.stats,
+          error: null,
+          // Clear session cache when switching playlists
+          groupsCache: null,
+          seriesCache: null,
+        }),
+
+      setStats: (stats) => set({ stats }),
+
       setLoading: (isLoading) => set({ isLoading }),
+
       setError: (error) => set({ error }),
-      setSyncing: (isSyncing) => set({ isSyncing }),
-      setSyncProgress: (syncProgress) => set({ syncProgress }),
 
-      cacheGroupItems: (playlistId, group, items) =>
-        set((state) => {
-          const key = `${playlistId}:${group}`;
-          const newCache = new Map(state.groupCache);
-          newCache.set(key, items);
-          return { groupCache: newCache };
-        }),
+      setGroupsCache: (groupsCache) => set({ groupsCache }),
 
-      getGroupCache: (playlistId, group) => {
-        const state = get();
-        const key = `${playlistId}:${group}`;
-        return state.groupCache.get(key);
-      },
+      setSeriesCache: (seriesCache) => set({ seriesCache }),
 
-      setMediaGridCache: (key, value) =>
-        set((state) => {
-          const next = new Map(state.mediaGridCache);
-          next.set(key, value);
-          return { mediaGridCache: next };
-        }),
-
-      getMediaGridCache: (key) => {
-        const state = get();
-        return state.mediaGridCache.get(key);
-      },
-
-      clearGroupCache: () =>
+      clearCache: () =>
         set({
-          groupCache: new Map<string, M3UItem[]>(),
-          mediaGridCache: new Map<string, CacheGridState>(),
+          groupsCache: null,
+          seriesCache: null,
         }),
 
-      // ✅ NOVO: Ações para cache de navegação
-      setTabCache: (playlistId, tab, cache) =>
-        set((state) => ({
-          navigationCache: {
-            ...state.navigationCache,
-            [playlistId]: {
-              ...(state.navigationCache[playlistId] || {}),
-              [tab]: cache,
-            },
-          },
-        })),
-
-      getTabCache: (playlistId, tab) => {
-        const state = get();
-        return state.navigationCache[playlistId]?.[tab];
-      },
-
-      clearNavigationCache: (playlistId) =>
-        set((state) => {
-          if (playlistId) {
-            const next = { ...state.navigationCache };
-            delete next[playlistId];
-            return { navigationCache: next };
-          }
-          return { navigationCache: {} };
-        }),
-
-      reset: () =>
-        set({
-          ...initialState,
-          groupCache: new Map<string, M3UItem[]>(),
-          mediaGridCache: new Map<string, CacheGridState>(),
-          navigationCache: {},
-        }),
+      reset: () => set(initialState),
     }),
     {
-      name: 'ativeplay-playlist-storage',
+      name: 'ativeplay-playlist',
       storage: createJSONStorage(() => localStorage),
+      // Only persist essential data for auto-resume
       partialize: (state) => ({
-        // ✅ Persiste apenas campos essenciais
-        activePlaylist: state.activePlaylist,
-        navigationCache: state.navigationCache,
+        hash: state.hash,
+        url: state.url,
+        name: state.name,
+        stats: state.stats,
       }),
     }
   )
 );
+
+// ============================================================================
+// Selectors (for convenience)
+// ============================================================================
+
+export const selectHash = (state: PlaylistState) => state.hash;
+export const selectStats = (state: PlaylistState) => state.stats;
+export const selectIsLoading = (state: PlaylistState) => state.isLoading;
+export const selectError = (state: PlaylistState) => state.error;
+export const selectHasPlaylist = (state: PlaylistState) => !!state.hash;
 
 export default usePlaylistStore;

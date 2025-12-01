@@ -16,6 +16,9 @@ import type {
   PlayerEvent,
 } from '../types';
 
+// Proxy URL for CORS/mixed-content bypass
+const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
+
 // Tipos do Luna Service
 interface LunaServiceRequest {
   method: string;
@@ -69,6 +72,8 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private mediaId: string | null = null;
   private isBuffering: boolean = false;
   private lastKnownPosition: number = 0; // ms
+  private tsFormatAttempted: boolean = false;
+  private originalUrl: string = ''; // Original URL before proxy
 
   constructor(containerId?: string) {
     if (typeof window !== 'undefined') {
@@ -120,13 +125,67 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     }
   }
 
+  /**
+   * Detect if URL is an IPTV live stream pattern
+   * Common patterns:
+   * - /play/TOKEN/ts (Xtream Codes TS)
+   * - /username/password/stream_id (Xtream Codes API)
+   * - /live/TOKEN.ts
+   */
+  private isIptvLiveStream(url: string): boolean {
+    // Pattern: ends with /ts (not .ts)
+    if (/\/ts(\?|$)/i.test(url)) return true;
+    // Pattern: numeric Xtream Codes path /digits/digits/digits
+    if (/\/\d+\/\d+\/\d+(\?|$)/.test(url)) return true;
+    // Pattern: /live/ path segment
+    if (/\/live\//i.test(url)) return true;
+    // Pattern: /play/ with token
+    if (/\/play\/[^/]+\/?(ts)?(\?|$)/i.test(url)) return true;
+    return false;
+  }
+
   private inferMimeFromUrl(url: string): string | null {
     const lower = url.toLowerCase();
-    if (lower.endsWith('.m3u8')) return 'application/x-mpegURL';
-    if (lower.endsWith('.ts')) return 'video/mp2t';
-    if (lower.endsWith('.mp4')) return 'video/mp4';
-    if (lower.endsWith('.mkv')) return 'video/x-matroska';
-    if (lower.endsWith('.avi')) return 'video/x-msvideo';
+    // Traditional file extensions
+    if (lower.endsWith('.m3u8') || lower.includes('.m3u8?')) return 'application/x-mpegURL';
+    if (lower.endsWith('.ts') || lower.includes('.ts?')) return 'video/mp2t';
+    if (lower.endsWith('.mp4') || lower.includes('.mp4?')) return 'video/mp4';
+    if (lower.endsWith('.mkv') || lower.includes('.mkv?')) return 'video/x-matroska';
+    if (lower.endsWith('.avi') || lower.includes('.avi?')) return 'video/x-msvideo';
+
+    // IPTV patterns: path ends with /ts (Transport Stream)
+    if (/\/ts(\?|$)/i.test(url)) return 'video/mp2t';
+
+    // Query param patterns
+    if (url.includes('output=ts')) return 'video/mp2t';
+    if (url.includes('output=m3u8') || url.includes('output=hls')) return 'application/x-mpegURL';
+
+    return null;
+  }
+
+  /**
+   * Proxify URL to bypass CORS/mixed-content on TVs
+   */
+  private proxifyUrl(url: string, referer?: string): string {
+    if (!BRIDGE_URL) return url;
+    if (!/^https?:\/\//i.test(url)) return url;
+    if (url.includes('/api/proxy/hls')) return url;
+    const params = new URLSearchParams({ url });
+    if (referer) params.set('referer', referer);
+    return `${BRIDGE_URL}/api/proxy/hls?${params}`;
+  }
+
+  /**
+   * Try TS format as fallback for IPTV streams
+   * Many IPTV providers support output=ts instead of m3u8
+   */
+  private tryTsFormat(url: string): string | null {
+    if (url.includes('output=m3u8') || url.includes('output=hls')) {
+      return url.replace(/output=(m3u8|hls)/i, 'output=ts');
+    }
+    if (url.includes('.m3u8')) {
+      return url.replace(/\.m3u8(\?|$)/i, '.ts$1');
+    }
     return null;
   }
 
@@ -152,14 +211,30 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       return { primary: inferred, fallback };
     }
 
+    // Check if it matches IPTV live stream patterns
+    const isIptv = this.isIptvLiveStream(url);
+
+    // Try to get content-type from HEAD request
     const contentType = await this.peekContentType(url);
     if (contentType) {
       if (/mpegurl/i.test(contentType)) return { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
       if (/mp2t/i.test(contentType)) return { primary: 'video/mp2t', fallback: 'application/x-mpegURL' };
       if (/mp4/i.test(contentType)) return { primary: 'video/mp4', fallback: 'application/x-mpegURL' };
+      if (/octet-stream/i.test(contentType)) {
+        // Binary stream - likely TS for IPTV
+        return isIptv
+          ? { primary: 'video/mp2t', fallback: 'application/x-mpegURL' }
+          : { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
+      }
     }
 
-    // Sem extensão e sem content-type: começa com HLS, fallback TS
+    // For IPTV patterns without extension: prioritize TS (most common for live)
+    if (isIptv) {
+      console.log('[LGWebOSAdapter] IPTV pattern detected, trying TS first');
+      return { primary: 'video/mp2t', fallback: 'application/x-mpegURL' };
+    }
+
+    // Default: try HLS first, fallback to TS
     return { primary: 'application/x-mpegURL', fallback: 'video/mp2t' };
   }
 
@@ -381,17 +456,31 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // Lifecycle
 
   async open(url: string, options: PlayerOptions = {}): Promise<void> {
-    this.currentUrl = url;
+    this.originalUrl = url;
+    this.tsFormatAttempted = false;
     this.options = options;
     this.setState('loading');
 
+    // Extract referer from original URL
+    let referer: string | undefined;
+    try {
+      const parsed = new URL(url);
+      referer = parsed.origin;
+    } catch {
+      // Invalid URL, skip referer
+    }
+
+    // Proxify URL to bypass CORS/mixed-content
+    const streamUrl = this.proxifyUrl(url, referer);
+    this.currentUrl = streamUrl;
+
     if (this.isWebOS && this.webOS) {
       // Usa Luna Service para carregar mídia nativa com detecção de mimetype e fallback
-      const { primary, fallback } = await this.resolveMime(url);
+      const { primary, fallback } = await this.resolveMime(url); // Use original URL for mime detection
       return new Promise((resolve, reject) => {
-        const tryLoad = (mimeToUse: string, nextFallback: string | null) => {
+        const tryLoad = (urlToLoad: string, mimeToUse: string, nextFallback: string | null) => {
           this.loadViaLuna(
-            url,
+            urlToLoad,
             mimeToUse,
             () => {
               this.setState('ready');
@@ -403,16 +492,27 @@ export class LGWebOSAdapter implements IPlayerAdapter {
             (error) => {
               if (nextFallback) {
                 // Tenta fallback alternativo antes de falhar
-                tryLoad(nextFallback, null);
+                tryLoad(urlToLoad, nextFallback, null);
                 return;
               }
+
+              // Try TS format as last resort for IPTV streams
+              const tsUrl = this.tryTsFormat(this.originalUrl);
+              if (tsUrl && !this.tsFormatAttempted) {
+                this.tsFormatAttempted = true;
+                console.log('[LGWebOSAdapter] Trying TS format:', tsUrl);
+                const tsStreamUrl = this.proxifyUrl(tsUrl, referer);
+                tryLoad(tsStreamUrl, 'video/mp2t', null);
+                return;
+              }
+
               this.setState('error');
               reject(error);
             }
           );
         };
 
-        tryLoad(primary, fallback);
+        tryLoad(streamUrl, primary, fallback);
       });
     }
 
@@ -421,7 +521,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       throw new Error('Video element nao disponivel');
     }
 
-    this.video.src = url;
+    this.video.src = streamUrl;
     this.video.load();
   }
 

@@ -70,6 +70,26 @@ export interface UsePlayerReturn {
 
 const DEFAULT_SEEK_STEP = 10000; // 10 seconds
 
+/**
+ * Detect if URL is an HLS stream (direct or via proxy)
+ */
+function isHlsUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  // Direct .m3u8 URL
+  if (lower.endsWith('.m3u8') || lower.includes('.m3u8?')) {
+    return true;
+  }
+  // Proxied HLS URL - check if original URL is m3u8
+  if (lower.includes('/api/proxy/hls')) {
+    const match = url.match(/[?&]url=([^&]+)/);
+    if (match) {
+      const decoded = decodeURIComponent(match[1]).toLowerCase();
+      return decoded.endsWith('.m3u8') || decoded.includes('.m3u8?');
+    }
+  }
+  return false;
+}
+
 export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
   const { autoDestroy = true, ...factoryOptions } = options;
 
@@ -169,9 +189,12 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     await playerRef.current.prepare();
 
     // Se for manifest HLS, tenta parsear EXT-X-MEDIA para faixas externas
-    if (url.endsWith('.m3u8')) {
+    // Suporta URLs diretas (.m3u8) e via proxy (/api/proxy/hls?url=...)
+    if (isHlsUrl(url)) {
       try {
-        const res = await fetch(url);
+        // Usa a URL do proxy se disponível (evita CORS), senão a URL original
+        const fetchUrl = url;
+        const res = await fetch(fetchUrl);
         if (res.ok) {
           const text = await res.text();
           const parsed = parseHlsManifest(text);

@@ -19,6 +19,43 @@ import type {
 
 const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
 
+/**
+ * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
+ * Common patterns:
+ * - /play/TOKEN/ts (Xtream Codes TS)
+ * - /username/password/stream_id (Xtream Codes API)
+ */
+function isIptvTsStream(url: string): boolean {
+  // Pattern: ends with /ts (not .ts file extension)
+  if (/\/ts(\?|$)/i.test(url)) return true;
+  // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
+  if (/\/\d+\/\d+\/\d+(\?|$)/.test(url)) return true;
+  // Query param indicating TS output
+  if (url.includes('output=ts')) return true;
+  return false;
+}
+
+/**
+ * Detect container formats not natively supported by HTML5 video
+ * MKV and AVI require transcoding or native player (webOS Luna Service)
+ */
+function isUnsupportedContainer(url: string): { unsupported: boolean; format: string | null } {
+  const lower = url.toLowerCase();
+  if (lower.endsWith('.mkv') || lower.includes('.mkv?')) {
+    return { unsupported: true, format: 'MKV' };
+  }
+  if (lower.endsWith('.avi') || lower.includes('.avi?')) {
+    return { unsupported: true, format: 'AVI' };
+  }
+  if (lower.endsWith('.wmv') || lower.includes('.wmv?')) {
+    return { unsupported: true, format: 'WMV' };
+  }
+  if (lower.endsWith('.flv') || lower.includes('.flv?')) {
+    return { unsupported: true, format: 'FLV' };
+  }
+  return { unsupported: false, format: null };
+}
+
 export class BrowserAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
   private hls: Hls | null = null;
@@ -209,13 +246,14 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.emit('trackschange', this.tracks);
   }
 
-  private proxifyUrl(url: string): string {
+  private proxifyUrl(url: string, referer?: string): string {
     // Always try to proxy to avoid CORS. If BRIDGE_URL is not set, use same-origin.
     const base = BRIDGE_URL || `${window.location.protocol}//${window.location.host}`;
     if (!/^https?:\/\//i.test(url)) return url;
     if (url.includes('/api/proxy/hls')) return url;
-    const encoded = encodeURIComponent(url);
-    return `${base}/api/proxy/hls?url=${encoded}`;
+    const params = new URLSearchParams({ url });
+    if (referer) params.set('referer', referer);
+    return `${base}/api/proxy/hls?${params}`;
   }
 
   // Lifecycle
@@ -232,9 +270,32 @@ export class BrowserAdapter implements IPlayerAdapter {
     this.nativeFallbackDone = false;
     this.hlsRecoverAttempts = 0;
 
-    this.currentUrl = this.proxifyUrl(url);
+    // Extract referer from URL origin for IPTV providers that require it
+    let referer: string | undefined;
+    try {
+      const parsed = new URL(url);
+      referer = parsed.origin;
+    } catch {
+      // Invalid URL, no referer
+    }
+
+    this.currentUrl = this.proxifyUrl(url, referer);
     this.options = options;
     this.setState('loading');
+
+    // Check for unsupported container formats (MKV, AVI, WMV, FLV)
+    // These require transcoding or native player (webOS Luna Service)
+    const containerCheck = isUnsupportedContainer(url);
+    if (containerCheck.unsupported) {
+      console.warn(`[BrowserAdapter] Formato ${containerCheck.format} não suportado pelo browser`);
+      this.setState('error');
+      this.emit('error', {
+        code: 'UNSUPPORTED_FORMAT',
+        message: `Formato ${containerCheck.format} não é suportado pelo navegador. Use a TV para reproduzir.`,
+        format: containerCheck.format,
+      });
+      return;
+    }
 
     const hasExtension = /\.[a-z0-9]{2,4}(\?|$)/i.test(url);
     let contentType: string | null = null;
@@ -242,15 +303,19 @@ export class BrowserAdapter implements IPlayerAdapter {
       contentType = await this.peekContentType(this.currentUrl);
     }
 
+    // Detect IPTV TS streams (should NOT use HLS.js)
+    const isIptvTs = isIptvTsStream(url) || (contentType ? /mp2t/i.test(contentType) : false);
+
     const isHls = url.toLowerCase().includes('.m3u8') || (contentType ? /mpegurl/i.test(contentType) : false);
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
     const preferNative = /Safari/i.test(ua) && !/Chrome/i.test(ua); // usa nativo em Safari/iOS
     const isProbablyHls =
-      isHls ||
+      !isIptvTs && // Don't use HLS.js for raw TS streams
+      (isHls ||
       url.toLowerCase().includes('m3u') ||
       url.toLowerCase().includes('playlist') ||
       url.toLowerCase().includes('chunklist') ||
-      (!hasExtension && !preferNative); // sem extensão: tenta HLS primeiro fora do Safari
+      (!hasExtension && !preferNative)); // sem extensão: tenta HLS primeiro fora do Safari
 
     if (Hls.isSupported() && isProbablyHls && !preferNative) {
       this.hls = new Hls({
@@ -293,8 +358,12 @@ export class BrowserAdapter implements IPlayerAdapter {
       console.log('[BrowserAdapter] Loading HLS:', this.currentUrl !== url ? 'via proxy' : 'direct');
       this.hls.loadSource(this.currentUrl);
     } else {
-      // Uso nativo (Safari ou MP4/TS) - Usa proxy para URLs externas
-      console.log('[BrowserAdapter] Loading native:', this.currentUrl !== url ? 'via proxy' : 'direct');
+      // Uso nativo (Safari ou MP4/TS/IPTV) - Usa proxy para URLs externas
+      if (isIptvTs) {
+        console.log('[BrowserAdapter] Loading IPTV TS stream:', this.currentUrl !== url ? 'via proxy' : 'direct');
+      } else {
+        console.log('[BrowserAdapter] Loading native:', this.currentUrl !== url ? 'via proxy' : 'direct');
+      }
       this.video.src = this.currentUrl;
       this.video.load();
     }

@@ -1,15 +1,10 @@
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
+dockerfilePath = "server-rust/Dockerfile"
+watchPatterns = ["server-rust/**"]
 
 [deploy]
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 healthcheckPath = "/health"
 healthcheckTimeout = 100
-
-[env]
-NODE_ENV = "production"
-
-[[volumes]]
-name = "ativeplay_mvp"
-mountPath = "/app/server/.parse-cache"

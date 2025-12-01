@@ -1,30 +1,41 @@
 /**
- * Series Detail Page
+ * Series Detail Page - Stateless version using Rust backend API
  * Página de detalhes de uma série com lista de episódios estilo Netflix
  */
 
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getSeriesById, getEpisodesBySeries, type Series, type M3UItem } from '@core/db/schema';
+import { usePlaylistStore } from '@store/playlistStore';
+import {
+  getSeries,
+  getSeriesEpisodes,
+  type SeriesInfo,
+  type PlaylistItem,
+  type SeasonData,
+} from '@core/services/api';
 import { MdArrowBack, MdPlayArrow } from 'react-icons/md';
 import styles from './SeriesDetail.module.css';
 
 interface SeriesDetailProps {
-  onSelectItem: (item: M3UItem) => void;
+  onSelectItem: (item: PlaylistItem) => void;
 }
 
 export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
   const { seriesId } = useParams<{ seriesId: string }>();
   const navigate = useNavigate();
+  const hash = usePlaylistStore((s) => s.hash);
+  const seriesCache = usePlaylistStore((s) => s.seriesCache);
+  const setSeriesCache = usePlaylistStore((s) => s.setSeriesCache);
 
-  const [series, setSeries] = useState<Series | null>(null);
-  const [episodes, setEpisodes] = useState<M3UItem[]>([]);
+  const [series, setSeries] = useState<SeriesInfo | null>(null);
+  const [episodes, setEpisodes] = useState<PlaylistItem[]>([]);
+  const [seasonsData, setSeasonsData] = useState<SeasonData[]>([]);
   const [selectedSeason, setSelectedSeason] = useState<number>(1);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadSeriesData() {
-      if (!seriesId) {
+      if (!seriesId || !hash) {
         navigate('/home');
         return;
       }
@@ -32,8 +43,16 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
       setLoading(true);
 
       try {
-        // Carrega dados da série
-        const seriesData = await getSeriesById(seriesId);
+        // Get series info from cache or API
+        let allSeries = seriesCache;
+        if (!allSeries) {
+          const res = await getSeries(hash);
+          allSeries = res.series;
+          setSeriesCache(allSeries);
+        }
+
+        // Find the specific series
+        const seriesData = allSeries.find((s) => s.id === seriesId);
         if (!seriesData) {
           console.error('Série não encontrada:', seriesId);
           navigate('/home');
@@ -43,9 +62,18 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
         setSeries(seriesData);
         setSelectedSeason(seriesData.firstSeason || 1);
 
-        // Carrega todos os episódios
-        const allEpisodes = await getEpisodesBySeries(seriesId);
-        setEpisodes(allEpisodes);
+        // Check if series has pre-computed seasonsData
+        if (seriesData.seasonsData && seriesData.seasonsData.length > 0) {
+          setSeasonsData(seriesData.seasonsData);
+          // We don't need to fetch episodes separately, seasonsData has them
+        } else {
+          // Fallback: load episodes from API
+          const episodesRes = await getSeriesEpisodes(hash, seriesId, { limit: 500 });
+          setEpisodes(episodesRes.episodes);
+          if (episodesRes.seasonsData) {
+            setSeasonsData(episodesRes.seasonsData);
+          }
+        }
       } catch (error) {
         console.error('Erro ao carregar série:', error);
         navigate('/home');
@@ -55,25 +83,73 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     }
 
     loadSeriesData();
-  }, [seriesId, navigate]);
+  }, [seriesId, hash, navigate, seriesCache, setSeriesCache]);
 
-  // Agrupa episódios por temporada
-  const episodesBySeason = episodes.reduce((acc, episode) => {
-    const season = episode.seasonNumber || 1;
-    if (!acc[season]) {
-      acc[season] = [];
+  // Get episodes for selected season
+  const currentSeasonEpisodes = (() => {
+    // If we have seasonsData (pre-computed), use it
+    if (seasonsData.length > 0) {
+      const seasonInfo = seasonsData.find((s) => s.seasonNumber === selectedSeason);
+      if (seasonInfo) {
+        // Map SeriesEpisode to a display format
+        return seasonInfo.episodes.map((ep) => ({
+          id: ep.itemId,
+          name: ep.name,
+          episodeNumber: ep.episode,
+          seasonNumber: ep.season,
+          // These will be filled from episodes array if available
+          url: '',
+          logo: undefined,
+          group: '',
+          mediaKind: 'series' as const,
+        }));
+      }
     }
-    acc[season].push(episode);
-    return acc;
-  }, {} as Record<number, M3UItem[]>);
 
-  // Episódios da temporada selecionada
-  const currentSeasonEpisodes = episodesBySeason[selectedSeason] || [];
+    // Fallback: use episodes array
+    return episodes.filter((ep) => ep.seasonNumber === selectedSeason);
+  })();
 
-  // Lista de temporadas disponíveis
-  const availableSeasons = Object.keys(episodesBySeason)
-    .map(Number)
-    .sort((a, b) => a - b);
+  // Get available seasons
+  const availableSeasons = (() => {
+    if (seasonsData.length > 0) {
+      return seasonsData.map((s) => s.seasonNumber).sort((a, b) => a - b);
+    }
+    // Fallback: extract from episodes
+    const seasons = new Set(episodes.map((ep) => ep.seasonNumber || 1));
+    return Array.from(seasons).sort((a, b) => a - b);
+  })();
+
+  // Build episode lookup for full data (when using seasonsData)
+  const episodeLookup = new Map(episodes.map((ep) => [ep.id, ep]));
+
+  // Get full episode data for playback
+  const getFullEpisode = (episodeId: string): PlaylistItem | null => {
+    return episodeLookup.get(episodeId) || null;
+  };
+
+  const handleEpisodeClick = async (episode: { id: string; name: string }) => {
+    // If we have the full episode data, use it
+    let fullEpisode = episodeLookup.get(episode.id);
+
+    if (!fullEpisode && hash) {
+      // Fetch episode data if we don't have it
+      try {
+        const res = await getSeriesEpisodes(hash, seriesId!, { limit: 500 });
+        const found = res.episodes.find((ep) => ep.id === episode.id);
+        if (found) {
+          fullEpisode = found;
+          setEpisodes(res.episodes);
+        }
+      } catch (e) {
+        console.error('Failed to fetch episode:', e);
+      }
+    }
+
+    if (fullEpisode) {
+      onSelectItem(fullEpisode);
+    }
+  };
 
   if (loading) {
     return (
@@ -111,7 +187,9 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
         <div className={styles.metadata}>
           <h1 className={styles.title}>{series.name}</h1>
           <div className={styles.stats}>
-            <span>{series.totalSeasons} {series.totalSeasons === 1 ? 'Temporada' : 'Temporadas'}</span>
+            <span>
+              {series.totalSeasons} {series.totalSeasons === 1 ? 'Temporada' : 'Temporadas'}
+            </span>
             <span>•</span>
             <span>{series.totalEpisodes} Episódios</span>
             {series.year && (
@@ -151,43 +229,38 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
 
       {/* Episodes List */}
       <div className={styles.episodesList}>
-        <h2 className={styles.episodesTitle}>
-          Episódios - Temporada {selectedSeason}
-        </h2>
+        <h2 className={styles.episodesTitle}>Episódios - Temporada {selectedSeason}</h2>
         {currentSeasonEpisodes.length === 0 ? (
-          <div className={styles.noEpisodes}>
-            Nenhum episódio encontrado para esta temporada.
-          </div>
+          <div className={styles.noEpisodes}>Nenhum episódio encontrado para esta temporada.</div>
         ) : (
           <div className={styles.episodes}>
-            {currentSeasonEpisodes.map((episode) => (
-              <button
-                key={episode.id}
-                className={styles.episodeCard}
-                onClick={() => onSelectItem(episode)}
-              >
-                <div className={styles.episodeNumber}>
-                  {episode.episodeNumber || '?'}
-                </div>
-                <div className={styles.episodeThumbnail}>
-                  {episode.logo ? (
-                    <img src={episode.logo} alt={episode.name} />
-                  ) : (
-                    <div className={styles.thumbnailPlaceholder}>
-                      <MdPlayArrow size={32} />
+            {currentSeasonEpisodes.map((episode) => {
+              const fullData = getFullEpisode(episode.id);
+              return (
+                <button
+                  key={episode.id}
+                  className={styles.episodeCard}
+                  onClick={() => handleEpisodeClick(episode)}
+                >
+                  <div className={styles.episodeNumber}>{episode.episodeNumber || '?'}</div>
+                  <div className={styles.episodeThumbnail}>
+                    {fullData?.logo ? (
+                      <img src={fullData.logo} alt={episode.name} />
+                    ) : (
+                      <div className={styles.thumbnailPlaceholder}>
+                        <MdPlayArrow size={32} />
+                      </div>
+                    )}
+                  </div>
+                  <div className={styles.episodeInfo}>
+                    <div className={styles.episodeTitle}>{episode.name}</div>
+                    <div className={styles.episodeMeta}>
+                      {fullData?.parsedTitle?.quality && <span>{fullData.parsedTitle.quality}</span>}
                     </div>
-                  )}
-                </div>
-                <div className={styles.episodeInfo}>
-                  <div className={styles.episodeTitle}>
-                    {episode.title || episode.name}
                   </div>
-                  <div className={styles.episodeMeta}>
-                    {episode.quality && <span>{episode.quality}</span>}
-                  </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>

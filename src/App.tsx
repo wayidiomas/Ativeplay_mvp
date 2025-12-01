@@ -5,7 +5,7 @@ import {
   LoadingProgress,
   ErrorScreen,
 } from '@ui/onboarding';
-import { MainApp } from '@ui/MainApp';
+import { Home } from '@ui/home';
 import { SeriesDetailWrapper } from '@ui/series/SeriesDetailWrapper';
 
 function App() {
@@ -20,8 +20,8 @@ function App() {
         <Route path="/onboarding/loading" element={<LoadingProgress />} />
         <Route path="/onboarding/error" element={<ErrorScreen />} />
 
-        {/* Main App */}
-        <Route path="/home" element={<MainApp />} />
+        {/* Main App - Stateless Home */}
+        <Route path="/home" element={<Home />} />
 
         {/* Series Detail */}
         <Route path="/series/:seriesId" element={<SeriesDetailWrapper />} />
