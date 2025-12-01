@@ -92,7 +92,9 @@ function isHlsUrl(url: string): boolean {
 }
 
 export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
-  const { autoDestroy = true, ...factoryOptions } = options;
+  // Default autoDestroy to false to prevent accidental player destruction
+  // when component unmounts due to state changes or navigation
+  const { autoDestroy = false, ...factoryOptions } = options;
 
   const playerRef = useRef<IPlayerAdapter | null>(null);
   const [state, setState] = useState<PlayerState>('idle');
