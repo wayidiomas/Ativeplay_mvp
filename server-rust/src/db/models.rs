@@ -39,6 +39,7 @@ pub struct PlaylistRow {
     pub group_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl PlaylistRow {
@@ -197,6 +198,7 @@ pub struct NewPlaylist {
     pub hash: String,
     pub url: String,
     pub stats: PlaylistStats,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// New group to insert

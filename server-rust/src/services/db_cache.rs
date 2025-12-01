@@ -83,11 +83,28 @@ impl DbCacheService {
         stats: &PlaylistStats,
         client_id: Option<Uuid>,
     ) -> Result<Uuid> {
+        self.save_playlist_with_ttl(hash, url, stats, client_id, None).await
+    }
+
+    /// Save playlist metadata with optional TTL and return the playlist ID
+    pub async fn save_playlist_with_ttl(
+        &self,
+        hash: &str,
+        url: &str,
+        stats: &PlaylistStats,
+        client_id: Option<Uuid>,
+        ttl_seconds: Option<i64>,
+    ) -> Result<Uuid> {
+        use chrono::{Duration, Utc};
+
+        let expires_at = ttl_seconds.map(|secs| Utc::now() + Duration::seconds(secs));
+
         let new_playlist = NewPlaylist {
             client_id,
             hash: hash.to_string(),
             url: url.to_string(),
             stats: stats.clone(),
+            expires_at,
         };
 
         let playlist_id = playlists::upsert_playlist(&self.pool, &new_playlist).await?;

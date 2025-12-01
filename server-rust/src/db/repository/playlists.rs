@@ -13,8 +13,8 @@ pub async fn upsert_playlist(
 ) -> Result<Uuid, sqlx::Error> {
     let row: (Uuid,) = sqlx::query_as(
         r#"
-        INSERT INTO playlists (client_id, hash, url, total_items, live_count, movie_count, series_count, unknown_count, group_count)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO playlists (client_id, hash, url, total_items, live_count, movie_count, series_count, unknown_count, group_count, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (client_id, hash) DO UPDATE SET
             url = EXCLUDED.url,
             total_items = EXCLUDED.total_items,
@@ -23,6 +23,7 @@ pub async fn upsert_playlist(
             series_count = EXCLUDED.series_count,
             unknown_count = EXCLUDED.unknown_count,
             group_count = EXCLUDED.group_count,
+            expires_at = EXCLUDED.expires_at,
             updated_at = NOW()
         RETURNING id
         "#,
@@ -36,6 +37,7 @@ pub async fn upsert_playlist(
     .bind(playlist.stats.series_count as i32)
     .bind(playlist.stats.unknown_count as i32)
     .bind(playlist.stats.group_count as i32)
+    .bind(playlist.expires_at)
     .fetch_one(pool)
     .await?;
 
@@ -52,7 +54,7 @@ pub async fn find_by_hash(
         sqlx::query_as::<_, PlaylistRow>(
             r#"
             SELECT id, client_id, hash, url, total_items, live_count, movie_count,
-                   series_count, unknown_count, group_count, created_at, updated_at
+                   series_count, unknown_count, group_count, created_at, updated_at, expires_at
             FROM playlists
             WHERE hash = $1 AND client_id = $2
             "#,
@@ -65,7 +67,7 @@ pub async fn find_by_hash(
         sqlx::query_as::<_, PlaylistRow>(
             r#"
             SELECT id, client_id, hash, url, total_items, live_count, movie_count,
-                   series_count, unknown_count, group_count, created_at, updated_at
+                   series_count, unknown_count, group_count, created_at, updated_at, expires_at
             FROM playlists
             WHERE hash = $1 AND client_id IS NULL
             "#,
@@ -86,7 +88,7 @@ pub async fn find_by_hash_any(
     let row = sqlx::query_as::<_, PlaylistRow>(
         r#"
         SELECT id, client_id, hash, url, total_items, live_count, movie_count,
-               series_count, unknown_count, group_count, created_at, updated_at
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at
         FROM playlists
         WHERE hash = $1
         ORDER BY updated_at DESC
@@ -175,7 +177,7 @@ pub async fn list_by_client(
     let rows = sqlx::query_as::<_, PlaylistRow>(
         r#"
         SELECT id, client_id, hash, url, total_items, live_count, movie_count,
-               series_count, unknown_count, group_count, created_at, updated_at
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at
         FROM playlists
         WHERE client_id = $1
         ORDER BY updated_at DESC
