@@ -447,3 +447,35 @@
   color: #b3b3b3;
   font-size: 15px;
 }
+
+/* Parsing in progress banner */
+.parsingBanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 24px;
+  margin-bottom: 20px;
+  background: linear-gradient(120deg, rgba(229, 9, 20, 0.15), rgba(255, 107, 107, 0.1));
+  border: 1px solid rgba(229, 9, 20, 0.3);
+  border-radius: 12px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  animation: fadeIn 0.3s ease;
+}
+
+.parsingBanner .spinner {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

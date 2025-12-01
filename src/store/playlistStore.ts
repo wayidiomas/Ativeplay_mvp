@@ -27,6 +27,7 @@ interface PlaylistState {
   // UI state
   isLoading: boolean;
   error: string | null;
+  parseInProgress: boolean; // True when parsing is still happening in background
 
   // Cache for current session (not persisted)
   groupsCache: PlaylistGroup[] | null;
@@ -37,8 +38,9 @@ interface PlaylistState {
   setStats: (stats: PlaylistStats) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
-  setGroupsCache: (groups: PlaylistGroup[]) => void;
-  setSeriesCache: (series: SeriesInfo[]) => void;
+  setParseInProgress: (inProgress: boolean) => void;
+  setGroupsCache: (groups: PlaylistGroup[] | null) => void;
+  setSeriesCache: (series: SeriesInfo[] | null) => void;
   clearCache: () => void;
   reset: () => void;
 }
@@ -54,6 +56,7 @@ const initialState = {
   stats: null as PlaylistStats | null,
   isLoading: false,
   error: null as string | null,
+  parseInProgress: false,
   groupsCache: null as PlaylistGroup[] | null,
   seriesCache: null as SeriesInfo[] | null,
 };
@@ -84,6 +87,8 @@ export const usePlaylistStore = create<PlaylistState>()(
       setLoading: (isLoading) => set({ isLoading }),
 
       setError: (error) => set({ error }),
+
+      setParseInProgress: (parseInProgress) => set({ parseInProgress }),
 
       setGroupsCache: (groupsCache) => set({ groupsCache }),
 
@@ -120,5 +125,6 @@ export const selectStats = (state: PlaylistState) => state.stats;
 export const selectIsLoading = (state: PlaylistState) => state.isLoading;
 export const selectError = (state: PlaylistState) => state.error;
 export const selectHasPlaylist = (state: PlaylistState) => !!state.hash;
+export const selectParseInProgress = (state: PlaylistState) => state.parseInProgress;
 
 export default usePlaylistStore;

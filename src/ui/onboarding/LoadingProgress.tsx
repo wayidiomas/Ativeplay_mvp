@@ -17,6 +17,7 @@ export function LoadingProgress() {
   const navigate = useNavigate();
   const { playlistUrl, setError } = useOnboardingStore();
   const setPlaylist = usePlaylistStore((s) => s.setPlaylist);
+  const setParseInProgress = usePlaylistStore((s) => s.setParseInProgress);
 
   const [phase, setPhase] = useState<Phase>('connecting');
   const [message, setMessage] = useState('Conectando ao servidor...');
@@ -100,6 +101,9 @@ export function LoadingProgress() {
         // Get final stats via validate
         const validation = await validateCache(hashToPoll);
 
+        // Parsing is complete - no need to continue polling in Home
+        setParseInProgress(false);
+
         // Save to store
         setPlaylist({
           hash: hashToPoll,
@@ -144,17 +148,20 @@ export function LoadingProgress() {
       console.error('[LoadingProgress] Poll error:', err);
       // Don't stop polling on transient errors
     }
-  }, [calculateProgress, getPhaseMessage, canNavigate, playlistUrl, navigate, setPlaylist, setError]);
+  }, [calculateProgress, getPhaseMessage, canNavigate, playlistUrl, navigate, setPlaylist, setParseInProgress, setError]);
 
   // Handle early navigation
   const handleEarlyNavigate = useCallback(async () => {
     if (!hash || !realProgress) return;
 
-    // Stop polling
+    // Stop polling here - Home will continue polling
     if (pollInterval.current) {
       clearInterval(pollInterval.current);
       pollInterval.current = undefined;
     }
+
+    // Mark that parsing is still in progress (Home will poll and reload)
+    setParseInProgress(true);
 
     // Save partial state
     setPlaylist({
@@ -173,7 +180,7 @@ export function LoadingProgress() {
     });
 
     navigate('/home', { replace: true });
-  }, [hash, realProgress, playlistUrl, setPlaylist, navigate]);
+  }, [hash, realProgress, playlistUrl, setPlaylist, setParseInProgress, navigate]);
 
   // Start parsing on mount
   useEffect(() => {

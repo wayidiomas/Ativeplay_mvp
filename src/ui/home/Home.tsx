@@ -11,6 +11,7 @@ import {
   getSeries,
   getItems,
   searchItems,
+  getParseStatus,
   type PlaylistGroup,
   type PlaylistItem,
   type SeriesInfo,
@@ -117,6 +118,9 @@ export function Home() {
   const seriesCache = usePlaylistStore((s) => s.seriesCache);
   const setGroupsCache = usePlaylistStore((s) => s.setGroupsCache);
   const setSeriesCache = usePlaylistStore((s) => s.setSeriesCache);
+  const parseInProgress = usePlaylistStore((s) => s.parseInProgress);
+  const setParseInProgress = usePlaylistStore((s) => s.setParseInProgress);
+  const setStats = usePlaylistStore((s) => s.setStats);
 
   const [selectedNav, setSelectedNav] = useState<NavItem>('movies');
   const [rows, setRows] = useState<Row[]>([]);
@@ -127,6 +131,7 @@ export function Home() {
   const [selectedItem, setSelectedItem] = useState<PlaylistItem | null>(null);
 
   const contentRef = useRef<HTMLDivElement>(null);
+  const lastItemCount = useRef<number>(0);
 
   // Redirect if no hash
   useEffect(() => {
@@ -134,6 +139,53 @@ export function Home() {
       navigate('/', { replace: true });
     }
   }, [hash, navigate]);
+
+  // Poll for parse status while parsing is in progress
+  // This allows Home to show updated content as parsing continues in background
+  useEffect(() => {
+    if (!hash || !parseInProgress) return;
+
+    const currentHash = hash;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const status = await getParseStatus(currentHash);
+        console.log('[Home] Parse status:', status.status, status.itemsParsed);
+
+        // Update stats with latest counts
+        if (status.itemsParsed && status.itemsParsed !== lastItemCount.current) {
+          lastItemCount.current = status.itemsParsed;
+
+          // Update stats in store
+          setStats({
+            totalItems: status.itemsParsed,
+            liveCount: 0,
+            movieCount: 0,
+            seriesCount: status.seriesCount || 0,
+            unknownCount: 0,
+            groupCount: status.groupsCount || 0,
+          });
+
+          // Invalidate cache to trigger reload
+          setGroupsCache(null);
+          setSeriesCache(null);
+        }
+
+        // Stop polling when complete or failed
+        if (status.status === 'complete' || status.status === 'failed') {
+          setParseInProgress(false);
+
+          // Final cache invalidation
+          setGroupsCache(null);
+          setSeriesCache(null);
+        }
+      } catch (err) {
+        console.error('[Home] Poll error:', err);
+      }
+    }, 3000); // Poll every 3 seconds (less aggressive than loading screen)
+
+    return () => clearInterval(pollInterval);
+  }, [hash, parseInProgress, setParseInProgress, setStats, setGroupsCache, setSeriesCache]);
 
   // Map nav to mediaKind
   const mediaKind: MediaKind = useMemo(() => {
@@ -307,9 +359,18 @@ export function Home() {
   // ============================================================================
 
   const renderRows = () => {
-    if (loading) {
+    // Show skeleton while loading OR while parsing is in progress with no rows
+    const showSkeleton = loading || (parseInProgress && rows.length === 0);
+
+    if (showSkeleton) {
       return (
         <>
+          {parseInProgress && (
+            <div className={styles.parsingBanner}>
+              <div className={styles.spinner} />
+              <span>Carregando mais conteudo... ({stats?.totalItems?.toLocaleString() || 0} items)</span>
+            </div>
+          )}
           {Array.from({ length: 3 }).map((_, idx) => (
             <div className={styles.section} key={`skeleton-${idx}`}>
               <div className={styles.sectionHeader}>
