@@ -3,8 +3,13 @@
  * Página de detalhes de uma série com lista de episódios estilo Netflix
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, memo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import {
+  useFocusable,
+  FocusContext,
+  setFocus,
+} from '@noriginmedia/norigin-spatial-navigation';
 import { usePlaylistStore } from '@store/playlistStore';
 import {
   getSeries,
@@ -16,6 +21,53 @@ import {
 import { MdArrowBack, MdPlayArrow } from 'react-icons/md';
 import styles from './SeriesDetail.module.css';
 
+// Episode card with spatial navigation
+interface EpisodeCardProps {
+  episode: {
+    id: string;
+    name: string;
+    url?: string;
+    episodeNumber?: number;
+  };
+  fullData: PlaylistItem | null;
+  focusKey: string;
+  onSelect: () => void;
+}
+
+const EpisodeCard = memo(({ episode, fullData, focusKey, onSelect }: EpisodeCardProps) => {
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: onSelect,
+  });
+
+  return (
+    <button
+      ref={ref}
+      className={`${styles.episodeCard} ${focused ? styles.focused : ''}`}
+      onClick={onSelect}
+      tabIndex={-1}
+      data-focused={focused}
+    >
+      <div className={styles.episodeNumber}>{episode.episodeNumber || '?'}</div>
+      <div className={styles.episodeThumbnail}>
+        {fullData?.logo ? (
+          <img src={fullData.logo} alt={episode.name} />
+        ) : (
+          <div className={styles.thumbnailPlaceholder}>
+            <MdPlayArrow size={32} />
+          </div>
+        )}
+      </div>
+      <div className={styles.episodeInfo}>
+        <div className={styles.episodeTitle}>{episode.name}</div>
+        <div className={styles.episodeMeta}>
+          {fullData?.parsedTitle?.quality && <span>{fullData.parsedTitle.quality}</span>}
+        </div>
+      </div>
+    </button>
+  );
+}, (prev, next) => prev.episode.id === next.episode.id && prev.focusKey === next.focusKey);
+
 interface SeriesDetailProps {
   onSelectItem: (item: PlaylistItem) => void;
 }
@@ -26,6 +78,19 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
   const hash = usePlaylistStore((s) => s.hash);
   const seriesCache = usePlaylistStore((s) => s.seriesCache);
   const setSeriesCache = usePlaylistStore((s) => s.setSeriesCache);
+
+  // Page-level focus context
+  const { ref: pageRef, focusKey: pageFocusKey } = useFocusable({
+    focusKey: 'series-detail-page',
+    isFocusBoundary: true,
+    saveLastFocusedChild: true,
+  });
+
+  // Back button focus
+  const { ref: backRef, focused: backFocused } = useFocusable({
+    focusKey: 'series-back',
+    onEnterPress: () => navigate('/home'),
+  });
 
   const [series, setSeries] = useState<SeriesInfo | null>(null);
   const [episodes, setEpisodes] = useState<PlaylistItem[]>([]);
@@ -176,6 +241,14 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     }
   };
 
+  // Set initial focus when content loads
+  useEffect(() => {
+    if (!loading && currentSeasonEpisodes.length > 0) {
+      // Focus first episode
+      setFocus(`series-ep-${currentSeasonEpisodes[0]?.id}`);
+    }
+  }, [loading, selectedSeason, currentSeasonEpisodes.length]);
+
   if (loading) {
     return (
       <div className={styles.container}>
@@ -189,14 +262,20 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
   }
 
   return (
-    <div className={styles.container}>
-      {/* Header */}
-      <div className={styles.header}>
-        <button className={styles.backButton} onClick={() => navigate('/home')}>
-          <MdArrowBack size={24} />
-          <span>Voltar para Séries</span>
-        </button>
-      </div>
+    <FocusContext.Provider value={pageFocusKey}>
+      <div ref={pageRef} className={styles.container}>
+        {/* Header */}
+        <div className={styles.header}>
+          <button
+            ref={backRef}
+            className={`${styles.backButton} ${backFocused ? styles.focused : ''}`}
+            onClick={() => navigate('/home')}
+            data-focused={backFocused}
+          >
+            <MdArrowBack size={24} />
+            <span>Voltar para Séries</span>
+          </button>
+        </div>
 
       {/* Series Info */}
       <div className={styles.seriesInfo}>
@@ -252,44 +331,27 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
         </div>
       )}
 
-      {/* Episodes List */}
-      <div className={styles.episodesList}>
-        <h2 className={styles.episodesTitle}>Episódios - Temporada {selectedSeason}</h2>
-        {currentSeasonEpisodes.length === 0 ? (
-          <div className={styles.noEpisodes}>Nenhum episódio encontrado para esta temporada.</div>
-        ) : (
-          <div className={styles.episodes}>
-            {currentSeasonEpisodes.map((episode) => {
-              const fullData = getFullEpisode(episode.id);
-              return (
-                <button
+        {/* Episodes List */}
+        <div className={styles.episodesList}>
+          <h2 className={styles.episodesTitle}>Episódios - Temporada {selectedSeason}</h2>
+          {currentSeasonEpisodes.length === 0 ? (
+            <div className={styles.noEpisodes}>Nenhum episódio encontrado para esta temporada.</div>
+          ) : (
+            <div className={styles.episodes}>
+              {currentSeasonEpisodes.map((episode) => (
+                <EpisodeCard
                   key={episode.id}
-                  className={styles.episodeCard}
-                  onClick={() => handleEpisodeClick(episode)}
-                >
-                  <div className={styles.episodeNumber}>{episode.episodeNumber || '?'}</div>
-                  <div className={styles.episodeThumbnail}>
-                    {fullData?.logo ? (
-                      <img src={fullData.logo} alt={episode.name} />
-                    ) : (
-                      <div className={styles.thumbnailPlaceholder}>
-                        <MdPlayArrow size={32} />
-                      </div>
-                    )}
-                  </div>
-                  <div className={styles.episodeInfo}>
-                    <div className={styles.episodeTitle}>{episode.name}</div>
-                    <div className={styles.episodeMeta}>
-                      {fullData?.parsedTitle?.quality && <span>{fullData.parsedTitle.quality}</span>}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
+                  episode={episode}
+                  fullData={getFullEpisode(episode.id)}
+                  focusKey={`series-ep-${episode.id}`}
+                  onSelect={() => handleEpisodeClick(episode)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </FocusContext.Provider>
   );
 }
 

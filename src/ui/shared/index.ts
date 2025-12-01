@@ -5,3 +5,6 @@ export {
   SkeletonAvatar,
   SkeletonBar,
 } from './SkeletonLoader';
+
+export { FocusableCard } from './FocusableCard';
+export { FocusableCarousel } from './FocusableCarousel';

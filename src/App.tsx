@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { init as initSpatialNavigation } from '@noriginmedia/norigin-spatial-navigation';
 import {
   SplashScreen,
   PlaylistInput,
@@ -8,6 +9,13 @@ import {
 import { Home } from '@ui/home';
 import { SeriesDetailWrapper } from '@ui/series/SeriesDetailWrapper';
 import { CategoryPage } from '@ui/category/CategoryPage';
+
+// Initialize spatial navigation once at app startup
+initSpatialNavigation({
+  debug: false,
+  visualDebug: false,
+  throttle: 50, // ms between navigation events
+});
 
 function App() {
   return (

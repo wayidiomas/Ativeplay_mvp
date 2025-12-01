@@ -36,6 +36,14 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
+/* TV Remote Focus State */
+.backButton.focused,
+.backButton[data-focused="true"] {
+  border: 2px solid #e50914;
+  box-shadow: 0 0 12px rgba(229, 9, 20, 0.5);
+  background: rgba(229, 9, 20, 0.15);
+}
+
 .seriesInfo {
   display: flex;
   gap: 30px;
@@ -152,6 +160,15 @@
   background: rgba(255, 255, 255, 0.1);
   border-color: rgba(255, 255, 255, 0.2);
   transform: translateX(4px);
+}
+
+/* TV Remote Focus State - High visibility */
+.episodeCard.focused,
+.episodeCard[data-focused="true"] {
+  background: rgba(229, 9, 20, 0.15);
+  border: 2px solid #e50914;
+  box-shadow: 0 4px 20px rgba(229, 9, 20, 0.3);
+  transform: translateX(8px);
 }
 
 .episodeNumber {

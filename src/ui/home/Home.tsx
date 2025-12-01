@@ -5,6 +5,11 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  useFocusable,
+  FocusContext,
+  setFocus,
+} from '@noriginmedia/norigin-spatial-navigation';
 import { usePlaylistStore } from '@store/playlistStore';
 import {
   getGroups,
@@ -45,18 +50,29 @@ interface Row {
 }
 
 // ============================================================================
-// Card Components
+// Card Components with Spatial Navigation
 // ============================================================================
 
-const MediaCard = memo(({ item, onSelect }: { item: PlaylistItem; onSelect: (item: PlaylistItem) => void }) => {
+const MediaCard = memo(({ item, onSelect, focusKey }: {
+  item: PlaylistItem;
+  onSelect: (item: PlaylistItem) => void;
+  focusKey: string;
+}) => {
   const [imageError, setImageError] = useState(false);
+
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: () => onSelect(item),
+  });
 
   return (
     <button
       type="button"
-      className={styles.card}
+      ref={ref}
+      className={`${styles.card} ${focused ? styles.focused : ''}`}
       onClick={() => onSelect(item)}
       tabIndex={0}
+      data-focused={focused}
     >
       {item.logo && !imageError ? (
         <img
@@ -79,17 +95,28 @@ const MediaCard = memo(({ item, onSelect }: { item: PlaylistItem; onSelect: (ite
       </div>
     </button>
   );
-}, (prev, next) => prev.item.id === next.item.id);
+}, (prev, next) => prev.item.id === next.item.id && prev.focusKey === next.focusKey);
 
-const SeriesCard = memo(({ series, onNavigate }: { series: SeriesInfo; onNavigate: (id: string) => void }) => {
+const SeriesCard = memo(({ series, onNavigate, focusKey }: {
+  series: SeriesInfo;
+  onNavigate: (id: string) => void;
+  focusKey: string;
+}) => {
   const [imageError, setImageError] = useState(false);
+
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: () => onNavigate(series.id),
+  });
 
   return (
     <button
       type="button"
-      className={styles.card}
+      ref={ref}
+      className={`${styles.card} ${focused ? styles.focused : ''}`}
       onClick={() => onNavigate(series.id)}
       tabIndex={0}
+      data-focused={focused}
     >
       {series.logo && !imageError ? (
         <img
@@ -113,7 +140,7 @@ const SeriesCard = memo(({ series, onNavigate }: { series: SeriesInfo; onNavigat
       </div>
     </button>
   );
-}, (prev, next) => prev.series.id === next.series.id);
+}, (prev, next) => prev.series.id === next.series.id && prev.focusKey === next.focusKey);
 
 // ============================================================================
 // Main Component
@@ -362,27 +389,43 @@ export function Home() {
     }
   }, [selectedNav]);
 
-  // Keyboard navigation
+  // Page-level focus context for spatial navigation
+  const { ref: pageRef, focusKey: pageFocusKey } = useFocusable({
+    focusKey: 'home-page',
+    isFocusBoundary: true,
+    preferredChildFocusKey: undefined,
+    saveLastFocusedChild: true,
+  });
+
+  // Nav tabs focusable
+  const { ref: navMoviesRef, focused: navMoviesFocused } = useFocusable({
+    focusKey: 'nav-movies',
+    onEnterPress: () => handleNavClick('movies'),
+  });
+
+  const { ref: navSeriesRef, focused: navSeriesFocused } = useFocusable({
+    focusKey: 'nav-series',
+    onEnterPress: () => handleNavClick('series'),
+  });
+
+  const { ref: navLiveRef, focused: navLiveFocused } = useFocusable({
+    focusKey: 'nav-live',
+    onEnterPress: () => handleNavClick('live'),
+  });
+
+  // Set initial focus after content loads
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (document.activeElement?.tagName === 'INPUT') return;
-
-      const scrollAmount = 200;
-      switch (e.key) {
-        case 'ArrowDown':
-          e.preventDefault();
-          contentRef.current?.scrollBy({ top: scrollAmount, behavior: 'smooth' });
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          contentRef.current?.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
-          break;
+    if (!loading && rows.length > 0) {
+      // Focus first card in first row
+      const firstRow = rows[0];
+      if (firstRow) {
+        const firstItem = firstRow.isSeries ? firstRow.series?.[0] : firstRow.items[0];
+        if (firstItem) {
+          setFocus(`card-${firstItem.id}`);
+        }
       }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+    }
+  }, [loading, rows]);
 
   // Load more groups function for infinite scroll
   const loadMoreGroups = useCallback(async () => {
@@ -603,10 +646,20 @@ export function Home() {
               </button>
               <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
                 {row.isSeries && row.series?.map((series) => (
-                  <SeriesCard key={series.id} series={series} onNavigate={handleSelectSeries} />
+                  <SeriesCard
+                    key={series.id}
+                    series={series}
+                    onNavigate={handleSelectSeries}
+                    focusKey={`card-${series.id}`}
+                  />
                 ))}
                 {row.items.map((item) => (
-                  <MediaCard key={item.id} item={item} onSelect={handleSelectItem} />
+                  <MediaCard
+                    key={item.id}
+                    item={item}
+                    onSelect={handleSelectItem}
+                    focusKey={`card-${item.id}`}
+                  />
                 ))}
                 {/* Loading indicator for progressive carousel loading */}
                 {loadingRowId === row.group.id && (
@@ -662,7 +715,12 @@ export function Home() {
         <h2 className={styles.sectionTitle}>Resultados</h2>
         <div className={styles.carouselTrack}>
           {searchResults.map((item) => (
-            <MediaCard key={item.id} item={item} onSelect={handleSelectItem} />
+            <MediaCard
+              key={item.id}
+              item={item}
+              onSelect={handleSelectItem}
+              focusKey={`search-${item.id}`}
+            />
           ))}
         </div>
       </div>
@@ -682,51 +740,58 @@ export function Home() {
   }
 
   return (
-    <div className={styles.page}>
-      <header className={styles.topbar}>
-        <div className={styles.brand}>
-          <img src="/vite.svg" alt="AtivePlay" className={styles.logoIcon} />
-          <span className={styles.logoText}>AtivePlay</span>
-        </div>
-
-        <nav className={styles.topnav}>
-          <button
-            className={`${styles.topnavItem} ${selectedNav === 'movies' ? styles.active : ''}`}
-            onClick={() => handleNavClick('movies')}
-          >
-            <MdMovie /> Filmes
-          </button>
-          <button
-            className={`${styles.topnavItem} ${selectedNav === 'series' ? styles.active : ''}`}
-            onClick={() => handleNavClick('series')}
-          >
-            <MdTv /> Series
-          </button>
-          <button
-            className={`${styles.topnavItem} ${selectedNav === 'live' ? styles.active : ''}`}
-            onClick={() => handleNavClick('live')}
-          >
-            <MdLiveTv /> TV ao Vivo
-          </button>
-        </nav>
-
-        <div className={styles.searchContainer}>
-          <div className={styles.searchInputWrapper}>
-            <MdSearch className={styles.searchIcon} size={20} />
-            <input
-              type="text"
-              className={styles.searchInput}
-              placeholder="Buscar..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
+    <FocusContext.Provider value={pageFocusKey}>
+      <div ref={pageRef} className={styles.page}>
+        <header className={styles.topbar}>
+          <div className={styles.brand}>
+            <img src="/vite.svg" alt="AtivePlay" className={styles.logoIcon} />
+            <span className={styles.logoText}>AtivePlay</span>
           </div>
-          <button className={styles.exitButton} onClick={handleExit}>
-            <MdExitToApp size={20} style={{ marginRight: 8 }} />
-            Sair
-          </button>
-        </div>
-      </header>
+
+          <nav className={styles.topnav}>
+            <button
+              ref={navMoviesRef}
+              className={`${styles.topnavItem} ${selectedNav === 'movies' ? styles.active : ''} ${navMoviesFocused ? styles.focused : ''}`}
+              onClick={() => handleNavClick('movies')}
+              data-focused={navMoviesFocused}
+            >
+              <MdMovie /> Filmes
+            </button>
+            <button
+              ref={navSeriesRef}
+              className={`${styles.topnavItem} ${selectedNav === 'series' ? styles.active : ''} ${navSeriesFocused ? styles.focused : ''}`}
+              onClick={() => handleNavClick('series')}
+              data-focused={navSeriesFocused}
+            >
+              <MdTv /> Series
+            </button>
+            <button
+              ref={navLiveRef}
+              className={`${styles.topnavItem} ${selectedNav === 'live' ? styles.active : ''} ${navLiveFocused ? styles.focused : ''}`}
+              onClick={() => handleNavClick('live')}
+              data-focused={navLiveFocused}
+            >
+              <MdLiveTv /> TV ao Vivo
+            </button>
+          </nav>
+
+          <div className={styles.searchContainer}>
+            <div className={styles.searchInputWrapper}>
+              <MdSearch className={styles.searchIcon} size={20} />
+              <input
+                type="text"
+                className={styles.searchInput}
+                placeholder="Buscar..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <button className={styles.exitButton} onClick={handleExit}>
+              <MdExitToApp size={20} style={{ marginRight: 8 }} />
+              Sair
+            </button>
+          </div>
+        </header>
 
       <main className={styles.main} ref={contentRef}>
         <div className={styles.heroCompact}>
@@ -740,7 +805,8 @@ export function Home() {
 
         {searchTerm.trim().length >= 2 ? renderSearch() : renderRows()}
       </main>
-    </div>
+      </div>
+    </FocusContext.Provider>
   );
 }
 

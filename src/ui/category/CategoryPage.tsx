@@ -6,6 +6,11 @@
 import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import {
+  useFocusable,
+  FocusContext,
+  setFocus,
+} from '@noriginmedia/norigin-spatial-navigation';
+import {
   MdArrowBack,
   MdMovie,
   MdTv,
@@ -29,12 +34,18 @@ const ITEMS_PER_PAGE = 50;
 // Card Components
 // ============================================================================
 
-const ItemCard = memo(({ item, mediaKind, onSelect }: {
+const ItemCard = memo(({ item, mediaKind, onSelect, focusKey }: {
   item: PlaylistItem;
   mediaKind: MediaKind;
   onSelect: (item: PlaylistItem) => void;
+  focusKey: string;
 }) => {
   const [imageError, setImageError] = useState(false);
+
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: () => onSelect(item),
+  });
 
   const getIcon = () => {
     switch (mediaKind) {
@@ -47,9 +58,11 @@ const ItemCard = memo(({ item, mediaKind, onSelect }: {
 
   return (
     <button
-      className={styles.card}
+      ref={ref}
+      className={`${styles.card} ${focused ? styles.focused : ''}`}
       onClick={() => onSelect(item)}
-      tabIndex={0}
+      tabIndex={-1}
+      data-focused={focused}
     >
       {item.logo && !imageError ? (
         <img
@@ -74,19 +87,27 @@ const ItemCard = memo(({ item, mediaKind, onSelect }: {
       </div>
     </button>
   );
-}, (prev, next) => prev.item.id === next.item.id);
+}, (prev, next) => prev.item.id === next.item.id && prev.focusKey === next.focusKey);
 
-const SeriesCard = memo(({ series, onSelect }: {
+const SeriesCard = memo(({ series, onSelect, focusKey }: {
   series: SeriesInfo;
   onSelect: (series: SeriesInfo) => void;
+  focusKey: string;
 }) => {
   const [imageError, setImageError] = useState(false);
 
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: () => onSelect(series),
+  });
+
   return (
     <button
-      className={styles.card}
+      ref={ref}
+      className={`${styles.card} ${focused ? styles.focused : ''}`}
       onClick={() => onSelect(series)}
-      tabIndex={0}
+      tabIndex={-1}
+      data-focused={focused}
     >
       {series.logo && !imageError ? (
         <img
@@ -109,7 +130,7 @@ const SeriesCard = memo(({ series, onSelect }: {
       </div>
     </button>
   );
-}, (prev, next) => prev.series.id === next.series.id);
+}, (prev, next) => prev.series.id === next.series.id && prev.focusKey === next.focusKey);
 
 // ============================================================================
 // Main Component
@@ -125,6 +146,19 @@ export function CategoryPage() {
   const groupName = location.state?.groupName || decodeURIComponent(groupId || '');
   const mediaKind: MediaKind = location.state?.mediaKind || 'unknown';
   const isSeries = mediaKind === 'series';
+
+  // Page-level focus context
+  const { ref: pageRef, focusKey: pageFocusKey } = useFocusable({
+    focusKey: 'category-page',
+    isFocusBoundary: true,
+    saveLastFocusedChild: true,
+  });
+
+  // Back button focus
+  const { ref: backRef, focused: backFocused } = useFocusable({
+    focusKey: 'category-back',
+    onEnterPress: () => navigate(-1),
+  });
 
   // State for items (movies, live, unknown)
   const [items, setItems] = useState<PlaylistItem[]>([]);
@@ -309,6 +343,17 @@ export function CategoryPage() {
   const displayItems = isSeries ? displayedSeries : items;
   const isEmpty = displayItems.length === 0;
 
+  // Set initial focus when content loads
+  useEffect(() => {
+    if (!loading && displayItems.length > 0) {
+      // Focus first card
+      const firstKey = isSeries
+        ? `category-series-${displayedSeries[0]?.id}`
+        : `category-item-${items[0]?.id}`;
+      setFocus(firstKey);
+    }
+  }, [loading, displayItems.length, isSeries]);
+
   // If an item is selected, show the player
   if (selectedItem) {
     return (
@@ -322,69 +367,78 @@ export function CategoryPage() {
   }
 
   return (
-    <div className={styles.page}>
-      <header className={styles.header}>
-        <button className={styles.backButton} onClick={handleBack}>
-          <MdArrowBack size={20} />
-        </button>
-        <div className={styles.titleArea}>
-          {getHeaderIcon()}
-          <h1>{groupName}</h1>
-          <span className={styles.count}>
-            ({total.toLocaleString()} {isSeries ? 'séries' : 'items'})
-          </span>
-        </div>
-      </header>
+    <FocusContext.Provider value={pageFocusKey}>
+      <div ref={pageRef} className={styles.page}>
+        <header className={styles.header}>
+          <button
+            ref={backRef}
+            className={`${styles.backButton} ${backFocused ? styles.focused : ''}`}
+            onClick={handleBack}
+            data-focused={backFocused}
+          >
+            <MdArrowBack size={20} />
+          </button>
+          <div className={styles.titleArea}>
+            {getHeaderIcon()}
+            <h1>{groupName}</h1>
+            <span className={styles.count}>
+              ({total.toLocaleString()} {isSeries ? 'séries' : 'items'})
+            </span>
+          </div>
+        </header>
 
-      <main className={styles.main}>
-        {loading ? (
-          <div className={styles.loading}>
-            <div className={styles.spinner} />
-            <span>Carregando...</span>
-          </div>
-        ) : isEmpty ? (
-          <div className={styles.empty}>
-            <MdHelpOutline size={64} />
-            <p>Nenhum item encontrado</p>
-          </div>
-        ) : (
-          <>
-            <div className={styles.grid}>
-              {isSeries ? (
-                displayedSeries.map((series) => (
-                  <SeriesCard
-                    key={series.id}
-                    series={series}
-                    onSelect={handleSelectSeries}
-                  />
-                ))
-              ) : (
-                items.map((item) => (
-                  <ItemCard
-                    key={item.id}
-                    item={item}
-                    mediaKind={mediaKind}
-                    onSelect={handleSelectItem}
-                  />
-                ))
-              )}
+        <main className={styles.main}>
+          {loading ? (
+            <div className={styles.loading}>
+              <div className={styles.spinner} />
+              <span>Carregando...</span>
             </div>
-
-            {/* Infinite scroll trigger */}
-            {hasMore && (
-              <div ref={observerRef} className={styles.loadingMore}>
-                {loadingMore && (
-                  <>
-                    <div className={styles.spinner} />
-                    <span>Carregando mais...</span>
-                  </>
+          ) : isEmpty ? (
+            <div className={styles.empty}>
+              <MdHelpOutline size={64} />
+              <p>Nenhum item encontrado</p>
+            </div>
+          ) : (
+            <>
+              <div className={styles.grid}>
+                {isSeries ? (
+                  displayedSeries.map((series) => (
+                    <SeriesCard
+                      key={series.id}
+                      series={series}
+                      onSelect={handleSelectSeries}
+                      focusKey={`category-series-${series.id}`}
+                    />
+                  ))
+                ) : (
+                  items.map((item) => (
+                    <ItemCard
+                      key={item.id}
+                      item={item}
+                      mediaKind={mediaKind}
+                      onSelect={handleSelectItem}
+                      focusKey={`category-item-${item.id}`}
+                    />
+                  ))
                 )}
               </div>
-            )}
-          </>
-        )}
-      </main>
-    </div>
+
+              {/* Infinite scroll trigger */}
+              {hasMore && (
+                <div ref={observerRef} className={styles.loadingMore}>
+                  {loadingMore && (
+                    <>
+                      <div className={styles.spinner} />
+                      <span>Carregando mais...</span>
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </main>
+      </div>
+    </FocusContext.Provider>
   );
 }
 
