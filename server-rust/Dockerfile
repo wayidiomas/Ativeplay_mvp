@@ -16,7 +16,8 @@ WORKDIR /app
 ENV SQLX_OFFLINE=true
 
 # Copy manifests (from server-rust/ in repo root context)
-COPY server-rust/Cargo.toml server-rust/Cargo.lock* ./
+# Note: Not copying Cargo.lock to allow fresh resolution with compatible versions
+COPY server-rust/Cargo.toml ./
 
 # Create dummy src/main.rs to build dependencies
 RUN mkdir src && echo "fn main() {}" > src/main.rs
