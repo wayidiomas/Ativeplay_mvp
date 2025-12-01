@@ -667,6 +667,357 @@ impl M3UParser {
             .ok_or_else(|| anyhow!("Failed to retrieve saved metadata"))
     }
 
+    /// Parse a playlist URL with progress reporting to Redis
+    /// This is the background processing version that updates progress in real-time
+    pub async fn parse_and_cache_with_progress(
+        &self,
+        url: &str,
+        redis: &crate::services::redis::RedisService,
+    ) -> Result<CacheMetadata> {
+        use crate::services::redis::ParseProgress;
+
+        let hash = hash_url(url);
+
+        // Check if we already have valid cache in PostgreSQL
+        if let Ok(Some(meta)) = self.db_cache.get_metadata(&hash).await {
+            tracing::info!("PostgreSQL cache hit for {}", hash);
+            return Ok(meta);
+        }
+
+        // Update progress to downloading
+        let mut progress = ParseProgress::new_parsing();
+        progress.current_phase = "downloading".to_string();
+        let _ = redis.set_parse_progress(&hash, &progress).await;
+
+        tracing::info!("Parsing playlist with progress: {}", url);
+
+        // Fetch and parse (with retry, limits, friendly errors)
+        let response = self
+            .fetch_with_retry(url)
+            .await
+            .context("Failed to fetch playlist")?;
+
+        // Get content length for progress estimation
+        let content_length = response.content_length();
+        if let Some(len) = content_length {
+            tracing::info!("Playlist size: {:.2} MB", len as f64 / 1024.0 / 1024.0);
+            // Estimate ~200 bytes per item average for IPTV playlists
+            progress.items_total = Some(len / 200);
+        }
+
+        // Update progress to parsing
+        progress.current_phase = "parsing".to_string();
+        let _ = redis.set_parse_progress(&hash, &progress).await;
+
+        // Create playlist record in PostgreSQL to get playlist_id
+        let playlist_id = self.db_cache
+            .save_playlist(&hash, url, &PlaylistStats::default(), None)
+            .await
+            .context("Failed to create playlist record")?;
+
+        tracing::info!("Created playlist record: {}", playlist_id);
+
+        // Stream the response body
+        let bytes_stream = response.bytes_stream();
+        let stream_reader = StreamReader::new(
+            bytes_stream.map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+        );
+
+        let mut reader = BufReader::new(stream_reader);
+        let mut line = String::new();
+        let mut current_extinf: Option<ExtinfData> = None;
+        let mut item_index = 0usize;
+        let mut found_header = false;
+
+        // Stats tracking
+        let mut stats = PlaylistStats::default();
+        let mut groups: HashMap<String, (MediaKind, usize, Option<String>)> = HashMap::new();
+
+        // Series accumulator for RLE grouping
+        let mut series_accum: HashMap<String, SeriesAccumulator> = HashMap::new();
+        let mut current_run: Option<SeriesRun> = None;
+
+        // Deduplication
+        let mut seen_urls: HashSet<u64> = HashSet::new();
+        let mut duplicates_skipped = 0usize;
+
+        // Streaming writes
+        let mut writer = self.db_cache
+            .create_streaming_writer(playlist_id)
+            .await
+            .context("Failed to create streaming writer")?;
+
+        let mut parse_error: Option<anyhow::Error> = None;
+
+        // Main parsing loop
+        loop {
+            line.clear();
+
+            let read_result = tokio::time::timeout(READ_LINE_TIMEOUT, reader.read_line(&mut line)).await;
+
+            let bytes_read = match read_result {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
+                    parse_error = Some(e.into());
+                    break;
+                }
+                Err(_) => {
+                    parse_error = Some(anyhow!("Timed out while reading playlist line"));
+                    break;
+                }
+            };
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            if line.len() > MAX_LINE_BYTES {
+                parse_error = Some(anyhow!("Playlist line exceeds max length of {} bytes", MAX_LINE_BYTES));
+                break;
+            }
+
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // Check M3U header
+            if trimmed == "#EXTM3U" {
+                found_header = true;
+                continue;
+            }
+
+            // Skip non-EXTINF comments
+            if trimmed.starts_with('#') && !trimmed.starts_with("#EXTINF:") {
+                continue;
+            }
+
+            // Parse EXTINF
+            if trimmed.starts_with("#EXTINF:") {
+                current_extinf = parse_extinf(trimmed);
+                continue;
+            }
+
+            // Stream URL line
+            if let Some(extinf) = current_extinf.take() {
+                if trimmed.starts_with("http") {
+                    let stream_url = trimmed.to_string();
+
+                    // Deduplication
+                    let url_hash = url_dedup_hash(&stream_url);
+                    if !seen_urls.insert(url_hash) {
+                        duplicates_skipped += 1;
+                        continue;
+                    }
+
+                    // Normalization
+                    let name = normalize_text(&extinf.title);
+                    let group_title = normalize_text(
+                        extinf.attributes.get("group-title")
+                            .map(|s| s.as_str())
+                            .unwrap_or("Sem Grupo")
+                    );
+
+                    let tvg_id = extinf.attributes.get("tvg-id").cloned();
+                    let tvg_logo = extinf.attributes.get("tvg-logo").cloned();
+
+                    // Classify content
+                    let media_kind = ContentClassifier::classify(&name, &group_title);
+                    let parsed_title = ContentClassifier::parse_title(&name);
+
+                    // Extract series info
+                    let series_info = if media_kind == MediaKind::Series {
+                        ContentClassifier::extract_series_info(&name)
+                    } else {
+                        None
+                    };
+
+                    // Generate series ID and track episodes
+                    let (series_id, season_number, episode_number) = if let Some(ref info) = series_info {
+                        let series_key = format!("{}_{}", group_title, info.series_name);
+                        let series_db_id = format!("series_{}", hash_url(&series_key));
+                        let item_id = generate_item_id(&stream_url, item_index);
+
+                        let is_same_run = current_run
+                            .as_ref()
+                            .map(|run| run.series_key == series_key)
+                            .unwrap_or(false);
+
+                        if !is_same_run {
+                            if let Some(run) = current_run.take() {
+                                flush_run_to_accumulator(&mut series_accum, run);
+                            }
+
+                            current_run = Some(SeriesRun {
+                                series_key: series_key.clone(),
+                                series_name: info.series_name.clone(),
+                                group: group_title.clone(),
+                                logo: tvg_logo.clone(),
+                                year: parsed_title.year,
+                                quality: parsed_title.quality.clone(),
+                                episodes: Vec::new(),
+                            });
+                        }
+
+                        if let Some(ref mut run) = current_run {
+                            run.episodes.push(SeriesRunEpisode {
+                                item_id: item_id.clone(),
+                                name: name.clone(),
+                                season: info.season,
+                                episode: info.episode,
+                                url: stream_url.clone(),
+                            });
+                        }
+
+                        (Some(series_db_id), Some(info.season), Some(info.episode))
+                    } else {
+                        if let Some(run) = current_run.take() {
+                            flush_run_to_accumulator(&mut series_accum, run);
+                        }
+                        (None, None, None)
+                    };
+
+                    // Update stats
+                    stats.total_items += 1;
+                    match media_kind {
+                        MediaKind::Live => stats.live_count += 1,
+                        MediaKind::Movie => stats.movie_count += 1,
+                        MediaKind::Series => stats.series_count += 1,
+                        MediaKind::Unknown => stats.unknown_count += 1,
+                    }
+
+                    // Update groups
+                    let group_entry = groups
+                        .entry(group_title.clone())
+                        .or_insert((media_kind, 0, tvg_logo.clone()));
+                    group_entry.1 += 1;
+
+                    // Create item
+                    let item = PlaylistItem {
+                        id: generate_item_id(&stream_url, item_index),
+                        name,
+                        url: stream_url,
+                        logo: tvg_logo,
+                        group: group_title,
+                        media_kind,
+                        parsed_title: Some(parsed_title),
+                        epg_id: tvg_id,
+                        series_id,
+                        season_number,
+                        episode_number,
+                    };
+
+                    // Write item
+                    if let Err(e) = writer.write_item(&item).await {
+                        parse_error = Some(e.into());
+                        break;
+                    }
+                    item_index += 1;
+
+                    // ✅ UPDATE PROGRESS every 500 items (batch size)
+                    if item_index % 500 == 0 {
+                        progress.items_parsed = item_index as u64;
+                        progress.groups_count = groups.len() as u64;
+                        progress.updated_at = chrono::Utc::now().timestamp_millis();
+                        let _ = redis.set_parse_progress(&hash, &progress).await;
+
+                        // Log progress every 10k items
+                        if item_index % 10000 == 0 {
+                            tracing::info!("Parsed {} items (skipped {} duplicates)...", item_index, duplicates_skipped);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle parse errors
+        if let Some(e) = parse_error {
+            let _ = self.db_cache.delete_playlist(&hash).await;
+            return Err(e);
+        }
+
+        // Flush final run
+        if let Some(run) = current_run.take() {
+            flush_run_to_accumulator(&mut series_accum, run);
+        }
+
+        if !found_header {
+            let _ = self.db_cache.delete_playlist(&hash).await;
+            anyhow::bail!("Invalid playlist format (missing #EXTM3U header)");
+        }
+
+        // Update progress to building_groups
+        progress.items_parsed = item_index as u64;
+        progress.current_phase = "building_groups".to_string();
+        progress.status = "building_groups".to_string();
+        let _ = redis.set_parse_progress(&hash, &progress).await;
+
+        // Finalize items
+        let items_written = writer.finish().await
+            .context("Failed to finish writing items")?;
+
+        tracing::info!(
+            "Parsing complete: {} items written ({} duplicates skipped)",
+            items_written,
+            duplicates_skipped
+        );
+
+        // Convert groups
+        let groups_vec: Vec<PlaylistGroup> = groups
+            .into_iter()
+            .map(|(name, (media_kind, count, logo))| PlaylistGroup {
+                id: format!("group_{}", hash_url(&name)),
+                name,
+                media_kind,
+                item_count: count,
+                logo,
+            })
+            .collect();
+
+        stats.group_count = groups_vec.len();
+
+        // Update progress for series phase
+        progress.current_phase = "building_series".to_string();
+        progress.groups_count = stats.group_count as u64;
+        let _ = redis.set_parse_progress(&hash, &progress).await;
+
+        // Convert series accumulator
+        let series_vec: Vec<SeriesInfo> = series_accum
+            .into_values()
+            .map(|accum| build_series_info(accum))
+            .collect();
+
+        tracing::info!(
+            "Series grouped: {} series with {} total episodes",
+            series_vec.len(),
+            series_vec.iter().map(|s| s.total_episodes).sum::<usize>()
+        );
+
+        // Save to PostgreSQL
+        self.db_cache.save_groups(playlist_id, &groups_vec).await
+            .context("Failed to save groups")?;
+
+        self.db_cache.save_series(playlist_id, &series_vec).await
+            .context("Failed to save series")?;
+
+        self.db_cache.update_stats(&hash, &stats).await
+            .context("Failed to update stats")?;
+
+        // Update progress to complete
+        progress.series_count = series_vec.len() as u64;
+        progress.current_phase = "done".to_string();
+        progress.status = "complete".to_string();
+        progress.items_total = Some(stats.total_items as u64);
+        let _ = redis.set_parse_progress(&hash, &progress).await;
+
+        tracing::info!("PostgreSQL cache saved for {} ({} items)", hash, stats.total_items);
+
+        // Return metadata
+        self.db_cache.get_metadata(&hash).await?
+            .ok_or_else(|| anyhow!("Failed to retrieve saved metadata"))
+    }
+
     // NOTE: get_items, get_metadata, and stream_items were removed.
     // All data access should go through db_cache (PostgreSQL) directly.
     // Routes use state.db_cache for reading data.

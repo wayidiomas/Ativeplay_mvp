@@ -146,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/playlist/:hash/search",
             get(routes::playlist::search_items),
         )
+        .route(
+            "/api/playlist/:hash/status",
+            get(routes::playlist::get_parse_status),
+        )
         // Admin endpoints (protected by ADMIN_KEY)
         .route(
             "/api/admin/playlist/:hash",

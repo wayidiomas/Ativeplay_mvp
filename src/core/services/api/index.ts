@@ -76,11 +76,26 @@ export interface SeriesEpisode {
 }
 
 export interface ParseResponse {
-  success: boolean;
-  cached: boolean;
+  status: 'parsing' | 'complete';
   hash: string;
-  stats: PlaylistStats;
-  groups: PlaylistGroup[];
+  message?: string;
+  stats?: PlaylistStats;
+  groups?: PlaylistGroup[];
+}
+
+/**
+ * Parse status for real-time progress tracking
+ */
+export interface ParseStatus {
+  status: 'parsing' | 'building_groups' | 'building_series' | 'complete' | 'failed' | 'not_found';
+  itemsParsed?: number;
+  itemsTotal?: number;
+  groupsCount?: number;
+  seriesCount?: number;
+  currentPhase?: string;
+  error?: string;
+  canNavigate: boolean;
+  elapsedMs?: number;
 }
 
 export interface ValidateResponse {
@@ -160,13 +175,21 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 // ============================================================================
 
 /**
- * Parse a playlist URL - returns hash for future requests
+ * Parse a playlist URL - returns immediately with status "parsing"
+ * Use getParseStatus() to poll for progress
  */
 export async function parsePlaylist(url: string): Promise<ParseResponse> {
   return fetchApi<ParseResponse>('/api/playlist/parse', {
     method: 'POST',
     body: JSON.stringify({ url }),
   });
+}
+
+/**
+ * Get real-time parsing status - poll this every 1 second during parsing
+ */
+export async function getParseStatus(hash: string): Promise<ParseStatus> {
+  return fetchApi<ParseStatus>(`/api/playlist/${hash}/status`);
 }
 
 /**
@@ -309,6 +332,7 @@ export function clearStoredPlaylist(): void {
 // Export all
 export default {
   parsePlaylist,
+  getParseStatus,
   validateCache,
   getStats,
   getGroups,

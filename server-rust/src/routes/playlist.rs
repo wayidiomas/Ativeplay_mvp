@@ -7,11 +7,29 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::db;
 use crate::models::{GroupsResponse, ItemsQuery, ItemsResponse, ParseRequest, ParseResponse, SeriesResponse};
 use crate::services::m3u_parser::hash_url;
+use crate::services::redis::ParseProgress;
 use crate::AppState;
 
-/// POST /api/playlist/parse - Parse a playlist URL
+/// Background parse response
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundParseResponse {
+    pub status: String,
+    pub hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<crate::models::PlaylistStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<crate::models::PlaylistGroup>>,
+}
+
+/// POST /api/playlist/parse - Parse a playlist URL (background processing)
+/// Returns immediately with status "parsing" and spawns background task
+/// Frontend should poll /api/playlist/:hash/status for progress
 pub async fn parse_playlist(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ParseRequest>,
@@ -26,81 +44,101 @@ pub async fn parse_playlist(
 
     let hash = hash_url(&payload.url);
 
+    // Check if already parsing (via Redis progress)
+    if let Ok(Some(progress)) = state.redis.get_parse_progress(&hash).await {
+        if progress.status == "parsing" || progress.status == "building_groups" {
+            tracing::info!("Already parsing {}", hash);
+            return Ok(Json(BackgroundParseResponse {
+                status: "parsing".to_string(),
+                hash,
+                message: Some("Already parsing this playlist".to_string()),
+                stats: None,
+                groups: None,
+            }));
+        }
+    }
+
     // Check if we have valid cache (PostgreSQL)
     if let Ok(Some(meta)) = state.db_cache.get_metadata(&hash).await {
         tracing::info!("Cache hit for {}", hash);
-        return Ok(Json(ParseResponse {
-            success: true,
-            cached: true,
+        return Ok(Json(BackgroundParseResponse {
+            status: "complete".to_string(),
             hash,
-            stats: meta.stats,
-            groups: meta.groups,
+            message: None,
+            stats: Some(meta.stats),
+            groups: Some(meta.groups),
         }));
     }
 
-    // Check if already being processed (via Redis lock)
-    let lock_key = format!("processing:{}", hash);
-    if state.redis.exists(&lock_key).await.unwrap_or(false) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "Playlist already being processed",
-                "hash": hash
-            })),
-        ));
+    // Initialize progress in Redis
+    let initial_progress = ParseProgress::new_parsing();
+    if let Err(e) = state.redis.set_parse_progress(&hash, &initial_progress).await {
+        tracing::warn!("Failed to set initial progress: {}", e);
     }
 
-    // Acquire processing lock (5 minute TTL)
-    let job_id = uuid::Uuid::new_v4().to_string();
-    if !state
-        .redis
-        .acquire_processing_lock(&hash, &job_id, 300)
-        .await
-        .unwrap_or(false)
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "Playlist already being processed",
-                "hash": hash
-            })),
-        ));
-    }
+    // Spawn background parsing task
+    let state_clone = state.clone();
+    let url_clone = payload.url.clone();
+    let hash_clone = hash.clone();
 
-    // Parse and cache the playlist
-    match state.parser.parse_and_cache(&payload.url).await {
-        Ok(metadata) => {
-            // Release processing lock
-            let _ = state.redis.release_processing_lock(&hash).await;
+    tokio::spawn(async move {
+        tracing::info!("Background parse started for {}", hash_clone);
 
-            tracing::info!(
-                "Playlist parsed: {} items, {} groups",
-                metadata.stats.total_items,
-                metadata.stats.group_count
-            );
-
-            Ok(Json(ParseResponse {
-                success: true,
-                cached: false,
-                hash,
-                stats: metadata.stats,
-                groups: metadata.groups,
-            }))
+        // Acquire processing lock (10 minute TTL for large playlists)
+        let job_id = uuid::Uuid::new_v4().to_string();
+        if !state_clone
+            .redis
+            .acquire_processing_lock(&hash_clone, &job_id, 600)
+            .await
+            .unwrap_or(false)
+        {
+            tracing::warn!("Failed to acquire lock for {}", hash_clone);
+            let progress = ParseProgress::new_parsing().failed("Failed to acquire lock");
+            let _ = state_clone.redis.set_parse_progress(&hash_clone, &progress).await;
+            return;
         }
-        Err(e) => {
-            // Release processing lock on error
-            let _ = state.redis.release_processing_lock(&hash).await;
 
-            tracing::error!("Failed to parse playlist: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Erro ao processar playlist: {}", e),
-                    "hash": hash
-                })),
-            ))
+        // Parse and cache the playlist with progress reporting
+        match state_clone.parser.parse_and_cache_with_progress(&url_clone, &state_clone.redis).await {
+            Ok(metadata) => {
+                // Release processing lock
+                let _ = state_clone.redis.release_processing_lock(&hash_clone).await;
+
+                // Mark progress as complete
+                let mut progress = ParseProgress::new_parsing();
+                progress.items_parsed = metadata.stats.total_items as u64;
+                progress.items_total = Some(metadata.stats.total_items as u64);
+                let progress = progress.complete(metadata.stats.group_count as u64, metadata.stats.series_count as u64);
+                let _ = state_clone.redis.set_parse_progress(&hash_clone, &progress).await;
+
+                tracing::info!(
+                    "Background parse complete for {}: {} items, {} groups",
+                    hash_clone,
+                    metadata.stats.total_items,
+                    metadata.stats.group_count
+                );
+            }
+            Err(e) => {
+                // Release processing lock
+                let _ = state_clone.redis.release_processing_lock(&hash_clone).await;
+
+                // Mark progress as failed
+                let progress = ParseProgress::new_parsing().failed(&e.to_string());
+                let _ = state_clone.redis.set_parse_progress(&hash_clone, &progress).await;
+
+                tracing::error!("Background parse failed for {}: {}", hash_clone, e);
+            }
         }
-    }
+    });
+
+    // Return immediately
+    Ok(Json(BackgroundParseResponse {
+        status: "parsing".to_string(),
+        hash,
+        message: Some("Parsing started in background".to_string()),
+        stats: None,
+        groups: None,
+    }))
 }
 
 /// GET /api/playlist/:hash/items - Get paginated items
@@ -400,4 +438,97 @@ pub async fn search_items(
         "total": items.len(),
         "limit": limit
     })))
+}
+
+/// Response for parse status endpoint
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseStatusResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items_parsed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub can_navigate: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<i64>,
+}
+
+/// GET /api/playlist/:hash/status - Get real-time parsing status
+/// Used by frontend for polling during playlist parsing
+pub async fn get_parse_status(
+    State(state): State<Arc<AppState>>,
+    Path(hash): Path<String>,
+) -> impl IntoResponse {
+    // Check Redis for active progress
+    match state.redis.get_parse_progress(&hash).await {
+        Ok(Some(progress)) => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let can_navigate = progress.items_parsed >= 500 || progress.status == "complete";
+
+            Json(ParseStatusResponse {
+                status: progress.status,
+                items_parsed: Some(progress.items_parsed),
+                items_total: progress.items_total,
+                groups_count: Some(progress.groups_count),
+                series_count: Some(progress.series_count),
+                current_phase: Some(progress.current_phase),
+                error: progress.error,
+                can_navigate,
+                elapsed_ms: Some(now - progress.started_at),
+            })
+        }
+        Ok(None) => {
+            // Check if playlist exists in DB (already complete from previous parse)
+            match db::get_playlist_by_hash(&state.pool, &hash).await {
+                Ok(Some(playlist)) => {
+                    Json(ParseStatusResponse {
+                        status: "complete".to_string(),
+                        items_parsed: Some(playlist.total_items as u64),
+                        items_total: Some(playlist.total_items as u64),
+                        groups_count: Some(playlist.group_count as u64),
+                        series_count: Some(playlist.series_count as u64),
+                        current_phase: Some("done".to_string()),
+                        error: None,
+                        can_navigate: true,
+                        elapsed_ms: None,
+                    })
+                }
+                _ => {
+                    Json(ParseStatusResponse {
+                        status: "not_found".to_string(),
+                        items_parsed: None,
+                        items_total: None,
+                        groups_count: None,
+                        series_count: None,
+                        current_phase: None,
+                        error: Some("Playlist not found or not started".to_string()),
+                        can_navigate: false,
+                        elapsed_ms: None,
+                    })
+                }
+            }
+        }
+        Err(e) => {
+            Json(ParseStatusResponse {
+                status: "error".to_string(),
+                items_parsed: None,
+                items_total: None,
+                groups_count: None,
+                series_count: None,
+                current_phase: None,
+                error: Some(e.to_string()),
+                can_navigate: false,
+                elapsed_ms: None,
+            })
+        }
+    }
 }

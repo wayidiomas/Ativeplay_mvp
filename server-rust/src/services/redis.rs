@@ -1,7 +1,61 @@
 use anyhow::Result;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+/// Parse progress for real-time status tracking
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseProgress {
+    pub status: String,           // "parsing" | "building_groups" | "complete" | "failed"
+    pub items_parsed: u64,
+    pub items_total: Option<u64>, // Estimated based on content-length
+    pub groups_count: u64,
+    pub series_count: u64,
+    pub current_phase: String,    // "downloading" | "parsing" | "groups" | "series" | "done"
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub updated_at: i64,
+}
+
+impl ParseProgress {
+    pub fn new_parsing() -> Self {
+        let now = chrono::Utc::now().timestamp_millis();
+        Self {
+            status: "parsing".to_string(),
+            items_parsed: 0,
+            items_total: None,
+            groups_count: 0,
+            series_count: 0,
+            current_phase: "downloading".to_string(),
+            error: None,
+            started_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn update(&mut self, items: u64, phase: &str) {
+        self.items_parsed = items;
+        self.current_phase = phase.to_string();
+        self.updated_at = chrono::Utc::now().timestamp_millis();
+    }
+
+    pub fn complete(mut self, groups: u64, series: u64) -> Self {
+        self.status = "complete".to_string();
+        self.current_phase = "done".to_string();
+        self.groups_count = groups;
+        self.series_count = series;
+        self.updated_at = chrono::Utc::now().timestamp_millis();
+        self
+    }
+
+    pub fn failed(mut self, error: &str) -> Self {
+        self.status = "failed".to_string();
+        self.error = Some(error.to_string());
+        self.updated_at = chrono::Utc::now().timestamp_millis();
+        self
+    }
+}
 
 /// Redis service for session management and caching
 #[derive(Clone)]
@@ -185,5 +239,23 @@ impl RedisService {
         hash: &str,
     ) -> Result<Option<crate::models::CacheMetadata>> {
         self.get(&format!("cache:meta:{}", hash)).await
+    }
+
+    // ============ Parse Progress Operations ============
+
+    /// Set parse progress for real-time status tracking
+    pub async fn set_parse_progress(&self, hash: &str, progress: &ParseProgress) -> Result<()> {
+        // 1 hour TTL for progress (cleanup after completion)
+        self.set_ex(&format!("progress:{}", hash), progress, 3600).await
+    }
+
+    /// Get parse progress
+    pub async fn get_parse_progress(&self, hash: &str) -> Result<Option<ParseProgress>> {
+        self.get(&format!("progress:{}", hash)).await
+    }
+
+    /// Delete parse progress (cleanup)
+    pub async fn del_parse_progress(&self, hash: &str) -> Result<()> {
+        self.del(&format!("progress:{}", hash)).await
     }
 }

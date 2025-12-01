@@ -124,3 +124,50 @@
 .phase.completed .phaseLabel {
   color: var(--color-success);
 }
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.stats span {
+  font-variant-numeric: tabular-nums;
+}
+
+.earlyNavButton {
+  margin-top: var(--space-lg);
+  padding: var(--space-md) var(--space-xl);
+  background-color: var(--color-accent);
+  color: var(--color-text-on-accent, #fff);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  animation: fadeIn 0.3s ease;
+}
+
+.earlyNavButton:hover {
+  background-color: var(--color-accent-hover, var(--color-accent));
+  transform: scale(1.02);
+}
+
+.earlyNavButton:active {
+  transform: scale(0.98);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
