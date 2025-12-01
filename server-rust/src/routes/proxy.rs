@@ -175,11 +175,18 @@ pub async fn hls_proxy(
         ));
     }
 
-    // Create client with no global response timeout (live TS needs to stream indefinitely)
-    // Connection-level timeout is handled by reqwest defaults; manifest fetches are guarded below.
+    // Create client optimized for streaming:
+    // - TCP keepalive prevents NAT/firewall from closing idle connections
+    // - Connect timeout ensures we don't hang on unreachable servers
+    // - Pool idle timeout keeps connections alive for reuse
+    // - No read timeout allows indefinite streaming for live content
     let client = Client::builder()
         .user_agent(&state.config.user_agent)
         .redirect(reqwest::redirect::Policy::limited(10))
+        .tcp_keepalive(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(5)
         .build()
         .map_err(|e| {
             tracing::error!("Failed to create HTTP client: {}", e);
