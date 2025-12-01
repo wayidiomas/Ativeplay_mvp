@@ -78,6 +78,7 @@ export class BrowserAdapter implements IPlayerAdapter {
   private fallbackAttempted = false;
   private nativeFallbackDone = false;
   private hlsRecoverAttempts = 0;
+  private bufferingRecoveryTimeout: ReturnType<typeof setTimeout> | null = null;
   private state: PlayerState = 'idle';
   private currentUrl: string = '';
   private options: PlayerOptions = {};
@@ -188,14 +189,36 @@ export class BrowserAdapter implements IPlayerAdapter {
       this.isBuffering = true;
       this.setState('buffering');
       this.emit('bufferingstart');
+
+      // If buffer does not recover quickly, force HLS to reload a segment/lower quality
+      if (this.bufferingRecoveryTimeout) {
+        clearTimeout(this.bufferingRecoveryTimeout);
+      }
+      this.bufferingRecoveryTimeout = setTimeout(() => {
+        if (this.isBuffering && this.hls) {
+          console.warn('[BrowserAdapter] Buffering >3s, attempting HLS recovery');
+          // Drop to lowest quality to recover faster
+          if (typeof this.hls.nextAutoLevel === 'number') {
+            this.hls.nextAutoLevel = 0;
+          }
+          if (this.options.isLive) {
+            // For live: use startLoad(-1) to jump to live edge instead of resuming from stale position
+            console.log('[BrowserAdapter] Jumping to live edge');
+            this.hls.startLoad(-1);
+          } else {
+            // For VOD: resume from current position
+            this.hls.startLoad();
+          }
+        }
+      }, 3000);
     });
 
     // Handle stalled event - browser is trying to fetch but data is not forthcoming
     this.video.addEventListener('stalled', () => {
       console.log('[BrowserAdapter] Video stalled, attempting recovery...');
       if (this.options.isLive && this.hls) {
-        // For live streams, try to restart loading
-        this.hls.startLoad();
+        // For live streams, jump to live edge to recover
+        this.hls.startLoad(-1);
       }
     });
 
@@ -203,6 +226,10 @@ export class BrowserAdapter implements IPlayerAdapter {
       if (this.isBuffering) {
         this.isBuffering = false;
         this.emit('bufferingend');
+      }
+      if (this.bufferingRecoveryTimeout) {
+        clearTimeout(this.bufferingRecoveryTimeout);
+        this.bufferingRecoveryTimeout = null;
       }
       this.setState('playing');
     });
@@ -320,29 +347,40 @@ export class BrowserAdapter implements IPlayerAdapter {
     };
 
     if (isLive) {
+      // Live: keep a steady ~20-30s buffer and retry fast on stalls
       return {
-        // Live stability: avoid aggressive low-latency, keep a comfortable buffer
         lowLatencyMode: false,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
+        maxBufferLength: 24,
+        maxMaxBufferLength: 48,
         backBufferLength: 30,
         liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 10,
+        liveMaxLatencyDurationCount: 8,
         liveDurationInfinity: true,
+        maxStarvationDelay: 3,
+        maxLoadingDelay: 3,
+        maxLiveSyncPlaybackRate: 1.05,
+        capLevelOnFPSDrop: true,
+        capLevelToPlayerSize: true,
+        highBufferWatchdogPeriod: 2,
         manifestLoadingMaxRetry: 6,
-        manifestLoadingRetryDelay: 1000,
+        manifestLoadingRetryDelay: 800,
         levelLoadingMaxRetry: 6,
-        levelLoadingRetryDelay: 1000,
+        levelLoadingRetryDelay: 800,
         fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 1000,
+        fragLoadingRetryDelay: 800,
         loader,
       };
     }
 
-    // VOD/DVR defaults: keep conservative buffer without forcing live-specific options
+    // VOD/DVR: slightly larger cushion but avoid runaway buffering
     return {
       lowLatencyMode: false,
+      maxBufferLength: 40,
+      maxMaxBufferLength: 80,
       backBufferLength: 120,
+      capLevelOnFPSDrop: true,
+      capLevelToPlayerSize: true,
+      highBufferWatchdogPeriod: 2,
       loader,
     };
   }
@@ -620,6 +658,10 @@ export class BrowserAdapter implements IPlayerAdapter {
   }
 
   close(): void {
+    if (this.bufferingRecoveryTimeout) {
+      clearTimeout(this.bufferingRecoveryTimeout);
+      this.bufferingRecoveryTimeout = null;
+    }
     this.destroyHls();
     if (this.video) {
       this.video.pause();
