@@ -142,15 +142,18 @@ export class BrowserAdapter implements IPlayerAdapter {
     if (!this.video) return;
 
     this.video.addEventListener('loadstart', () => {
+      console.log('[BrowserAdapter] loadstart event fired');
       this.setState('loading');
     });
 
     this.video.addEventListener('loadedmetadata', () => {
+      console.log('[BrowserAdapter] loadedmetadata event fired, duration:', this.video!.duration);
       this.loadTracks();
       this.emit('durationchange', { duration: this.video!.duration * 1000 });
     });
 
     this.video.addEventListener('canplay', () => {
+      console.log('[BrowserAdapter] canplay event fired');
       this.setState('ready');
     });
 
@@ -188,8 +191,9 @@ export class BrowserAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('error', () => {
-      this.setState('error');
       const error = this.video!.error;
+      console.error('[BrowserAdapter] error event fired:', error?.code, error?.message);
+      this.setState('error');
       this.emit('error', {
         code: 'PLAYBACK_ERROR',
         message: error?.message || 'Erro de reproducao',
@@ -294,7 +298,8 @@ export class BrowserAdapter implements IPlayerAdapter {
         message: `Formato ${containerCheck.format} não é suportado pelo navegador. Use a TV para reproduzir.`,
         format: containerCheck.format,
       });
-      return;
+      // THROW instead of return so caller knows to not call prepare()
+      throw new Error(`Formato ${containerCheck.format} não suportado`);
     }
 
     const hasExtension = /\.[a-z0-9]{2,4}(\?|$)/i.test(url);
@@ -318,9 +323,26 @@ export class BrowserAdapter implements IPlayerAdapter {
       (!hasExtension && !preferNative)); // sem extensão: tenta HLS primeiro fora do Safari
 
     if (Hls.isSupported() && isProbablyHls && !preferNative) {
+      console.log('[BrowserAdapter] Using HLS.js to load:', this.currentUrl.substring(0, 100));
+
+      // Custom loader to proxy all HLS sub-requests (playlists, segments)
+      // This fixes the issue where relative URLs in manifests get resolved against proxy URL
+      const proxyUrl = this.proxifyUrl.bind(this);
+
       this.hls = new Hls({
         lowLatencyMode: true,
         backBufferLength: 90,
+        // Use custom loader to intercept and proxy all requests
+        loader: class ProxyLoader extends Hls.DefaultConfig.loader {
+          load(context: any, config: any, callbacks: any) {
+            // Proxy external URLs that aren't already proxied
+            if (context.url && !context.url.includes('/api/proxy/hls') && /^https?:\/\//i.test(context.url)) {
+              context.url = proxyUrl(context.url, referer);
+              console.log('[BrowserAdapter] HLS proxied:', context.url.substring(0, 100));
+            }
+            super.load(context, config, callbacks);
+          }
+        },
       });
       this.usingHls = true;
       this.hls.attachMedia(this.video);
@@ -360,9 +382,9 @@ export class BrowserAdapter implements IPlayerAdapter {
     } else {
       // Uso nativo (Safari ou MP4/TS/IPTV) - Usa proxy para URLs externas
       if (isIptvTs) {
-        console.log('[BrowserAdapter] Loading IPTV TS stream:', this.currentUrl !== url ? 'via proxy' : 'direct');
+        console.log('[BrowserAdapter] Loading IPTV TS stream:', this.currentUrl !== url ? 'via proxy' : 'direct', this.currentUrl.substring(0, 100));
       } else {
-        console.log('[BrowserAdapter] Loading native:', this.currentUrl !== url ? 'via proxy' : 'direct');
+        console.log('[BrowserAdapter] Loading native:', this.currentUrl !== url ? 'via proxy' : 'direct', this.currentUrl.substring(0, 100));
       }
       this.video.src = this.currentUrl;
       this.video.load();
@@ -374,6 +396,8 @@ export class BrowserAdapter implements IPlayerAdapter {
     if (!video) {
       throw new Error('Video element nao disponivel');
     }
+
+    console.log('[BrowserAdapter] prepare() called, current state:', this.state, 'src:', video.src?.substring(0, 100));
 
     return new Promise((resolve, reject) => {
       const prepTimeoutMs = 15000;
@@ -413,7 +437,38 @@ export class BrowserAdapter implements IPlayerAdapter {
         video.removeEventListener('error', onError);
         clearTimeout(timeout);
         const err = video.error;
-        const message = err?.message || `Erro ao preparar video (code ${err?.code ?? 'n/a'})`;
+
+        // Provide user-friendly error messages based on error code
+        let message: string;
+        if (err) {
+          switch (err.code) {
+            case MediaError.MEDIA_ERR_ABORTED:
+              message = 'Reprodução cancelada';
+              break;
+            case MediaError.MEDIA_ERR_NETWORK:
+              message = 'Erro de rede ao carregar o vídeo. Verifique sua conexão.';
+              break;
+            case MediaError.MEDIA_ERR_DECODE:
+              message = 'Erro ao decodificar o vídeo. Formato possivelmente corrompido.';
+              break;
+            case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+              message = 'Formato de vídeo não suportado pelo navegador. Tente em uma TV LG WebOS.';
+              break;
+            default:
+              message = err.message || `Erro desconhecido (code ${err.code})`;
+          }
+        } else {
+          message = 'Erro desconhecido ao preparar vídeo';
+        }
+
+        console.warn('[BrowserAdapter] Video error:', err?.code, message);
+
+        // Emit error event with user-friendly message
+        this.setState('error');
+        this.emit('error', {
+          code: err?.code ? `MEDIA_ERR_${err.code}` : 'UNKNOWN',
+          message,
+        });
 
         // Fallback: se não estamos usando HLS e há suporte, tenta HLS uma vez
         // Caso estejamos em Hls e houver erro fatal, tentamos recarregar uma vez

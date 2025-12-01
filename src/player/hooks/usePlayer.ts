@@ -32,6 +32,7 @@ export interface UsePlayerReturn {
   bufferedTime: number;
   volume: number;
   isMuted: boolean;
+  errorMessage: string | null;
 
   // Tracks
   audioTracks: AudioTrack[];
@@ -117,6 +118,7 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     audio: [],
     subtitles: [],
   });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Initialize player
   useEffect(() => {
@@ -167,6 +169,12 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
         case 'bufferingend':
           // Handled via state change
           break;
+
+        case 'error': {
+          const errorData = event.data as { code?: string; message?: string };
+          setErrorMessage(errorData.message || 'Erro desconhecido');
+          break;
+        }
       }
     };
 
@@ -184,30 +192,54 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
 
   // Actions
   const open = useCallback(async (url: string, playerOptions?: PlayerOptions) => {
-    if (!playerRef.current) return;
-    await playerRef.current.open(url, playerOptions);
-    await playerRef.current.prepare();
+    if (!playerRef.current) {
+      console.error('[usePlayer] Player not initialized');
+      setErrorMessage('Player não inicializado');
+      setState('error');
+      return;
+    }
 
-    // Se for manifest HLS, tenta parsear EXT-X-MEDIA para faixas externas
-    // Suporta URLs diretas (.m3u8) e via proxy (/api/proxy/hls?url=...)
-    if (isHlsUrl(url)) {
-      try {
-        // Usa a URL do proxy se disponível (evita CORS), senão a URL original
-        const fetchUrl = url;
-        const res = await fetch(fetchUrl);
-        if (res.ok) {
-          const text = await res.text();
-          const parsed = parseHlsManifest(text);
-          setExternalTracks(parsed);
-        } else {
+    setErrorMessage(null); // Clear previous errors
+
+    try {
+      await playerRef.current.open(url, playerOptions);
+
+      // Check if open() already set error state (e.g., unsupported format)
+      if (playerRef.current.getState() === 'error') {
+        console.log('[usePlayer] open() resulted in error state, skipping prepare()');
+        return;
+      }
+
+      await playerRef.current.prepare();
+
+      // Se for manifest HLS, tenta parsear EXT-X-MEDIA para faixas externas
+      // Suporta URLs diretas (.m3u8) e via proxy (/api/proxy/hls?url=...)
+      if (isHlsUrl(url)) {
+        try {
+          // Usa a URL do proxy se disponível (evita CORS), senão a URL original
+          const fetchUrl = url;
+          const res = await fetch(fetchUrl);
+          if (res.ok) {
+            const text = await res.text();
+            const parsed = parseHlsManifest(text);
+            setExternalTracks(parsed);
+          } else {
+            setExternalTracks({ audio: [], subtitles: [] });
+          }
+        } catch (e) {
+          console.warn('[usePlayer] Falha ao parsear manifest HLS:', e);
           setExternalTracks({ audio: [], subtitles: [] });
         }
-      } catch (e) {
-        console.warn('[usePlayer] Falha ao parsear manifest HLS:', e);
+      } else {
         setExternalTracks({ audio: [], subtitles: [] });
       }
-    } else {
-      setExternalTracks({ audio: [], subtitles: [] });
+    } catch (error) {
+      console.error('[usePlayer] Error opening video:', error);
+      // Error event should already be emitted by adapter, but ensure UI is updated
+      if (playerRef.current && playerRef.current.getState() !== 'error') {
+        setErrorMessage(error instanceof Error ? error.message : 'Erro ao abrir vídeo');
+        setState('error');
+      }
     }
   }, []);
 
@@ -282,6 +314,7 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
   const close = useCallback(() => {
     playerRef.current?.close();
     setState('idle');
+    setErrorMessage(null);
     setPlaybackInfo({
       currentTime: 0,
       duration: 0,
@@ -304,6 +337,7 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
     bufferedTime: playbackInfo.bufferedTime,
     volume: playbackInfo.volume,
     isMuted: playbackInfo.isMuted,
+    errorMessage,
 
     // Tracks
     audioTracks: tracks.audio,

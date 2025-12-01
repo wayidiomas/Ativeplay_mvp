@@ -70,6 +70,7 @@ export function PlayerContainer({
     subtitleTracks,
     currentAudioIndex,
     currentSubtitleIndex,
+    errorMessage,
     open,
     play,
     pause,
@@ -267,21 +268,25 @@ export function PlayerContainer({
   // Render error state
   if (state === 'error') {
     const unsupportedFormat = getUnsupportedFormat(url);
-    const isFormatError = unsupportedFormat !== null;
+    const isFormatError = unsupportedFormat !== null ||
+      (errorMessage?.includes('não suportado') ?? false);
+
+    // Use errorMessage from player if available, fallback to heuristics
+    const displayMessage = errorMessage || (
+      isFormatError
+        ? `O formato ${unsupportedFormat || 'de vídeo'} não é suportado pelo navegador. Reproduza diretamente na TV.`
+        : 'Não foi possível reproduzir o vídeo'
+    );
+
+    const displayTitle = isFormatError ? 'Formato Não Suportado' : 'Erro na Reprodução';
 
     return (
       <div className={styles.container} ref={containerRef}>
         <div id="player-container" className={styles.videoContainer} />
         <div className={styles.errorOverlay}>
           <MdErrorOutline className={styles.errorIcon} />
-          <h2 className={styles.errorTitle}>
-            {isFormatError ? 'Formato Não Suportado' : 'Erro na Reprodução'}
-          </h2>
-          <p className={styles.errorMessage}>
-            {isFormatError
-              ? `O formato ${unsupportedFormat} não é suportado pelo navegador. Reproduza diretamente na TV.`
-              : 'Não foi possível reproduzir o vídeo'}
-          </p>
+          <h2 className={styles.errorTitle}>{displayTitle}</h2>
+          <p className={styles.errorMessage}>{displayMessage}</p>
           {!isFormatError && (
             <button
               className={styles.retryButton}

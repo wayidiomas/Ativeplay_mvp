@@ -127,8 +127,31 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     return episodeLookup.get(episodeId) || null;
   };
 
-  const handleEpisodeClick = async (episode: { id: string; name: string }) => {
-    // If we have the full episode data, use it
+  const handleEpisodeClick = async (episode: {
+    id: string;
+    name: string;
+    url?: string;
+    seasonNumber?: number;
+    episodeNumber?: number;
+  }) => {
+    // If episode already has URL (from seasonsData), use it directly
+    if (episode.url) {
+      const playlistItem: PlaylistItem = {
+        id: episode.id,
+        name: episode.name,
+        url: episode.url,
+        group: series?.group || '',
+        mediaKind: 'series',
+        seasonNumber: episode.seasonNumber,
+        episodeNumber: episode.episodeNumber,
+        seriesId: seriesId,
+      };
+      console.log('[SeriesDetail] Playing episode with URL from seasonsData:', episode.name);
+      onSelectItem(playlistItem);
+      return;
+    }
+
+    // Fallback: If we have the full episode data in lookup, use it
     let fullEpisode = episodeLookup.get(episode.id);
 
     if (!fullEpisode && hash) {
@@ -146,7 +169,10 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     }
 
     if (fullEpisode) {
+      console.log('[SeriesDetail] Playing episode from lookup/API:', fullEpisode.name);
       onSelectItem(fullEpisode);
+    } else {
+      console.error('[SeriesDetail] Episode not found and no URL available:', episode.id);
     }
   };
 

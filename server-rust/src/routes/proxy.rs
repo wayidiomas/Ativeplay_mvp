@@ -9,6 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 
 use crate::AppState;
 
@@ -49,6 +50,112 @@ fn guess_content_type(url: &str) -> &'static str {
 /// Validate URL is HTTP/HTTPS
 fn is_valid_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// Check if content type indicates HLS manifest
+fn is_hls_manifest(content_type: &str, url: &str) -> bool {
+    let ct_lower = content_type.to_lowercase();
+    let url_lower = url.to_lowercase();
+
+    // Check content type
+    if ct_lower.contains("mpegurl") || ct_lower.contains("x-mpegurl") {
+        return true;
+    }
+
+    // Check URL extension
+    if url_lower.contains(".m3u8") || url_lower.contains(".m3u") {
+        return true;
+    }
+
+    false
+}
+
+/// Rewrite URLs in HLS manifest to go through proxy
+/// This is essential for LG webOS TVs where Luna Service doesn't proxy sub-requests
+fn rewrite_manifest_urls(manifest: &str, base_url: &str, proxy_base: &str, referer: Option<&str>) -> String {
+    let base = match Url::parse(base_url) {
+        Ok(u) => u,
+        Err(_) => return manifest.to_string(),
+    };
+
+    let mut result = String::with_capacity(manifest.len() * 2);
+
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            result.push('\n');
+            continue;
+        }
+
+        // Lines starting with # are tags/comments
+        if trimmed.starts_with('#') {
+            // Check for URI= attributes in tags (e.g., #EXT-X-KEY:URI="...")
+            if trimmed.contains("URI=") {
+                let rewritten = rewrite_uri_attribute(trimmed, &base, proxy_base, referer);
+                result.push_str(&rewritten);
+            } else {
+                result.push_str(line);
+            }
+            result.push('\n');
+            continue;
+        }
+
+        // Regular lines are URLs (relative or absolute)
+        let absolute_url = resolve_url(trimmed, &base);
+        let proxied = build_proxy_url(&absolute_url, proxy_base, referer);
+        result.push_str(&proxied);
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Resolve a potentially relative URL against a base URL
+fn resolve_url(url: &str, base: &Url) -> String {
+    // Already absolute
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return url.to_string();
+    }
+
+    // Resolve relative URL
+    match base.join(url) {
+        Ok(resolved) => resolved.to_string(),
+        Err(_) => url.to_string(),
+    }
+}
+
+/// Build a proxy URL for a given target URL
+fn build_proxy_url(target_url: &str, proxy_base: &str, referer: Option<&str>) -> String {
+    let encoded = urlencoding::encode(target_url);
+    match referer {
+        Some(r) => format!("{}/api/proxy/hls?url={}&referer={}", proxy_base, encoded, urlencoding::encode(r)),
+        None => format!("{}/api/proxy/hls?url={}", proxy_base, encoded),
+    }
+}
+
+/// Rewrite URI= attribute in HLS tags
+fn rewrite_uri_attribute(line: &str, base: &Url, proxy_base: &str, referer: Option<&str>) -> String {
+    // Find URI="..." pattern
+    let uri_start = match line.find("URI=\"") {
+        Some(pos) => pos + 5,
+        None => return line.to_string(),
+    };
+
+    let rest = &line[uri_start..];
+    let uri_end = match rest.find('"') {
+        Some(pos) => pos,
+        None => return line.to_string(),
+    };
+
+    let uri = &rest[..uri_end];
+    let absolute_url = resolve_url(uri, base);
+    let proxied = build_proxy_url(&absolute_url, proxy_base, referer);
+
+    format!("{}URI=\"{}\"{}",
+        &line[..uri_start],
+        proxied,
+        &line[uri_start + uri_end..])
 }
 
 /// GET /api/proxy/hls?url=<encoded>&referer=<optional>
@@ -132,7 +239,13 @@ pub async fn hls_proxy(
         .map(|s| s.to_string())
         .unwrap_or_else(|| guess_content_type(&query.url).to_string());
 
-    // Build response headers
+    // Determine proxy base URL for rewriting manifest URLs
+    let proxy_base = &state.config.base_url;
+
+    // Check if this is an HLS manifest that needs URL rewriting
+    let is_manifest = is_hls_manifest(&content_type, &query.url);
+
+    // Build response headers (common for both manifest and binary)
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::CONTENT_TYPE,
@@ -148,7 +261,54 @@ pub async fn hls_proxy(
         "Content-Length, Content-Type, Accept-Ranges".parse().unwrap(),
     );
 
-    // Forward optional headers from upstream (use reqwest constants for reading, axum for writing)
+    // For HLS manifests: read body, rewrite URLs, return modified content
+    if is_manifest {
+        let manifest_bytes = upstream_response.bytes().await.map_err(|e| {
+            tracing::error!("Failed to read manifest body: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "Falha ao ler manifest" })),
+            )
+        })?;
+
+        let manifest_text = String::from_utf8_lossy(&manifest_bytes);
+
+        // Rewrite URLs in manifest to go through proxy
+        let rewritten = rewrite_manifest_urls(
+            &manifest_text,
+            &query.url,
+            proxy_base,
+            query.referer.as_deref(),
+        );
+
+        tracing::debug!("Rewritten HLS manifest for {}", query.url);
+
+        // Update content length for rewritten manifest
+        response_headers.insert(
+            header::CONTENT_LENGTH,
+            rewritten.len().to_string().parse().unwrap(),
+        );
+
+        let body = Body::from(rewritten);
+
+        let mut response = Response::builder()
+            .status(StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::OK));
+
+        for (key, value) in response_headers.iter() {
+            response = response.header(key, value);
+        }
+
+        return response.body(body).map_err(|e| {
+            tracing::error!("Failed to build response: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Erro interno" })),
+            )
+        });
+    }
+
+    // For binary content (segments, etc.): stream through
+    // Forward optional headers from upstream
     if let Some(content_length) = upstream_response.headers().get(reqwest_header::CONTENT_LENGTH) {
         if let Ok(cl) = content_length.to_str() {
             if let Ok(parsed) = cl.parse() {

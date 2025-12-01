@@ -7,6 +7,7 @@ import {
 } from '@ui/onboarding';
 import { Home } from '@ui/home';
 import { SeriesDetailWrapper } from '@ui/series/SeriesDetailWrapper';
+import { CategoryPage } from '@ui/category/CategoryPage';
 
 function App() {
   return (
@@ -25,6 +26,9 @@ function App() {
 
         {/* Series Detail */}
         <Route path="/series/:seriesId" element={<SeriesDetailWrapper />} />
+
+        {/* Category Page - Grid view of all items in a group */}
+        <Route path="/category/:groupId" element={<CategoryPage />} />
 
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />

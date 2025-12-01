@@ -52,7 +52,12 @@ const MediaCard = memo(({ item, onSelect }: { item: PlaylistItem; onSelect: (ite
   const [imageError, setImageError] = useState(false);
 
   return (
-    <button className={styles.card} onClick={() => onSelect(item)} tabIndex={0}>
+    <button
+      type="button"
+      className={styles.card}
+      onClick={() => onSelect(item)}
+      tabIndex={0}
+    >
       {item.logo && !imageError ? (
         <img
           src={item.logo}
@@ -80,7 +85,12 @@ const SeriesCard = memo(({ series, onNavigate }: { series: SeriesInfo; onNavigat
   const [imageError, setImageError] = useState(false);
 
   return (
-    <button className={styles.card} onClick={() => onNavigate(series.id)} tabIndex={0}>
+    <button
+      type="button"
+      className={styles.card}
+      onClick={() => onNavigate(series.id)}
+      tabIndex={0}
+    >
       {series.logo && !imageError ? (
         <img
           src={series.logo}
@@ -129,9 +139,14 @@ export function Home() {
   const [searchResults, setSearchResults] = useState<PlaylistItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [selectedItem, setSelectedItem] = useState<PlaylistItem | null>(null);
+  const [hasMoreGroups, setHasMoreGroups] = useState(false);
+  const [allFilteredGroups, setAllFilteredGroups] = useState<PlaylistGroup[]>([]);
+  const [loadingRowId, setLoadingRowId] = useState<string | null>(null);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const lastItemCount = useRef<number>(0);
+  const groupsEndRef = useRef<HTMLDivElement>(null);
+  const GROUPS_PER_PAGE = 10;
 
   // Redirect if no hash
   useEffect(() => {
@@ -224,11 +239,24 @@ export function Home() {
         }
 
         // Filter groups by mediaKind
-        const filteredGroups = groups.filter(g => g.mediaKind === mediaKind);
+        // Include "unknown" groups in the movies tab as a category
+        const filteredGroups = groups.filter(g => {
+          if (mediaKind === 'movie') {
+            return g.mediaKind === 'movie' || g.mediaKind === 'unknown';
+          }
+          return g.mediaKind === mediaKind;
+        });
+
+        // Store all filtered groups for pagination
+        setAllFilteredGroups(filteredGroups);
+
+        // Load only first page of groups
+        const groupsToLoad = filteredGroups.slice(0, GROUPS_PER_PAGE);
+        setHasMoreGroups(filteredGroups.length > GROUPS_PER_PAGE);
 
         // For each group, load initial items
         const rowsData: Row[] = await Promise.all(
-          filteredGroups.slice(0, 12).map(async (group) => {
+          groupsToLoad.map(async (group) => {
             // For series tab, show series cards instead of items
             if (mediaKind === 'series' && series) {
               const groupSeries = series.filter(s => s.group === group.name).slice(0, ITEMS_PER_GROUP);
@@ -299,6 +327,8 @@ export function Home() {
   const handleNavClick = useCallback((item: NavItem) => {
     setSelectedNav(item);
     setRows([]); // Clear rows when switching tabs
+    setAllFilteredGroups([]);
+    setHasMoreGroups(false);
     setLoading(true);
   }, []);
 
@@ -354,6 +384,162 @@ export function Home() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Load more groups function for infinite scroll
+  const loadMoreGroups = useCallback(async () => {
+    if (!hash || !hasMoreGroups || loading) return;
+
+    const currentHash = hash;
+    const startIndex = rows.length;
+    const endIndex = startIndex + GROUPS_PER_PAGE;
+    const groupsToLoad = allFilteredGroups.slice(startIndex, endIndex);
+
+    if (groupsToLoad.length === 0) {
+      setHasMoreGroups(false);
+      return;
+    }
+
+    // Load series if needed for series tab
+    let series = seriesCache;
+    if (!series && selectedNav === 'series') {
+      const seriesRes = await getSeries(currentHash);
+      series = seriesRes.series;
+      setSeriesCache(series);
+    }
+
+    const newRowsData: Row[] = await Promise.all(
+      groupsToLoad.map(async (group) => {
+        if (mediaKind === 'series' && series) {
+          const groupSeries = series.filter(s => s.group === group.name).slice(0, ITEMS_PER_GROUP);
+          return {
+            group,
+            items: [],
+            series: groupSeries,
+            isSeries: true,
+            hasMore: groupSeries.length >= ITEMS_PER_GROUP,
+          };
+        }
+
+        const itemsRes = await getItems(currentHash, {
+          group: group.name,
+          mediaKind,
+          limit: ITEMS_PER_GROUP,
+        });
+
+        return {
+          group,
+          items: itemsRes.items,
+          hasMore: itemsRes.hasMore,
+        };
+      })
+    );
+
+    const nonEmptyRows = newRowsData.filter(r => r.items.length > 0 || (r.series && r.series.length > 0));
+    setRows(prev => [...prev, ...nonEmptyRows]);
+    setHasMoreGroups(endIndex < allFilteredGroups.length);
+  }, [hash, hasMoreGroups, loading, rows.length, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache]);
+
+  // IntersectionObserver for infinite scroll of groups
+  useEffect(() => {
+    if (!hasMoreGroups || loading) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadMoreGroups();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (groupsEndRef.current) {
+      observer.observe(groupsEndRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [hasMoreGroups, loading, loadMoreGroups]);
+
+  // Handler for "Ver tudo" (See All) button
+  const handleSeeAll = useCallback((group: PlaylistGroup) => {
+    navigate(`/category/${encodeURIComponent(group.id)}`, {
+      state: { groupName: group.name, mediaKind: group.mediaKind }
+    });
+  }, [navigate]);
+
+  // Load more items for a specific carousel row (progressive loading)
+  const loadMoreRowItems = useCallback(async (rowIndex: number) => {
+    if (!hash) return;
+
+    const row = rows[rowIndex];
+    if (!row || !row.hasMore || loadingRowId === row.group.id) return;
+
+    setLoadingRowId(row.group.id);
+
+    try {
+      // For series rows, load more from cache
+      if (row.isSeries && seriesCache) {
+        const allGroupSeries = seriesCache.filter(s => s.group === row.group.name);
+        const currentCount = row.series?.length || 0;
+        const nextSeries = allGroupSeries.slice(currentCount, currentCount + ITEMS_PER_GROUP);
+        const hasMore = currentCount + nextSeries.length < allGroupSeries.length;
+
+        setRows(prev => prev.map((r, idx) => {
+          if (idx === rowIndex) {
+            return {
+              ...r,
+              series: [...(r.series || []), ...nextSeries],
+              hasMore,
+            };
+          }
+          return r;
+        }));
+      } else {
+        // For regular items, load from API
+        const itemsRes = await getItems(hash, {
+          group: row.group.name,
+          mediaKind: row.group.mediaKind,
+          limit: ITEMS_PER_GROUP,
+          offset: row.items.length,
+        });
+
+        setRows(prev => prev.map((r, idx) => {
+          if (idx === rowIndex) {
+            return {
+              ...r,
+              items: [...r.items, ...itemsRes.items],
+              hasMore: itemsRes.hasMore,
+            };
+          }
+          return r;
+        }));
+      }
+    } catch (error) {
+      console.error('[Home] Failed to load more items:', error);
+    } finally {
+      setLoadingRowId(null);
+    }
+  }, [hash, rows, loadingRowId, seriesCache]);
+
+  // Handle carousel scroll - check if near end and load more
+  const handleCarouselScroll = useCallback((rowIndex: number, direction: 'left' | 'right') => {
+    const row = rows[rowIndex];
+    if (!row) return;
+
+    const el = document.getElementById(`row-${row.group.id}`);
+    if (!el) return;
+
+    if (direction === 'right') {
+      el.scrollBy({ left: 600, behavior: 'smooth' });
+
+      // Check if scrolled near end (within 1200px of end)
+      const isNearEnd = el.scrollLeft + el.clientWidth + 1200 >= el.scrollWidth;
+      if (isNearEnd && row.hasMore) {
+        loadMoreRowItems(rowIndex);
+      }
+    } else {
+      el.scrollBy({ left: -600, behavior: 'smooth' });
+    }
+  }, [rows, loadMoreRowItems]);
+
   // ============================================================================
   // Render
   // ============================================================================
@@ -395,44 +581,59 @@ export function Home() {
       );
     }
 
-    return rows.map((row) => (
-      <div className={styles.section} key={row.group.id}>
-        <div className={styles.sectionHeader}>
-          <h2 className={styles.sectionTitle}>{row.group.name}</h2>
-          <button className={styles.sectionMore}>
-            Ver tudo <MdNavigateNext />
-          </button>
-        </div>
-        <div className={styles.carousel}>
-          <button
-            className={styles.carouselArrow}
-            onClick={() => {
-              const el = document.getElementById(`row-${row.group.id}`);
-              el?.scrollBy({ left: -600, behavior: 'smooth' });
-            }}
-          >
-            <MdNavigateBefore />
-          </button>
-          <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
-            {row.isSeries && row.series?.map((series) => (
-              <SeriesCard key={series.id} series={series} onNavigate={handleSelectSeries} />
-            ))}
-            {row.items.map((item) => (
-              <MediaCard key={item.id} item={item} onSelect={handleSelectItem} />
-            ))}
+    return (
+      <>
+        {rows.map((row, rowIndex) => (
+          <div className={styles.section} key={row.group.id}>
+            <div className={styles.sectionHeader}>
+              <h2 className={styles.sectionTitle}>{row.group.name}</h2>
+              <button
+                className={styles.sectionMore}
+                onClick={() => handleSeeAll(row.group)}
+              >
+                Ver tudo <MdNavigateNext />
+              </button>
+            </div>
+            <div className={styles.carousel}>
+              <button
+                className={styles.carouselArrow}
+                onClick={() => handleCarouselScroll(rowIndex, 'left')}
+              >
+                <MdNavigateBefore />
+              </button>
+              <div className={styles.carouselTrack} id={`row-${row.group.id}`}>
+                {row.isSeries && row.series?.map((series) => (
+                  <SeriesCard key={series.id} series={series} onNavigate={handleSelectSeries} />
+                ))}
+                {row.items.map((item) => (
+                  <MediaCard key={item.id} item={item} onSelect={handleSelectItem} />
+                ))}
+                {/* Loading indicator for progressive carousel loading */}
+                {loadingRowId === row.group.id && (
+                  <div className={styles.carouselLoading}>
+                    <div className={styles.spinner} />
+                  </div>
+                )}
+              </div>
+              <button
+                className={styles.carouselArrow}
+                onClick={() => handleCarouselScroll(rowIndex, 'right')}
+              >
+                <MdNavigateNext />
+              </button>
+            </div>
           </div>
-          <button
-            className={styles.carouselArrow}
-            onClick={() => {
-              const el = document.getElementById(`row-${row.group.id}`);
-              el?.scrollBy({ left: 600, behavior: 'smooth' });
-            }}
-          >
-            <MdNavigateNext />
-          </button>
-        </div>
-      </div>
-    ));
+        ))}
+
+        {/* Infinite scroll trigger and loading indicator */}
+        {hasMoreGroups && (
+          <div ref={groupsEndRef} className={styles.loadingMore}>
+            <div className={styles.spinner} />
+            <span>Carregando mais categorias...</span>
+          </div>
+        )}
+      </>
+    );
   };
 
   const renderSearch = () => {

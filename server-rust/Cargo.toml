@@ -51,6 +51,8 @@ regex = "1.10"
 lazy_static = "1.4"
 base64 = "0.21"
 lru = "0.12"
+url = "2.5"
+urlencoding = "2.1"
 
 # QR Code
 qrcode = "0.13"

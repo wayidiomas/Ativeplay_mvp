@@ -239,6 +239,17 @@
   border-radius: 4px;
 }
 
+.carouselLoading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 180px;
+  height: 100%;
+  aspect-ratio: 2/3;
+  background: rgba(255,255,255,0.05);
+  border-radius: 10px;
+}
+
 .card {
   position: relative;
   background: #1f1f1f;
