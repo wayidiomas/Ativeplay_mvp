@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y \
 # Create a new empty shell project
 WORKDIR /app
 
-# Copy manifests
-COPY Cargo.toml Cargo.lock* ./
+# Copy manifests (from server-rust/ in repo root context)
+COPY server-rust/Cargo.toml server-rust/Cargo.lock* ./
 
 # Create dummy src/main.rs to build dependencies
 RUN mkdir src && echo "fn main() {}" > src/main.rs
@@ -22,7 +22,10 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release && rm -rf src target/release/deps/ativeplay*
 
 # Now copy the actual source code
-COPY src ./src
+COPY server-rust/src ./src
+
+# Copy migrations
+COPY server-rust/migrations ./migrations
 
 # Build the actual application
 RUN cargo build --release
@@ -32,9 +35,10 @@ RUN cargo build --release
 # ==========================================
 FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies
+# Install runtime dependencies (curl for healthcheck)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -45,6 +49,9 @@ WORKDIR /app
 # Copy the compiled binary
 COPY --from=builder /app/target/release/ativeplay-server /app/ativeplay-server
 
+# Copy migrations for runtime
+COPY --from=builder /app/migrations /app/migrations
+
 # Create cache directory
 RUN mkdir -p /app/.parse-cache && chown -R appuser:appuser /app
 
@@ -53,8 +60,6 @@ USER appuser
 
 # Set environment variables
 ENV PORT=3001
-ENV NODE_ENV=production
-ENV PARSE_CACHE_DIR=/app/.parse-cache
 ENV RUST_LOG=info
 
 # Expose port
