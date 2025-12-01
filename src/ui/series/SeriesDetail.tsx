@@ -97,8 +97,7 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
           name: ep.name,
           episodeNumber: ep.episode,
           seasonNumber: ep.season,
-          // These will be filled from episodes array if available
-          url: '',
+          url: ep.url, // URL from backend seasonsData
           logo: undefined,
           group: '',
           mediaKind: 'series' as const,
