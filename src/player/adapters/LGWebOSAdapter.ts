@@ -88,10 +88,30 @@ function parseLanguageCode(code: string): string {
 }
 
 /**
+ * Extract original URL from a proxified URL (e.g., /api/proxy/hls?url=...)
+ * Returns the original URL if found, otherwise returns the input URL
+ */
+function extractOriginalUrl(url: string): string {
+  if (url.includes('/api/proxy/hls?')) {
+    try {
+      const urlObj = new URL(url);
+      const originalUrl = urlObj.searchParams.get('url');
+      if (originalUrl) {
+        return originalUrl;
+      }
+    } catch {
+      // Invalid URL, return as-is
+    }
+  }
+  return url;
+}
+
+/**
  * Detecta se a URL é um stream HLS
  */
 function isHlsUrl(url: string): boolean {
-  const lower = url.toLowerCase();
+  const originalUrl = extractOriginalUrl(url);
+  const lower = originalUrl.toLowerCase();
   return lower.includes('.m3u8') || lower.includes('format=m3u8') || lower.includes('output=m3u8');
 }
 
@@ -99,12 +119,13 @@ function isHlsUrl(url: string): boolean {
  * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
  */
 function isIptvTsStream(url: string): boolean {
+  const originalUrl = extractOriginalUrl(url);
   // Pattern: ends with /ts (not .ts file extension)
-  if (/\/ts(\?|$)/i.test(url)) return true;
+  if (/\/ts(\?|$)/i.test(originalUrl)) return true;
   // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
-  if (/\/\d+\/\d+\/\d+(\?|$)/.test(url)) return true;
+  if (/\/\d+\/\d+\/\d+(\?|$)/.test(originalUrl)) return true;
   // Query param indicating TS output
-  if (url.includes('output=ts')) return true;
+  if (originalUrl.includes('output=ts')) return true;
   return false;
 }
 
@@ -112,7 +133,8 @@ function isIptvTsStream(url: string): boolean {
  * Heuristic to detect live streams when mediaKind is not explicitly provided.
  */
 function isLikelyLiveHls(url: string): boolean {
-  const lower = url.toLowerCase();
+  const originalUrl = extractOriginalUrl(url);
+  const lower = originalUrl.toLowerCase();
   const liveHints = /(live|channel|stream|tv|iptv|24\/7|ao ?vivo)/i;
   const vodHints = /(vod|movie|filme|episode|episodio|series|season|s0?\d|e0?\d)/i;
   const hasFileName = /\.[a-z0-9]{2,4}(\?|$)/i.test(lower);
@@ -933,16 +955,18 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     }
 
     // Detect IPTV TS streams - should NOT use HLS.js
+    // Note: detection functions now extract original URL from proxified URLs
+    const originalUrl = extractOriginalUrl(url);
     const isIptvTs = isIptvTsStream(url);
     const isLiveStream = this.options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
     const isHls = isHlsUrl(url);
 
     console.log('[LGWebOSAdapter] Stream detection:', {
+      originalUrl: originalUrl?.substring(0, 100),
       isIptvTs,
       isLiveStream,
       isHls,
       hlsSupported: Hls.isSupported(),
-      streamUrl: streamUrl?.substring(0, 100),
     });
 
     // Use HLS.js for HLS streams (provides track selection APIs)

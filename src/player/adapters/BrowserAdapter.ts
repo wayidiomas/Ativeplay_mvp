@@ -20,18 +20,38 @@ import type {
 const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
 
 /**
+ * Extract original URL from a proxified URL (e.g., /api/proxy/hls?url=...)
+ * Returns the original URL if found, otherwise returns the input URL
+ */
+function extractOriginalUrl(url: string): string {
+  if (url.includes('/api/proxy/hls?')) {
+    try {
+      const urlObj = new URL(url);
+      const originalUrl = urlObj.searchParams.get('url');
+      if (originalUrl) {
+        return originalUrl;
+      }
+    } catch {
+      // Invalid URL, return as-is
+    }
+  }
+  return url;
+}
+
+/**
  * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
  * Common patterns:
  * - /play/TOKEN/ts (Xtream Codes TS)
  * - /username/password/stream_id (Xtream Codes API)
  */
 function isIptvTsStream(url: string): boolean {
+  const originalUrl = extractOriginalUrl(url);
   // Pattern: ends with /ts (not .ts file extension)
-  if (/\/ts(\?|$)/i.test(url)) return true;
+  if (/\/ts(\?|$)/i.test(originalUrl)) return true;
   // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
-  if (/\/\d+\/\d+\/\d+(\?|$)/.test(url)) return true;
+  if (/\/\d+\/\d+\/\d+(\?|$)/.test(originalUrl)) return true;
   // Query param indicating TS output
-  if (url.includes('output=ts')) return true;
+  if (originalUrl.includes('output=ts')) return true;
   return false;
 }
 
@@ -40,7 +60,8 @@ function isIptvTsStream(url: string): boolean {
  * Matches common IPTV/live patterns; VOD .m3u8 URLs usually carry file-like names.
  */
 function isLikelyLiveHls(url: string): boolean {
-  const lower = url.toLowerCase();
+  const originalUrl = extractOriginalUrl(url);
+  const lower = originalUrl.toLowerCase();
   const liveHints = /(live|channel|stream|tv|iptv|24\/7|ao ?vivo)/i;
   const vodHints = /(vod|movie|filme|episode|episodio|series|season|s0?\d|e0?\d)/i;
   // No explicit extension or clear live hints: treat as live to be safer with buffering
@@ -55,7 +76,8 @@ function isLikelyLiveHls(url: string): boolean {
  * MKV and AVI require transcoding or native player (webOS Luna Service)
  */
 function isUnsupportedContainer(url: string): { unsupported: boolean; format: string | null } {
-  const lower = url.toLowerCase();
+  const originalUrl = extractOriginalUrl(url);
+  const lower = originalUrl.toLowerCase();
   if (lower.endsWith('.mkv') || lower.includes('.mkv?')) {
     return { unsupported: true, format: 'MKV' };
   }
@@ -754,7 +776,11 @@ export class BrowserAdapter implements IPlayerAdapter {
       throw new Error(`Formato ${containerCheck.format} não suportado`);
     }
 
-    const hasExtension = /\.[a-z0-9]{2,4}(\?|$)/i.test(url);
+    // Extract original URL from proxified URL for proper format detection
+    const originalUrl = extractOriginalUrl(url);
+    const originalLower = originalUrl.toLowerCase();
+
+    const hasExtension = /\.[a-z0-9]{2,4}(\?|$)/i.test(originalUrl);
     let contentType: string | null = null;
     if (!hasExtension) {
       contentType = await this.peekContentType(this.currentUrl);
@@ -764,15 +790,15 @@ export class BrowserAdapter implements IPlayerAdapter {
     const isIptvTs = isIptvTsStream(url) || (contentType ? /mp2t/i.test(contentType) : false);
     const isLiveStream = options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
 
-    const isHls = url.toLowerCase().includes('.m3u8') || (contentType ? /mpegurl/i.test(contentType) : false);
+    const isHls = originalLower.includes('.m3u8') || (contentType ? /mpegurl/i.test(contentType) : false);
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
     const preferNative = /Safari/i.test(ua) && !/Chrome/i.test(ua); // usa nativo em Safari/iOS
     const isProbablyHls =
       !isIptvTs && // Don't use HLS.js for raw TS streams
       (isHls ||
-      url.toLowerCase().includes('m3u') ||
-      url.toLowerCase().includes('playlist') ||
-      url.toLowerCase().includes('chunklist') ||
+      originalLower.includes('m3u') ||
+      originalLower.includes('playlist') ||
+      originalLower.includes('chunklist') ||
       (!hasExtension && !preferNative)); // sem extensão: tenta HLS primeiro fora do Safari
 
     if (Hls.isSupported() && isProbablyHls && !preferNative) {
