@@ -63,16 +63,16 @@ RUN mkdir -p /app/.parse-cache && chown -R appuser:appuser /app
 # Switch to non-root user
 USER appuser
 
-# Set environment variables
+# Set environment variables (PORT may be overridden by platform like Railway)
 ENV PORT=3001
 ENV RUST_LOG=info
 
-# Expose port
+# Expose port (use default; platform will map actual $PORT)
 EXPOSE 3001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:3001/health || exit 1
+    CMD curl -f http://localhost:${PORT:-3001}/health || exit 1
 
 # Run the application
 CMD ["/app/ativeplay-server"]

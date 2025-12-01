@@ -76,13 +76,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_items_unique_url ON playlist_items(playlis
 -- ============================================================================
 
 -- Update series_episodes to link item_id based on item_hash
-UPDATE series_episodes se
+UPDATE series_episodes
 SET item_id = pi.id
-FROM playlist_items pi
-JOIN series s ON s.id = se.series_id
-WHERE pi.playlist_id = s.playlist_id
-  AND pi.item_hash = se.item_hash
-  AND se.item_id IS NULL;
+FROM playlist_items pi, series s
+WHERE s.id = series_episodes.series_id
+  AND pi.playlist_id = s.playlist_id
+  AND pi.item_hash = series_episodes.item_hash
+  AND series_episodes.item_id IS NULL;
 
 -- ============================================================================
 -- 7. MULTI-TENANT INDEXES: Add indexes for client lookups
