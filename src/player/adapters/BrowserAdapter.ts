@@ -201,6 +201,12 @@ export class BrowserAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('ended', () => {
+      // Live streams should not trigger 'ended' - they may fire this event
+      // due to buffer gaps, EOS markers, or manifest reloads
+      if (this.options.isLive) {
+        console.log('[BrowserAdapter] Ignoring ended event for live stream');
+        return;
+      }
       this.setState('ended');
       this.emit('ended');
     });
@@ -393,24 +399,30 @@ export class BrowserAdapter implements IPlayerAdapter {
         console.error('[BrowserAdapter] HLS error', data);
         if (!data.fatal) return;
 
-        // Tentativas leves de recuperação
+        // Live streams need more retry attempts due to transient network issues
+        const maxAttempts = this.options.isLive ? 10 : 3;
+        const backoffMs = Math.min(1000 * Math.pow(2, this.hlsRecoverAttempts), 30000);
+
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          if (this.hlsRecoverAttempts < 2) {
-            this.hlsRecoverAttempts += 1;
-            console.warn('[BrowserAdapter] HLS recover: restarting load');
-            this.hls?.startLoad();
-            return;
-          }
-        }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          if (this.hlsRecoverAttempts < 2) {
-            this.hlsRecoverAttempts += 1;
-            console.warn('[BrowserAdapter] HLS recover: media error');
-            this.hls?.recoverMediaError();
+          if (this.hlsRecoverAttempts < maxAttempts) {
+            this.hlsRecoverAttempts++;
+            console.log(`[BrowserAdapter] Network error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
+            setTimeout(() => this.hls?.startLoad(), backoffMs);
             return;
           }
         }
 
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (this.hlsRecoverAttempts < maxAttempts) {
+            this.hlsRecoverAttempts++;
+            console.log(`[BrowserAdapter] Media error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
+            setTimeout(() => this.hls?.recoverMediaError(), backoffMs);
+            return;
+          }
+        }
+
+        // All recovery attempts exhausted
+        console.error(`[BrowserAdapter] HLS fatal error after ${this.hlsRecoverAttempts} attempts:`, data.details);
         this.setState('error');
         this.emit('error', { code: 'HLS_FATAL', message: data.details });
       });
@@ -443,7 +455,8 @@ export class BrowserAdapter implements IPlayerAdapter {
     console.log('[BrowserAdapter] prepare() called, current state:', this.state, 'src:', video.src?.substring(0, 100));
 
     return new Promise((resolve, reject) => {
-      const prepTimeoutMs = 15000;
+      // Live streams may take longer to start due to manifest parsing and buffer loading
+      const prepTimeoutMs = this.options.isLive ? 45000 : 15000;
 
       let timeout = setTimeout(() => {
         video.removeEventListener('canplay', onCanPlay);

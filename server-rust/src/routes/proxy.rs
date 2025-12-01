@@ -364,6 +364,10 @@ pub async fn hls_proxy(
         }
     }
 
+    // Add Connection: keep-alive to prevent premature connection closes
+    // This is especially important for live streams and long segments
+    response_headers.insert(header::CONNECTION, "keep-alive".parse().unwrap());
+
     // Stream the body back
     let body = Body::from_stream(upstream_response.bytes_stream());
 

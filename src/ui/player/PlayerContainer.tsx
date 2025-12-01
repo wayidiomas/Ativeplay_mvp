@@ -88,6 +88,12 @@ export function PlayerContainer({
   const hideControlsTimeout = useRef<ReturnType<typeof setTimeout>>();
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Refs to avoid useEffect re-execution when functions change references
+  const openRef = useRef(open);
+  const buildStreamUrlRef = useRef(buildStreamUrl);
+  openRef.current = open;
+  buildStreamUrlRef.current = buildStreamUrl;
+
   // Format time (ms to MM:SS)
   const formatTime = useCallback((ms: number): string => {
     const totalSeconds = Math.floor(ms / 1000);
@@ -110,11 +116,11 @@ export function PlayerContainer({
     }
   }, [state]);
 
-  // Open video on mount
+  // Open video on mount - use refs to avoid re-initialization when functions change
   useEffect(() => {
-    const streamUrl = buildStreamUrl(url);
-    open(streamUrl, { startPosition, autoPlay: true, isLive });
-  }, [url, startPosition, isLive, open, buildStreamUrl]);
+    const streamUrl = buildStreamUrlRef.current(url);
+    openRef.current(streamUrl, { startPosition, autoPlay: true, isLive });
+  }, [url, startPosition, isLive]);
 
   // Handle ended event
   useEffect(() => {

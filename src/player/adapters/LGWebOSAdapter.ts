@@ -138,6 +138,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   };
   private isBuffering: boolean = false;
   private usingHls: boolean = false;
+  private hlsRecoverAttempts: number = 0;
 
   constructor(containerId?: string) {
     if (typeof window !== 'undefined') {
@@ -301,6 +302,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('ended', () => {
+      // Live streams should not trigger 'ended' - they may fire this event
+      // due to buffer gaps, EOS markers, or manifest reloads
+      if (this.options.isLive) {
+        console.log('[LGWebOSAdapter] Ignoring ended event for live stream');
+        return;
+      }
       this.setState('ended');
       this.emit('ended');
     });
@@ -422,28 +429,40 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       }
     });
 
-    // Error handling
+    // Error handling with retry logic
     this.hls.on(Hls.Events.ERROR, (_event, data) => {
       console.error('[LGWebOSAdapter] HLS error:', data.type, data.details);
-      if (data.fatal) {
-        switch (data.type) {
-          case Hls.ErrorTypes.NETWORK_ERROR:
-            console.log('[LGWebOSAdapter] Fatal network error, trying to recover...');
-            this.hls?.startLoad();
-            break;
-          case Hls.ErrorTypes.MEDIA_ERROR:
-            console.log('[LGWebOSAdapter] Fatal media error, trying to recover...');
-            this.hls?.recoverMediaError();
-            break;
-          default:
-            this.setState('error');
-            this.emit('error', {
-              code: 'HLS_ERROR',
-              message: `HLS error: ${data.details}`,
-            });
-            break;
+      if (!data.fatal) return;
+
+      // Live streams need more retry attempts due to transient network issues
+      const maxAttempts = this.options.isLive ? 10 : 3;
+      const backoffMs = Math.min(1000 * Math.pow(2, this.hlsRecoverAttempts), 30000);
+
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        if (this.hlsRecoverAttempts < maxAttempts) {
+          this.hlsRecoverAttempts++;
+          console.log(`[LGWebOSAdapter] Network error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
+          setTimeout(() => this.hls?.startLoad(), backoffMs);
+          return;
         }
       }
+
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (this.hlsRecoverAttempts < maxAttempts) {
+          this.hlsRecoverAttempts++;
+          console.log(`[LGWebOSAdapter] Media error recovery attempt ${this.hlsRecoverAttempts}/${maxAttempts}, backoff ${backoffMs}ms`);
+          setTimeout(() => this.hls?.recoverMediaError(), backoffMs);
+          return;
+        }
+      }
+
+      // All recovery attempts exhausted
+      console.error(`[LGWebOSAdapter] HLS fatal error after ${this.hlsRecoverAttempts} attempts:`, data.details);
+      this.setState('error');
+      this.emit('error', {
+        code: 'HLS_ERROR',
+        message: `HLS error: ${data.details}`,
+      });
     });
   }
 
@@ -509,6 +528,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       this.hls = null;
     }
     this.usingHls = false;
+    this.hlsRecoverAttempts = 0;
 
     // Extract referer from original URL
     let referer: string | undefined;
@@ -570,8 +590,17 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     return new Promise((resolve, reject) => {
       const video = this.video!;
+      // Live streams may take longer to start due to manifest parsing and buffer loading
+      const prepTimeoutMs = this.options.isLive ? 45000 : 15000;
+
+      const timeout = setTimeout(() => {
+        video.removeEventListener('canplay', onCanPlay);
+        video.removeEventListener('error', onError);
+        reject(new Error('Timeout ao preparar video'));
+      }, prepTimeoutMs);
 
       const onCanPlay = () => {
+        clearTimeout(timeout);
         video.removeEventListener('canplay', onCanPlay);
         video.removeEventListener('error', onError);
 
@@ -595,6 +624,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       };
 
       const onError = () => {
+        clearTimeout(timeout);
         video.removeEventListener('canplay', onCanPlay);
         video.removeEventListener('error', onError);
         reject(new Error('Erro ao preparar video'));
