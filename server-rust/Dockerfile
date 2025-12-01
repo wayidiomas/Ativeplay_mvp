@@ -1,7 +1,8 @@
 # ==========================================
 # Stage 1: Build the Rust application
 # ==========================================
-FROM rust:1.85-slim-bookworm AS builder
+# Use a toolchain >=1.88 to satisfy crates (e.g., home >=0.5.12)
+FROM rust:1.90-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -16,8 +17,8 @@ WORKDIR /app
 ENV SQLX_OFFLINE=true
 
 # Copy manifests (from server-rust/ in repo root context)
-# Note: Not copying Cargo.lock to allow fresh resolution with compatible versions
 COPY server-rust/Cargo.toml ./
+COPY server-rust/Cargo.lock ./
 
 # Create dummy src/main.rs to build dependencies
 RUN mkdir src && echo "fn main() {}" > src/main.rs
