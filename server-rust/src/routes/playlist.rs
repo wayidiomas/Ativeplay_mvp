@@ -59,15 +59,22 @@ pub async fn parse_playlist(
     }
 
     // Check if we have valid cache (PostgreSQL)
+    // Only consider cache valid if it has items (not an empty/failed parse)
     if let Ok(Some(meta)) = state.db_cache.get_metadata(&hash).await {
-        tracing::info!("Cache hit for {}", hash);
-        return Ok(Json(BackgroundParseResponse {
-            status: "complete".to_string(),
-            hash,
-            message: None,
-            stats: Some(meta.stats),
-            groups: Some(meta.groups),
-        }));
+        if meta.stats.total_items > 0 {
+            tracing::info!("Cache hit for {} ({} items)", hash, meta.stats.total_items);
+            return Ok(Json(BackgroundParseResponse {
+                status: "complete".to_string(),
+                hash,
+                message: None,
+                stats: Some(meta.stats),
+                groups: Some(meta.groups),
+            }));
+        } else {
+            tracing::warn!("Found empty cache for {}, will re-parse", hash);
+            // Delete the empty playlist to start fresh
+            let _ = state.db_cache.delete_playlist(&hash).await;
+        }
     }
 
     // Initialize progress in Redis

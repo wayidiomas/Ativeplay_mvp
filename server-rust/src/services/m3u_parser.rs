@@ -350,9 +350,16 @@ impl M3UParser {
         let hash = hash_url(url);
 
         // Check if we already have valid cache in PostgreSQL
+        // Only consider cache valid if it has items (not an empty/failed parse)
         if let Ok(Some(meta)) = self.db_cache.get_metadata(&hash).await {
-            tracing::info!("PostgreSQL cache hit for {}", hash);
-            return Ok(meta);
+            if meta.stats.total_items > 0 {
+                tracing::info!("PostgreSQL cache hit for {} ({} items)", hash, meta.stats.total_items);
+                return Ok(meta);
+            } else {
+                tracing::warn!("Found empty cache for {}, will re-parse", hash);
+                // Delete the empty playlist to start fresh
+                let _ = self.db_cache.delete_playlist(&hash).await;
+            }
         }
 
         tracing::info!("Parsing playlist: {}", url);
@@ -679,9 +686,16 @@ impl M3UParser {
         let hash = hash_url(url);
 
         // Check if we already have valid cache in PostgreSQL
+        // Only consider cache valid if it has items (not an empty/failed parse)
         if let Ok(Some(meta)) = self.db_cache.get_metadata(&hash).await {
-            tracing::info!("PostgreSQL cache hit for {}", hash);
-            return Ok(meta);
+            if meta.stats.total_items > 0 {
+                tracing::info!("PostgreSQL cache hit for {} ({} items)", hash, meta.stats.total_items);
+                return Ok(meta);
+            } else {
+                tracing::warn!("Found empty cache for {}, will re-parse", hash);
+                // Delete the empty playlist to start fresh
+                let _ = self.db_cache.delete_playlist(&hash).await;
+            }
         }
 
         // Update progress to downloading
