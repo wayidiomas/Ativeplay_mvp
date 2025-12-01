@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y \
 # Create a new empty shell project
 WORKDIR /app
 
+# Enable sqlx offline mode (no database needed at compile time)
+ENV SQLX_OFFLINE=true
+
 # Copy manifests (from server-rust/ in repo root context)
 COPY server-rust/Cargo.toml server-rust/Cargo.lock* ./
 
