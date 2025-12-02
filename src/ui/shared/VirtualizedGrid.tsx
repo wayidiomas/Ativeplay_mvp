@@ -240,7 +240,17 @@ export function VirtualizedGrid<T>({
       if (newIndex !== null) {
         const item = items[newIndex];
         if (item) {
-          setFocus(`${focusKey}-item-${getItemKey(item)}`);
+          // Calculate row and scroll FIRST to ensure item is rendered
+          const targetRow = Math.floor(newIndex / columnCount);
+          virtualizer.scrollToIndex(targetRow, {
+            align: 'center',
+            behavior: 'smooth',
+          });
+
+          // Small delay to ensure DOM is updated after scroll, then focus
+          setTimeout(() => {
+            setFocus(`${focusKey}-item-${getItemKey(item)}`);
+          }, 50);
         }
         return false;
       }
@@ -252,7 +262,7 @@ export function VirtualizedGrid<T>({
 
       return true; // Allow up/down escape for header navigation
     },
-    [focusKey, columnCount, items, getItemKey]
+    [focusKey, columnCount, items, getItemKey, virtualizer]
   );
 
   // Focus context for spatial navigation
