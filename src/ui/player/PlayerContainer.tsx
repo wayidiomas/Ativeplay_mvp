@@ -92,6 +92,7 @@ export function PlayerContainer({
     seekBackward,
     setAudioTrack,
     setSubtitleTrack,
+    close,
   } = usePlayer({ containerId: 'player-container' });
 
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -132,6 +133,11 @@ export function PlayerContainer({
     const streamUrl = buildStreamUrlRef.current(url);
     openRef.current(streamUrl, { startPosition, autoPlay: true, isLive });
   }, [url, startPosition, isLive]);
+
+  // Ensure player is closed when component unmounts
+  useEffect(() => () => {
+    close();
+  }, [close]);
 
   // Handle ended event
   useEffect(() => {
@@ -200,8 +206,9 @@ export function PlayerContainer({
         case 'Backspace':
           if (activeMenu) {
             setActiveMenu(null);
-          } else if (onClose) {
-            onClose();
+          } else {
+            close();
+            onClose?.();
           }
           break;
 
@@ -317,7 +324,10 @@ export function PlayerContainer({
           )}
           <button
             className={styles.retryButton}
-            onClick={onClose}
+            onClick={() => {
+              close();
+              onClose?.();
+            }}
             style={{ marginTop: isFormatError ? 0 : '0.5rem' }}
             autoFocus={isFormatError}
           >
@@ -347,7 +357,10 @@ export function PlayerContainer({
           <h1 className={styles.title}>{title}</h1>
           <button
             className={styles.closeButton}
-            onClick={onClose}
+            onClick={() => {
+              close();
+              onClose?.();
+            }}
             tabIndex={controlsVisible ? 0 : -1}
           >
             <MdClose />
