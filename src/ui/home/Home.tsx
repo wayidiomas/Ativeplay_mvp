@@ -41,7 +41,10 @@ import styles from './Home.module.css';
 
 type NavItem = 'movies' | 'series' | 'live';
 
-const ITEMS_PER_GROUP = 12; // Fewer items per carousel for better TV experience
+const ITEMS_PER_GROUP = 8; // Fewer items per carousel for faster load and better TV experience
+const CARD_WIDTH = 240; // Larger cards for better visibility on small TVs (32")
+const CARD_GAP = 16;
+const CAROUSEL_HEIGHT = 320;
 
 interface Row {
   group: PlaylistGroup;
@@ -298,6 +301,7 @@ export function Home() {
 
   const contentRef = useRef<HTMLDivElement>(null);
   const lastItemCount = useRef<number>(0);
+  const initialFocusSet = useRef(false); // Track if initial focus was set
   const GROUPS_PER_PAGE = 10;
 
   // Redirect if no hash
@@ -484,6 +488,7 @@ export function Home() {
     setLoadedGroupsCount(0);
     setHasMoreGroups(false);
     setLoading(true);
+    initialFocusSet.current = false; // Reset so initial focus is set on new tab
   }, []);
 
   const handleExit = useCallback(() => {
@@ -561,13 +566,14 @@ export function Home() {
     },
   });
 
-  // Set initial focus after content loads
+  // Set initial focus after content loads (only once per nav change)
   useEffect(() => {
-    if (!loading && rows.length > 0) {
+    if (!loading && rows.length > 0 && !initialFocusSet.current) {
       // Focus first section - it will delegate to carousel via preferredChildFocusKey
       const firstRow = rows[0];
       if (firstRow) {
         setFocus(`section-${firstRow.group.id}`);
+        initialFocusSet.current = true;
       }
     }
   }, [loading, rows]);
@@ -768,9 +774,9 @@ export function Home() {
                   onItemFocus={isNearEnd ? () => loadMoreGroups() : undefined}
                   onItemSelect={(series) => handleSelectSeries(series.id)}
                   upFocusKey={isFirstRow ? headerFocusKey : undefined}
-                  cardWidth={200}
-                  cardGap={12}
-                  height={280}
+                  cardWidth={CARD_WIDTH}
+                  cardGap={CARD_GAP}
+                  height={CAROUSEL_HEIGHT}
                 />
               </FocusableSection>
             );
@@ -802,9 +808,9 @@ export function Home() {
                 onItemFocus={isNearEnd ? () => loadMoreGroups() : undefined}
                 onItemSelect={(item) => handleSelectItem(item)}
                 upFocusKey={isFirstRow ? headerFocusKey : undefined}
-                cardWidth={200}
-                cardGap={12}
-                height={280}
+                cardWidth={CARD_WIDTH}
+                cardGap={CARD_GAP}
+                height={CAROUSEL_HEIGHT}
               />
             </FocusableSection>
           );
