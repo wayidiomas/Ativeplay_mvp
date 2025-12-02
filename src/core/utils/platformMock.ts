@@ -56,6 +56,18 @@ interface WebOSDeviceInfo {
   sdkVersion: string;
 }
 
+// webOSDev library interface (for LGUDID)
+interface WebOSDev {
+  LGUDID: (options: {
+    onSuccess: (result: { id: string }) => void;
+    onFailure: (error: { errorCode: string; errorText: string }) => void;
+  }) => void;
+}
+
+interface WindowWithWebOSDev extends Window {
+  webOSDev?: WebOSDev;
+}
+
 // Mock do Samsung AVPlay API
 interface AVPlayAPI {
   open: (url: string) => void;
@@ -208,12 +220,52 @@ const mockAVPlay: AVPlayAPI = {
   },
 };
 
+// Generate a stable mock device ID based on browser fingerprint
+function generateMockDeviceId(): string {
+  // Use a stable ID for development (based on user agent + screen)
+  const fingerprint = `${navigator.userAgent}-${screen.width}x${screen.height}`;
+  let hash = 0;
+  for (let i = 0; i < fingerprint.length; i++) {
+    const char = fingerprint.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  // Create a UUID-like string from hash
+  const hex = Math.abs(hash).toString(16).padStart(8, '0');
+  return `mock-${hex}-${hex}-${hex}-${hex}`;
+}
+
+// Mock webOSDev API (for LGUDID)
+const mockWebOSDev: WebOSDev = {
+  LGUDID: (options) => {
+    const mockId = generateMockDeviceId();
+    console.log('[MOCK webOSDev] LGUDID:', mockId);
+    // Simulate async behavior
+    setTimeout(() => {
+      options.onSuccess({ id: mockId });
+    }, 10);
+  },
+};
+
 // Mock webOS API
 const mockWebOS = {
   platform: { tv: true },
   service: {
     request: (uri: string, params: unknown) => {
       console.log('[MOCK webOS] service.request:', uri, params);
+      // Handle connectionmanager request for MAC address
+      if (uri === 'luna://com.webos.service.connectionmanager') {
+        const p = params as { onSuccess?: (result: unknown) => void };
+        const onSuccess = p.onSuccess;
+        if (onSuccess) {
+          setTimeout(() => {
+            onSuccess({
+              wired: { macAddress: '00:11:22:33:44:55', state: 'connected' },
+              wifi: { macAddress: 'AA:BB:CC:DD:EE:FF', state: 'disconnected' },
+            });
+          }, 10);
+        }
+      }
     },
   },
   deviceInfo: (callback: (info: WebOSDeviceInfo) => void) => {
@@ -243,6 +295,9 @@ export function initPlatformMocks(): void {
 
     // Injeta mock do LG webOS
     (window as WindowWithWebOS).webOS = mockWebOS;
+
+    // Injeta mock do webOSDev (para LGUDID)
+    (window as WindowWithWebOSDev).webOSDev = mockWebOSDev;
   }
 }
 
@@ -252,4 +307,4 @@ if (import.meta.env.DEV) {
 }
 
 export const platform = detectPlatform();
-export { mockAVPlay, mockWebOS };
+export { mockAVPlay, mockWebOS, mockWebOSDev };

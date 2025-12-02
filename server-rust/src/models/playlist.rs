@@ -167,8 +167,12 @@ pub struct CacheMetadata {
 
 /// Request to parse a playlist
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ParseRequest {
     pub url: String,
+    /// Device ID for single-playlist-per-device enforcement
+    #[serde(default)]
+    pub device_id: Option<String>,
     #[serde(default)]
     pub options: ParseOptions,
 }

@@ -7,6 +7,8 @@ pub mod groups;
 pub mod items;
 pub mod playlists;
 pub mod series;
+pub mod watch_history;
 
 // Re-export commonly used items
 pub use items::StreamingDbWriter;
+pub use watch_history::{WatchHistoryItem, WatchHistoryRow};

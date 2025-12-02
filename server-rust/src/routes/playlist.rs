@@ -4,10 +4,13 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx;
 use std::sync::Arc;
 
 use crate::db;
+use crate::db::repository::playlists;
 use crate::models::{GroupsResponse, ItemsQuery, ItemsResponse, ParseRequest, ParseResponse, SeriesResponse};
 use crate::services::m3u_parser::hash_url;
 use crate::services::redis::ParseProgress;
@@ -30,6 +33,11 @@ pub struct BackgroundParseResponse {
 /// POST /api/playlist/parse - Parse a playlist URL (background processing)
 /// Returns immediately with status "parsing" and spawns background task
 /// Frontend should poll /api/playlist/:hash/status for progress
+///
+/// Features:
+/// - Single playlist per device: If device_id is provided, deletes any existing playlist for that device
+/// - Smart re-import: If the same URL hash already exists, reuses cached data instead of re-parsing
+/// - TTL: All playlists expire after 1 day
 pub async fn parse_playlist(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ParseRequest>,
@@ -43,6 +51,20 @@ pub async fn parse_playlist(
     }
 
     let hash = hash_url(&payload.url);
+    let device_id = payload.device_id.as_deref();
+
+    // Single playlist per device: Delete any existing playlist for this device
+    if let Some(did) = device_id {
+        match playlists::delete_by_device(&state.pool, did).await {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!("Deleted {} existing playlist(s) for device {}", deleted, did);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to delete existing playlist for device {}: {}", did, e);
+            }
+            _ => {}
+        }
+    }
 
     // Check if already parsing (via Redis progress)
     if let Ok(Some(progress)) = state.redis.get_parse_progress(&hash).await {
@@ -58,17 +80,29 @@ pub async fn parse_playlist(
         }
     }
 
-    // Check if we have valid cache (PostgreSQL)
-    // Only consider cache valid if it has items (not an empty/failed parse)
-    if let Ok(Some(meta)) = state.db_cache.get_metadata(&hash).await {
-        if meta.stats.total_items > 0 {
-            tracing::info!("Cache hit for {} ({} items)", hash, meta.stats.total_items);
+    // Smart re-import: Check if we have valid cache (PostgreSQL)
+    // If the hash exists (from any device), reuse the data instead of re-parsing
+    if let Ok(Some(existing)) = playlists::find_by_hash_any(&state.pool, &hash).await {
+        if existing.total_items > 0 {
+            // Update device_id and TTL for the existing playlist
+            if let Some(did) = device_id {
+                let expires_at = Utc::now() + Duration::days(1);
+                if let Err(e) = playlists::update_device_and_ttl(&state.pool, existing.id, did, expires_at).await {
+                    tracing::warn!("Failed to update device_id for playlist {}: {}", hash, e);
+                } else {
+                    tracing::info!("Reusing cached playlist {} for device {}", hash, did);
+                }
+            }
+
+            // Get groups for response
+            let groups = state.db_cache.get_groups(&hash).await.unwrap_or_default();
+
             return Ok(Json(BackgroundParseResponse {
                 status: "complete".to_string(),
                 hash,
-                message: None,
-                stats: Some(meta.stats),
-                groups: Some(meta.groups),
+                message: Some("Loaded from cache".to_string()),
+                stats: Some(existing.to_stats()),
+                groups: Some(groups),
             }));
         } else {
             tracing::warn!("Found empty cache for {}, will re-parse", hash);
@@ -87,6 +121,7 @@ pub async fn parse_playlist(
     let state_clone = state.clone();
     let url_clone = payload.url.clone();
     let hash_clone = hash.clone();
+    let device_id_clone = payload.device_id.clone();
 
     tokio::spawn(async move {
         tracing::info!("Background parse started for {}", hash_clone);
@@ -110,6 +145,26 @@ pub async fn parse_playlist(
             Ok(metadata) => {
                 // Release processing lock
                 let _ = state_clone.redis.release_processing_lock(&hash_clone).await;
+
+                // Update playlist with device_id and 1-day TTL
+                let expires_at = Utc::now() + Duration::days(1);
+                if let Ok(Some(playlist)) = playlists::find_by_hash_any(&state_clone.pool, &hash_clone).await {
+                    if let Some(did) = &device_id_clone {
+                        if let Err(e) = playlists::update_device_and_ttl(&state_clone.pool, playlist.id, did, expires_at).await {
+                            tracing::warn!("Failed to set device_id and TTL for {}: {}", hash_clone, e);
+                        } else {
+                            tracing::info!("Set device_id {} and 1-day TTL for playlist {}", did, hash_clone);
+                        }
+                    } else {
+                        // No device_id, but still set 1-day TTL
+                        let _ = sqlx::query("UPDATE playlists SET expires_at = $2, updated_at = NOW() WHERE id = $1")
+                            .bind(playlist.id)
+                            .bind(expires_at)
+                            .execute(&state_clone.pool)
+                            .await;
+                        tracing::info!("Set 1-day TTL for playlist {} (no device)", hash_clone);
+                    }
+                }
 
                 // Mark progress as complete
                 let mut progress = ParseProgress::new_parsing();

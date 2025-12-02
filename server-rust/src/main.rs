@@ -20,7 +20,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::Config;
 use crate::db::{create_pool, run_migrations};
-use crate::services::{cache::CacheService, db_cache::DbCacheService, m3u_parser::M3UParser, redis::RedisService};
+use crate::services::{
+    cache::CacheService,
+    cleanup::{start_cleanup_task, CleanupConfig},
+    db_cache::DbCacheService,
+    m3u_parser::M3UParser,
+    redis::RedisService,
+};
 use sqlx::PgPool;
 
 /// Application state shared across handlers
@@ -92,6 +98,11 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("M3U parser initialized with PostgreSQL storage");
 
+    // Start cleanup task (runs in background)
+    let cleanup_pool = pool.clone();
+    tokio::spawn(start_cleanup_task(cleanup_pool, CleanupConfig::default()));
+    tracing::info!("Cleanup task started (hourly)");
+
     // Build application state
     let state = Arc::new(AppState {
         config,
@@ -160,6 +171,20 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/admin/expired", delete(routes::admin::delete_expired))
         // HLS Proxy
         .route("/api/proxy/hls", get(routes::proxy::hls_proxy))
+        // Watch History endpoints
+        .route(
+            "/api/watch-history/sync",
+            post(routes::watch_history::sync_watch_history),
+        )
+        .route(
+            "/api/watch-history/:device_id",
+            get(routes::watch_history::get_watch_history)
+                .delete(routes::watch_history::clear_watch_history),
+        )
+        .route(
+            "/api/watch-history/:device_id/:item_hash",
+            delete(routes::watch_history::delete_history_item),
+        )
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())

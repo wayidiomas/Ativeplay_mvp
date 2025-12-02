@@ -3,7 +3,12 @@
  * Stateless frontend: all data comes from the backend API
  */
 
+import { getDeviceId, initDeviceId } from '../device';
+
 const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+
+// Initialize device ID at startup
+initDeviceId().catch((e) => console.warn('[API] Failed to init device ID:', e));
 
 // ============================================================================
 // Types
@@ -177,11 +182,17 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 /**
  * Parse a playlist URL - returns immediately with status "parsing"
  * Use getParseStatus() to poll for progress
+ *
+ * Includes device_id for:
+ * - Single-playlist-per-device enforcement
+ * - Watch history association
+ * - TTL management
  */
 export async function parsePlaylist(url: string): Promise<ParseResponse> {
+  const deviceId = getDeviceId();
   return fetchApi<ParseResponse>('/api/playlist/parse', {
     method: 'POST',
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, deviceId }),
   });
 }
 
@@ -329,6 +340,66 @@ export function clearStoredPlaylist(): void {
   }
 }
 
+// ============================================================================
+// Watch History API
+// ============================================================================
+
+export interface WatchHistoryItem {
+  itemHash: string;
+  mediaKind: string;
+  name: string;
+  logo?: string;
+  positionMs: number;
+  durationMs?: number;
+  watchedAt: number; // Timestamp in milliseconds
+}
+
+export interface WatchHistoryResponse {
+  items: WatchHistoryItem[];
+  total: number;
+}
+
+/**
+ * Sync watch history items to the server
+ * Called periodically to persist playback progress
+ */
+export async function syncWatchHistory(items: WatchHistoryItem[]): Promise<{ success: boolean; synced: number }> {
+  const deviceId = getDeviceId();
+  return fetchApi('/api/watch-history/sync', {
+    method: 'POST',
+    body: JSON.stringify({ deviceId, items }),
+  });
+}
+
+/**
+ * Get watch history for the current device
+ */
+export async function getWatchHistory(limit = 50): Promise<WatchHistoryResponse> {
+  const deviceId = getDeviceId();
+  const params = new URLSearchParams({ limit: limit.toString() });
+  return fetchApi<WatchHistoryResponse>(`/api/watch-history/${encodeURIComponent(deviceId)}?${params}`);
+}
+
+/**
+ * Clear all watch history for the current device
+ */
+export async function clearWatchHistory(): Promise<{ success: boolean; deleted: number }> {
+  const deviceId = getDeviceId();
+  return fetchApi(`/api/watch-history/${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * Delete a specific watch history item
+ */
+export async function deleteWatchHistoryItem(itemHash: string): Promise<{ success: boolean; deleted: number }> {
+  const deviceId = getDeviceId();
+  return fetchApi(`/api/watch-history/${encodeURIComponent(deviceId)}/${encodeURIComponent(itemHash)}`, {
+    method: 'DELETE',
+  });
+}
+
 // Export all
 export default {
   parsePlaylist,
@@ -343,4 +414,9 @@ export default {
   savePlaylistToStorage,
   getStoredPlaylist,
   clearStoredPlaylist,
+  // Watch history
+  syncWatchHistory,
+  getWatchHistory,
+  clearWatchHistory,
+  deleteWatchHistoryItem,
 };

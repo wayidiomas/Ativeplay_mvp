@@ -189,3 +189,62 @@ pub async fn list_by_client(
 
     Ok(rows)
 }
+
+/// Delete playlist by device_id (before creating a new one for the same device)
+pub async fn delete_by_device(
+    pool: &PgPool,
+    device_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM playlists WHERE device_id = $1")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
+/// Update device_id and expires_at for an existing playlist
+/// Used when reusing a cached playlist for a different device
+pub async fn update_device_and_ttl(
+    pool: &PgPool,
+    playlist_id: Uuid,
+    device_id: &str,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE playlists SET
+            device_id = $2,
+            expires_at = $3,
+            updated_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(playlist_id)
+    .bind(device_id)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Find playlist by device_id
+pub async fn find_by_device(
+    pool: &PgPool,
+    device_id: &str,
+) -> Result<Option<PlaylistRow>, sqlx::Error> {
+    let row = sqlx::query_as::<_, PlaylistRow>(
+        r#"
+        SELECT id, client_id, hash, url, total_items, live_count, movie_count,
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at
+        FROM playlists
+        WHERE device_id = $1
+        "#,
+    )
+    .bind(device_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
