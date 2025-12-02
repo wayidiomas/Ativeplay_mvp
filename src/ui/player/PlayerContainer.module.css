@@ -83,6 +83,14 @@
   outline: none;
 }
 
+/* TV Remote Focus State */
+.closeButton.focused,
+.closeButton[data-focused="true"] {
+  background: rgba(229, 9, 20, 0.3);
+  border: 2px solid #e50914;
+  box-shadow: 0 0 16px rgba(229, 9, 20, 0.5);
+}
+
 /* Bottom Bar */
 .bottomBar {
   padding: 32px 48px;
@@ -187,6 +195,15 @@
   outline: none;
 }
 
+/* TV Remote Focus State */
+.controlButton.focused,
+.controlButton[data-focused="true"] {
+  background: rgba(229, 9, 20, 0.25);
+  border: 2px solid #e50914;
+  box-shadow: 0 0 20px rgba(229, 9, 20, 0.5);
+  transform: scale(1.15);
+}
+
 .playPauseButton {
   width: 72px;
   height: 72px;
@@ -199,6 +216,15 @@
   background: #fff;
   transform: scale(1.15);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* TV Remote Focus State for Play/Pause */
+.playPauseButton.focused,
+.playPauseButton[data-focused="true"] {
+  background: #fff;
+  border: 3px solid #e50914;
+  box-shadow: 0 0 24px rgba(229, 9, 20, 0.6), 0 4px 12px rgba(0, 0, 0, 0.3);
+  transform: scale(1.2);
 }
 
 /* Track Selection */
@@ -251,6 +277,14 @@
 .trackItem:focus {
   background: rgba(255, 255, 255, 0.1);
   outline: none;
+}
+
+/* TV Remote Focus State for Menu Items */
+.trackItem.focused,
+.trackItem[data-focused="true"] {
+  background: rgba(229, 9, 20, 0.2);
+  border-left: 3px solid #e50914;
+  padding-left: 17px;
 }
 
 .trackItem.active {
