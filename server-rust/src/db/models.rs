@@ -29,6 +29,7 @@ pub struct ClientRow {
 pub struct PlaylistRow {
     pub id: Uuid,
     pub client_id: Option<Uuid>,
+    pub device_id: Option<String>,
     pub hash: String,
     pub url: String,
     pub total_items: i32,
@@ -195,6 +196,7 @@ impl From<EpisodeRow> for SeriesEpisode {
 #[derive(Debug, Clone)]
 pub struct NewPlaylist {
     pub client_id: Option<Uuid>,
+    pub device_id: Option<String>,
     pub hash: String,
     pub url: String,
     pub stats: PlaylistStats,

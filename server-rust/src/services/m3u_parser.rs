@@ -377,12 +377,14 @@ impl M3UParser {
         }
 
         // Create playlist record in PostgreSQL to get playlist_id
+        // IMPORTANT: Always set a 1-day TTL to prevent orphan playlists if parsing fails
+        let ttl_seconds = 86400i64; // 1 day
         let playlist_id = self.db_cache
-            .save_playlist(&hash, url, &PlaylistStats::default(), None)
+            .save_playlist_with_ttl(&hash, url, &PlaylistStats::default(), None, Some(ttl_seconds), None)
             .await
             .context("Failed to create playlist record")?;
 
-        tracing::info!("Created playlist record: {}", playlist_id);
+        tracing::info!("Created playlist record with 1-day TTL: {}", playlist_id);
 
         // Stream the response body
         let bytes_stream = response.bytes_stream();
@@ -724,12 +726,14 @@ impl M3UParser {
         let _ = redis.set_parse_progress(&hash, &progress).await;
 
         // Create playlist record in PostgreSQL to get playlist_id
+        // IMPORTANT: Always set a 1-day TTL to prevent orphan playlists if parsing fails
+        let ttl_seconds = 86400i64; // 1 day
         let playlist_id = self.db_cache
-            .save_playlist(&hash, url, &PlaylistStats::default(), None)
+            .save_playlist_with_ttl(&hash, url, &PlaylistStats::default(), None, Some(ttl_seconds), None)
             .await
             .context("Failed to create playlist record")?;
 
-        tracing::info!("Created playlist record: {}", playlist_id);
+        tracing::info!("Created playlist record with 1-day TTL: {}", playlist_id);
 
         // Stream the response body
         let bytes_stream = response.bytes_stream();

@@ -13,10 +13,11 @@ pub async fn upsert_playlist(
 ) -> Result<Uuid, sqlx::Error> {
     let row: (Uuid,) = sqlx::query_as(
         r#"
-        INSERT INTO playlists (client_id, hash, url, total_items, live_count, movie_count, series_count, unknown_count, group_count, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO playlists (client_id, device_id, hash, url, total_items, live_count, movie_count, series_count, unknown_count, group_count, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (client_id, hash) DO UPDATE SET
             url = EXCLUDED.url,
+            device_id = EXCLUDED.device_id,
             total_items = EXCLUDED.total_items,
             live_count = EXCLUDED.live_count,
             movie_count = EXCLUDED.movie_count,
@@ -29,6 +30,7 @@ pub async fn upsert_playlist(
         "#,
     )
     .bind(playlist.client_id)
+    .bind(&playlist.device_id)
     .bind(&playlist.hash)
     .bind(&playlist.url)
     .bind(playlist.stats.total_items as i32)
@@ -53,7 +55,7 @@ pub async fn find_by_hash(
     let row = if let Some(cid) = client_id {
         sqlx::query_as::<_, PlaylistRow>(
             r#"
-            SELECT id, client_id, hash, url, total_items, live_count, movie_count,
+            SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
                    series_count, unknown_count, group_count, created_at, updated_at, expires_at
             FROM playlists
             WHERE hash = $1 AND client_id = $2
@@ -66,7 +68,7 @@ pub async fn find_by_hash(
     } else {
         sqlx::query_as::<_, PlaylistRow>(
             r#"
-            SELECT id, client_id, hash, url, total_items, live_count, movie_count,
+            SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
                    series_count, unknown_count, group_count, created_at, updated_at, expires_at
             FROM playlists
             WHERE hash = $1 AND client_id IS NULL
@@ -87,7 +89,7 @@ pub async fn find_by_hash_any(
 ) -> Result<Option<PlaylistRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, PlaylistRow>(
         r#"
-        SELECT id, client_id, hash, url, total_items, live_count, movie_count,
+        SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
                series_count, unknown_count, group_count, created_at, updated_at, expires_at
         FROM playlists
         WHERE hash = $1
@@ -176,7 +178,7 @@ pub async fn list_by_client(
 ) -> Result<Vec<PlaylistRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, PlaylistRow>(
         r#"
-        SELECT id, client_id, hash, url, total_items, live_count, movie_count,
+        SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
                series_count, unknown_count, group_count, created_at, updated_at, expires_at
         FROM playlists
         WHERE client_id = $1
@@ -236,7 +238,7 @@ pub async fn find_by_device(
 ) -> Result<Option<PlaylistRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, PlaylistRow>(
         r#"
-        SELECT id, client_id, hash, url, total_items, live_count, movie_count,
+        SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
                series_count, unknown_count, group_count, created_at, updated_at, expires_at
         FROM playlists
         WHERE device_id = $1

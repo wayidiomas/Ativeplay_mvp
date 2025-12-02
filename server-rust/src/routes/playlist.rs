@@ -37,7 +37,7 @@ pub struct BackgroundParseResponse {
 /// Features:
 /// - Single playlist per device: If device_id is provided, deletes any existing playlist for that device
 /// - Smart re-import: If the same URL hash already exists, reuses cached data instead of re-parsing
-/// - TTL: All playlists expire after 1 day
+/// - TTL: All playlists expire after 1 day (ALWAYS set, even on cache reuse)
 pub async fn parse_playlist(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ParseRequest>,
@@ -52,19 +52,7 @@ pub async fn parse_playlist(
 
     let hash = hash_url(&payload.url);
     let device_id = payload.device_id.as_deref();
-
-    // Single playlist per device: Delete any existing playlist for this device
-    if let Some(did) = device_id {
-        match playlists::delete_by_device(&state.pool, did).await {
-            Ok(deleted) if deleted > 0 => {
-                tracing::info!("Deleted {} existing playlist(s) for device {}", deleted, did);
-            }
-            Err(e) => {
-                tracing::warn!("Failed to delete existing playlist for device {}: {}", did, e);
-            }
-            _ => {}
-        }
-    }
+    let expires_at = Utc::now() + Duration::days(1);
 
     // Check if already parsing (via Redis progress)
     if let Ok(Some(progress)) = state.redis.get_parse_progress(&hash).await {
@@ -80,18 +68,44 @@ pub async fn parse_playlist(
         }
     }
 
-    // Smart re-import: Check if we have valid cache (PostgreSQL)
-    // If the hash exists (from any device), reuse the data instead of re-parsing
+    // SMART RE-IMPORT: First check if this hash already exists (BEFORE any delete!)
+    // This prevents deleting 1.65M items just to re-parse the same URL
     if let Ok(Some(existing)) = playlists::find_by_hash_any(&state.pool, &hash).await {
         if existing.total_items > 0 {
-            // Update device_id and TTL for the existing playlist
+            // Hash exists with data! Now handle device association
+
             if let Some(did) = device_id {
-                let expires_at = Utc::now() + Duration::days(1);
+                // Check if device already has a DIFFERENT playlist
+                if let Ok(Some(device_playlist)) = playlists::find_by_device(&state.pool, did).await {
+                    if device_playlist.hash != hash {
+                        // Device has a different playlist - delete it first
+                        match playlists::delete_by_device(&state.pool, did).await {
+                            Ok(deleted) if deleted > 0 => {
+                                tracing::info!("Replaced playlist for device {} (old: {}, new: {})", did, device_playlist.hash, hash);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to delete old playlist for device {}: {}", did, e);
+                            }
+                            _ => {}
+                        }
+                    }
+                    // If same hash, no need to delete - just update TTL below
+                }
+
+                // Update device_id and TTL for the existing playlist
                 if let Err(e) = playlists::update_device_and_ttl(&state.pool, existing.id, did, expires_at).await {
                     tracing::warn!("Failed to update device_id for playlist {}: {}", hash, e);
                 } else {
-                    tracing::info!("Reusing cached playlist {} for device {}", hash, did);
+                    tracing::info!("Reusing cached playlist {} for device {} (TTL renewed)", hash, did);
                 }
+            } else {
+                // No device_id but ALWAYS set TTL to prevent orphan playlists (FIX: TTL on all paths)
+                let _ = sqlx::query("UPDATE playlists SET expires_at = $2, updated_at = NOW() WHERE id = $1")
+                    .bind(existing.id)
+                    .bind(expires_at)
+                    .execute(&state.pool)
+                    .await;
+                tracing::info!("Reusing cached playlist {} (no device, TTL renewed to {})", hash, expires_at);
             }
 
             // Get groups for response
@@ -108,6 +122,20 @@ pub async fn parse_playlist(
             tracing::warn!("Found empty cache for {}, will re-parse", hash);
             // Delete the empty playlist to start fresh
             let _ = state.db_cache.delete_playlist(&hash).await;
+        }
+    }
+
+    // NEW PLAYLIST: Hash doesn't exist, need to parse
+    // NOW it's safe to delete any existing playlist for this device
+    if let Some(did) = device_id {
+        match playlists::delete_by_device(&state.pool, did).await {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!("Deleted {} existing playlist(s) for device {} before new parse", deleted, did);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to delete existing playlist for device {}: {}", did, e);
+            }
+            _ => {}
         }
     }
 
@@ -209,8 +237,8 @@ pub async fn get_items(
     Path(hash): Path<String>,
     Query(query): Query<ItemsQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Check if cache exists (PostgreSQL)
-    if !state.db_cache.has_cache(&hash).await {
+    // Check if cache exists AND is not expired (respects TTL)
+    if !state.db_cache.is_cache_valid(&hash).await {
         return Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
@@ -441,8 +469,8 @@ pub async fn get_series_episodes(
     Path((hash, series_id)): Path<(String, String)>,
     Query(query): Query<SeriesEpisodesQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Check if cache exists (PostgreSQL)
-    if !state.db_cache.has_cache(&hash).await {
+    // Check if cache exists AND is not expired (respects TTL)
+    if !state.db_cache.is_cache_valid(&hash).await {
         return Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),

@@ -55,12 +55,32 @@ impl DbCacheService {
         }))
     }
 
-    /// Check if cache exists
+    /// Check if cache exists (does NOT check TTL)
     pub async fn has_cache(&self, hash: &str) -> bool {
         playlists::find_by_hash_any(&self.pool, hash)
             .await
             .map(|p| p.is_some())
             .unwrap_or(false)
+    }
+
+    /// Check if cache exists AND is not expired (respects TTL)
+    /// Returns false if playlist doesn't exist OR if expires_at < NOW()
+    pub async fn is_cache_valid(&self, hash: &str) -> bool {
+        match playlists::find_by_hash_any(&self.pool, hash).await {
+            Ok(Some(playlist)) => {
+                // Check if expired
+                if let Some(expires_at) = playlist.expires_at {
+                    let now = chrono::Utc::now();
+                    if expires_at < now {
+                        tracing::debug!("Cache {} expired at {}", hash, expires_at);
+                        return false;
+                    }
+                }
+                // Has items and not expired
+                playlist.total_items > 0
+            }
+            _ => false,
+        }
     }
 
     /// Get playlist ID by hash (internal helper)
@@ -83,10 +103,11 @@ impl DbCacheService {
         stats: &PlaylistStats,
         client_id: Option<Uuid>,
     ) -> Result<Uuid> {
-        self.save_playlist_with_ttl(hash, url, stats, client_id, None).await
+        self.save_playlist_with_ttl(hash, url, stats, client_id, None, None).await
     }
 
-    /// Save playlist metadata with optional TTL and return the playlist ID
+    /// Save playlist metadata with optional TTL and device_id, and return the playlist ID
+    /// This sets all fields atomically to prevent orphan playlists
     pub async fn save_playlist_with_ttl(
         &self,
         hash: &str,
@@ -94,6 +115,7 @@ impl DbCacheService {
         stats: &PlaylistStats,
         client_id: Option<Uuid>,
         ttl_seconds: Option<i64>,
+        device_id: Option<&str>,
     ) -> Result<Uuid> {
         use chrono::{Duration, Utc};
 
@@ -101,6 +123,7 @@ impl DbCacheService {
 
         let new_playlist = NewPlaylist {
             client_id,
+            device_id: device_id.map(|s| s.to_string()),
             hash: hash.to_string(),
             url: url.to_string(),
             stats: stats.clone(),
