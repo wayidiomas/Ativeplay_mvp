@@ -12,6 +12,7 @@
     "build:webos": "./scripts/build-webos.sh"
   },
   "dependencies": {
+    "@iptv/xtream-api": "^1.4.1",
     "@noriginmedia/norigin-spatial-navigation": "^2.1.0",
     "@tanstack/react-virtual": "^3.10.9",
     "hls.js": "^1.6.15",

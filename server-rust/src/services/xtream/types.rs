@@ -1,9 +1,160 @@
 //! Xtream Codes API Types
 //!
 //! Type definitions for Xtream Codes Player API v2 responses.
+//! Includes normalization helpers inspired by @iptv/xtream-api
 
+use base64::{engine::general_purpose::STANDARD, Engine};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// ============================================================================
+// Normalization Helpers (inspired by @iptv/xtream-api)
+// ============================================================================
+
+/// Decode base64 string if it's valid base64, otherwise return original
+/// Used for EPG titles/descriptions that some servers encode
+pub fn decode_base64_if_needed(s: &str) -> String {
+    // Skip if empty or looks like normal text (has spaces, common chars)
+    if s.is_empty() || s.contains(' ') || s.len() < 4 {
+        return s.to_string();
+    }
+
+    // Try to decode - only if it looks like base64 (alphanumeric + /+=)
+    if s.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=') {
+        if let Ok(bytes) = STANDARD.decode(s) {
+            if let Ok(decoded) = String::from_utf8(bytes) {
+                // Only use decoded if it's printable text
+                if decoded.chars().all(|c| !c.is_control() || c == '\n' || c == '\r') {
+                    return decoded;
+                }
+            }
+        }
+    }
+
+    s.to_string()
+}
+
+/// Split comma-separated string into trimmed array
+/// Used for cast, genre, director fields
+pub fn split_csv(s: &Option<String>) -> Vec<String> {
+    s.as_ref()
+        .map(|v| {
+            v.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Convert Unix timestamp string to ISO8601 date string
+/// Returns None if invalid
+pub fn timestamp_to_iso(ts: &Option<String>) -> Option<String> {
+    ts.as_ref()
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+        .map(|dt| dt.to_rfc3339())
+}
+
+/// Convert Unix timestamp to DateTime<Utc>
+pub fn timestamp_to_datetime(ts: &Option<String>) -> Option<DateTime<Utc>> {
+    ts.as_ref()
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+}
+
+/// Parse rating string to f32
+/// Handles both "8.5" and "85" (divided by 10) formats
+pub fn parse_rating(s: &Option<String>) -> Option<f32> {
+    s.as_ref().and_then(|r| {
+        let trimmed = r.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        trimmed.parse::<f32>().ok().map(|v| {
+            // If rating is > 10, assume it's out of 100 and normalize
+            if v > 10.0 {
+                v / 10.0
+            } else {
+                v
+            }
+        })
+    })
+}
+
+/// Parse duration string to seconds
+/// Handles formats like "01:30:00", "90 min", "5400"
+pub fn parse_duration_to_secs(s: &Option<String>) -> Option<i64> {
+    let s = s.as_ref()?;
+    let trimmed = s.trim();
+
+    // Already in seconds
+    if let Ok(secs) = trimmed.parse::<i64>() {
+        return Some(secs);
+    }
+
+    // Format: "HH:MM:SS"
+    if trimmed.contains(':') {
+        let parts: Vec<&str> = trimmed.split(':').collect();
+        if parts.len() == 3 {
+            if let (Ok(h), Ok(m), Ok(s)) = (
+                parts[0].parse::<i64>(),
+                parts[1].parse::<i64>(),
+                parts[2].parse::<i64>(),
+            ) {
+                return Some(h * 3600 + m * 60 + s);
+            }
+        } else if parts.len() == 2 {
+            if let (Ok(m), Ok(s)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
+                return Some(m * 60 + s);
+            }
+        }
+    }
+
+    // Format: "90 min" or "90min"
+    let lower = trimmed.to_lowercase();
+    if lower.contains("min") {
+        let num_str: String = lower.chars().filter(|c| c.is_ascii_digit()).collect();
+        if let Ok(mins) = num_str.parse::<i64>() {
+            return Some(mins * 60);
+        }
+    }
+
+    None
+}
+
+/// Generate seasons from episodes map when seasons array is empty
+/// Extracts season numbers from episode keys and creates Season entries
+pub fn generate_seasons_from_episodes(episodes: &HashMap<String, Vec<XtreamEpisode>>) -> Vec<XtreamSeason> {
+    let mut seasons: Vec<XtreamSeason> = episodes
+        .keys()
+        .filter_map(|k| k.parse::<i32>().ok())
+        .map(|num| {
+            // Try to get cover from first episode of this season
+            let cover = episodes
+                .get(&num.to_string())
+                .and_then(|eps| eps.first())
+                .and_then(|ep| ep.info.as_ref())
+                .and_then(|info| info.movie_image.clone());
+
+            XtreamSeason {
+                air_date: None,
+                episode_count: episodes.get(&num.to_string()).map(|eps| eps.len() as i32),
+                id: None,
+                name: Some(format!("Temporada {}", num)),
+                overview: None,
+                season_number: Some(num),
+                cover: cover.clone(),
+                cover_big: cover,
+            }
+        })
+        .collect();
+
+    // Sort by season number
+    seasons.sort_by_key(|s| s.season_number.unwrap_or(0));
+    seasons
+}
 
 /// Extracted credentials from M3U URL
 #[derive(Debug, Clone)]
@@ -428,6 +579,12 @@ pub struct XtreamEpgEntry {
     pub channel_id: String,
     pub start_timestamp: String,
     pub stop_timestamp: String,
+    /// Whether this program has archive available (1 = yes, 0 = no)
+    #[serde(default)]
+    pub has_archive: Option<i32>,
+    /// Now playing flag
+    #[serde(default)]
+    pub now_playing: Option<i32>,
 }
 
 /// EPG listings container

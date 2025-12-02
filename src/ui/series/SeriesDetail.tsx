@@ -182,8 +182,8 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
 
           const seriesData: SeriesInfo = {
             id: seriesId,
-            name: seriesInfo.info?.name || 'Unknown Series',
-            logo: seriesInfo.info?.cover,
+            name: seriesInfo.name || 'Unknown Series',
+            logo: seriesInfo.cover,
             group: '',
             totalEpisodes,
             totalSeasons: seasonNumbers.length,
@@ -554,31 +554,31 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
               </>
             )}
             {/* Xtream extra info: rating, genre */}
-            {xtreamSeriesInfo?.info?.rating && (
+            {xtreamSeriesInfo?.rating && (
               <>
                 <span>•</span>
-                <span>⭐ {xtreamSeriesInfo.info.rating}</span>
+                <span>⭐ {xtreamSeriesInfo.rating.toFixed(1)}</span>
               </>
             )}
-            {xtreamSeriesInfo?.info?.genre && (
+            {xtreamSeriesInfo?.genres && xtreamSeriesInfo.genres.length > 0 && (
               <>
                 <span>•</span>
-                <span>{xtreamSeriesInfo.info.genre}</span>
+                <span>{xtreamSeriesInfo.genres.join(', ')}</span>
               </>
             )}
           </div>
           {/* Xtream plot/synopsis */}
-          {xtreamSeriesInfo?.info?.plot && (
-            <p className={styles.plot}>{xtreamSeriesInfo.info.plot}</p>
+          {xtreamSeriesInfo?.plot && (
+            <p className={styles.plot}>{xtreamSeriesInfo.plot}</p>
           )}
           {/* Xtream cast & director */}
-          {(xtreamSeriesInfo?.info?.cast || xtreamSeriesInfo?.info?.director) && (
+          {(xtreamSeriesInfo?.cast?.length || xtreamSeriesInfo?.directors?.length) && (
             <div className={styles.credits}>
-              {xtreamSeriesInfo.info.director && (
-                <span><strong>Diretor:</strong> {xtreamSeriesInfo.info.director}</span>
+              {xtreamSeriesInfo.directors && xtreamSeriesInfo.directors.length > 0 && (
+                <span><strong>Diretor:</strong> {xtreamSeriesInfo.directors.join(', ')}</span>
               )}
-              {xtreamSeriesInfo.info.cast && (
-                <span><strong>Elenco:</strong> {xtreamSeriesInfo.info.cast}</span>
+              {xtreamSeriesInfo.cast && xtreamSeriesInfo.cast.length > 0 && (
+                <span><strong>Elenco:</strong> {xtreamSeriesInfo.cast.join(', ')}</span>
               )}
             </div>
           )}

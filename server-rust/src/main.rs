@@ -196,6 +196,18 @@ async fn main() -> anyhow::Result<()> {
             "/api/xtream/:playlist_id/play-url",
             get(routes::xtream::get_play_url),
         )
+        .route(
+            "/api/xtream/:playlist_id/epg/:stream_id",
+            get(routes::xtream::get_epg),
+        )
+        .route(
+            "/api/xtream/:playlist_id/timeshift-url",
+            get(routes::xtream::get_timeshift_url),
+        )
+        .route(
+            "/api/xtream/:playlist_id/epg-url",
+            get(routes::xtream::get_epg_url),
+        )
         // Watch History endpoints
         .route(
             "/api/watch-history/sync",

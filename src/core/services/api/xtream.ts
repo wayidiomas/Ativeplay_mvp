@@ -1,6 +1,12 @@
 /**
  * Xtream Codes API Client
  * Calls the backend proxy routes for Xtream playlists
+ *
+ * Normalization features (inspired by @iptv/xtream-api):
+ * - Cast/Genre as arrays instead of comma-separated strings
+ * - Rating as number (0-10 scale) instead of string
+ * - Timestamps as ISO8601 strings
+ * - Auto-generated seasons from episodes when missing
  */
 
 const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
@@ -22,49 +28,80 @@ export interface XtreamStreamItem {
   categoryId?: string;
   mediaType: 'live' | 'vod' | 'series';
   extension?: string;
-  rating?: string;
+  /** Normalized rating as number (0-10 scale) */
+  rating?: number;
   epgChannelId?: string;
+  /** ISO8601 timestamp when added */
+  addedAt?: string;
+  /** Whether channel has TV archive/catchup support (live only) */
+  tvArchive?: boolean;
+  /** TV archive duration in days (live only) */
+  tvArchiveDuration?: number;
 }
+
+// ============================================================================
+// Normalized VOD Info (inspired by @iptv/xtream-api)
+// ============================================================================
 
 export interface XtreamVodInfo {
-  info?: {
-    tmdbId?: string;
-    name?: string;
-    title?: string;
-    year?: string;
-    coverBig?: string;
-    movieImage?: string;
-    releasedate?: string;
-    plot?: string;
-    cast?: string;
-    director?: string;
-    genre?: string;
-    durationSecs?: number;
-    duration?: string;
-    rating?: string;
-  };
-  movieData?: XtreamStreamItem;
+  id: string;
+  name: string;
+  title?: string;
+  originalName?: string;
+  year?: string;
+  releaseDate?: string;
+  cover?: string;
+  backdrop?: string[];
+  plot?: string;
+  /** Cast as array instead of comma-separated string */
+  cast: string[];
+  /** Directors as array */
+  directors: string[];
+  /** Genres as array instead of comma-separated string */
+  genres: string[];
+  /** Rating as number (0-10 scale) */
+  rating?: number;
+  /** Duration in seconds */
+  durationSecs?: number;
+  tmdbId?: string;
+  youtubeTrailer?: string;
+  containerExtension?: string;
+  /** Stream ID for playback URL generation */
+  streamId: number;
 }
 
+// ============================================================================
+// Normalized Series Info (inspired by @iptv/xtream-api)
+// ============================================================================
+
 export interface XtreamSeriesInfo {
-  info?: {
-    name?: string;
-    cover?: string;
-    plot?: string;
-    cast?: string;
-    director?: string;
-    genre?: string;
-    rating?: string;
-    backdropPath?: string[];
-  };
-  seasons?: XtreamSeason[];
-  episodes?: Record<string, XtreamEpisode[]>;
+  id: string;
+  name: string;
+  cover?: string;
+  backdrop?: string[];
+  plot?: string;
+  /** Cast as array */
+  cast: string[];
+  /** Directors as array */
+  directors: string[];
+  /** Genres as array */
+  genres: string[];
+  /** Rating as number (0-10 scale) */
+  rating?: number;
+  releaseDate?: string;
+  youtubeTrailer?: string;
+  /** Seasons (auto-generated from episodes if empty) */
+  seasons: XtreamSeason[];
+  /** Episodes grouped by season number */
+  episodes: Record<string, XtreamEpisode[]>;
 }
 
 export interface XtreamSeason {
   seasonNumber: number;
   name?: string;
   cover?: string;
+  episodeCount?: number;
+  airDate?: string;
 }
 
 export interface XtreamEpisode {
@@ -72,11 +109,15 @@ export interface XtreamEpisode {
   episodeNum: number;
   title: string;
   containerExtension: string;
-  info?: {
-    plot?: string;
-    durationSecs?: number;
-    movieImage?: string;
-  };
+  season?: number;
+  plot?: string;
+  /** Duration in seconds */
+  durationSecs?: number;
+  cover?: string;
+  /** Rating as number */
+  rating?: number;
+  /** ISO8601 timestamp when added */
+  addedAt?: string;
 }
 
 export interface XtreamPlaylistInfo {
@@ -101,6 +142,35 @@ export interface StreamsResponse {
 }
 
 export interface PlayUrlResponse {
+  url: string;
+}
+
+// ============================================================================
+// EPG Types (inspired by @iptv/xtream-api)
+// ============================================================================
+
+export interface XtreamEpgEntry {
+  id: string;
+  title: string;
+  description?: string;
+  /** Start time as ISO8601 */
+  start: string;
+  /** End time as ISO8601 */
+  end: string;
+  /** Whether this program has archive available */
+  hasArchive?: boolean;
+}
+
+export interface XtreamEpgResponse {
+  streamId: string;
+  listings: XtreamEpgEntry[];
+}
+
+export interface XtreamTimeshiftUrlResponse {
+  url: string;
+}
+
+export interface XtreamEpgUrlResponse {
   url: string;
 }
 
@@ -224,6 +294,53 @@ export class XtreamAPI {
       params.set('extension', extension);
     }
     const res = await this.fetch<PlayUrlResponse>(`/play-url?${params}`);
+    return res.url;
+  }
+
+  // -------------------------------------------------------------------------
+  // EPG (Electronic Program Guide)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Get short EPG for a live channel (next ~4 hours)
+   * @param streamId The live stream ID
+   * @param limit Optional limit on number of entries
+   */
+  async getEpg(streamId: string, limit?: number): Promise<XtreamEpgResponse> {
+    const query = limit ? `?limit=${limit}` : '';
+    return this.fetch(`/epg/${encodeURIComponent(streamId)}${query}`);
+  }
+
+  /**
+   * Get the XMLTV EPG URL for the playlist
+   * Can be used with external EPG parsers
+   */
+  async getEpgUrl(): Promise<string> {
+    const res = await this.fetch<XtreamEpgUrlResponse>('/epg-url');
+    return res.url;
+  }
+
+  // -------------------------------------------------------------------------
+  // Timeshift / TV Archive
+  // -------------------------------------------------------------------------
+
+  /**
+   * Generate a timeshift URL for catching up on live TV
+   * @param streamId The live stream ID
+   * @param start Unix timestamp of when the program started
+   * @param duration Duration in minutes to watch
+   */
+  async getTimeshiftUrl(
+    streamId: number,
+    start: number,
+    duration: number
+  ): Promise<string> {
+    const params = new URLSearchParams({
+      stream_id: streamId.toString(),
+      start: start.toString(),
+      duration: duration.toString(),
+    });
+    const res = await this.fetch<XtreamTimeshiftUrlResponse>(`/timeshift-url?${params}`);
     return res.url;
   }
 }

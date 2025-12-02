@@ -45,6 +45,10 @@ pub mod types;
 pub use client::{XtreamClient, XtreamError};
 pub use detector::{detect_xtream, extract_credentials, validate_credentials};
 pub use types::{
+    // Normalization helpers (inspired by @iptv/xtream-api)
+    decode_base64_if_needed, generate_seasons_from_episodes, parse_duration_to_secs, parse_rating,
+    split_csv, timestamp_to_datetime, timestamp_to_iso,
+    // Types
     XtreamAuthResponse, XtreamCategory, XtreamCredentials, XtreamEpisode, XtreamEpisodeInfo,
     XtreamEpgEntry, XtreamEpgListings, XtreamLiveStream, XtreamSeason, XtreamSeries,
     XtreamSeriesDetails, XtreamSeriesInfo, XtreamServerInfo, XtreamUserInfo, XtreamVodDetails,

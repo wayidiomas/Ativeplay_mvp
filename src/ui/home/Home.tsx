@@ -809,10 +809,16 @@ export function Home() {
 
   // Handler for "Ver tudo" (See All) button
   const handleSeeAll = useCallback((group: PlaylistGroup) => {
-    navigate(`/category/${encodeURIComponent(group.id)}`, {
-      state: { groupName: group.name, mediaKind: group.mediaKind }
-    });
-  }, [navigate]);
+    // In Xtream mode, pass category ID for API filtering
+    const state: { groupName: string; mediaKind: string; xtreamCategoryId?: string } = {
+      groupName: group.name,
+      mediaKind: group.mediaKind,
+    };
+    if (isXtream()) {
+      state.xtreamCategoryId = group.id;
+    }
+    navigate(`/category/${encodeURIComponent(group.id)}`, { state });
+  }, [navigate, isXtream]);
 
   // Load more items for a specific carousel row (progressive loading)
   const loadMoreRowItems = useCallback(async (rowIndex: number) => {
