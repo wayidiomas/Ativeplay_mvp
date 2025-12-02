@@ -165,6 +165,8 @@ pub struct XtreamCredentials {
     pub username: String,
     /// Password for authentication
     pub password: String,
+    /// Preferred live format (ts/m3u8/rtmp)
+    pub preferred_live_format: String,
 }
 
 impl XtreamCredentials {
@@ -176,11 +178,17 @@ impl XtreamCredentials {
         )
     }
 
-    /// Build playback URL for live streams
+    /// Build playback URL for live streams (respects preferred_live_format)
     pub fn live_url(&self, stream_id: i64) -> String {
+        self.live_url_with_format(stream_id, None)
+    }
+
+    /// Build playback URL for live streams with optional override format
+    pub fn live_url_with_format(&self, stream_id: i64, fmt: Option<&str>) -> String {
+        let ext = fmt.unwrap_or(&self.preferred_live_format);
         format!(
-            "{}/live/{}/{}/{}.ts",
-            self.server, self.username, self.password, stream_id
+            "{}/live/{}/{}/{}.{}",
+            self.server, self.username, self.password, stream_id, ext
         )
     }
 

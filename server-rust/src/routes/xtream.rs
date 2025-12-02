@@ -43,6 +43,8 @@ pub struct PlayUrlQuery {
     pub stream_id: i64,
     pub media_type: String,
     pub extension: Option<String>,
+    /// Optional format override for live streams (ts/m3u8/rtmp)
+    pub format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -315,7 +317,15 @@ async fn get_xtream_credentials(
         )
     })?;
 
-    Ok((XtreamCredentials { server, username, password }, playlist))
+    Ok((
+        XtreamCredentials {
+            server,
+            username,
+            password,
+            preferred_live_format: "ts".to_string(),
+        },
+        playlist,
+    ))
 }
 
 // ============================================================================
@@ -677,7 +687,13 @@ pub async fn get_play_url(
     let (creds, _) = get_xtream_credentials(&state.pool, playlist_uuid).await?;
 
     let url = match query.media_type.as_str() {
-        "live" => creds.live_url(query.stream_id),
+        "live" => {
+            let fmt = query
+                .format
+                .as_deref()
+                .or_else(|| query.extension.as_deref());
+            creds.live_url_with_format(query.stream_id, fmt)
+        }
         "vod" => {
             let ext = query.extension.as_deref().unwrap_or("mp4");
             creds.vod_url(query.stream_id, ext)

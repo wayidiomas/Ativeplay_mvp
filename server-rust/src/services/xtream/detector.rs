@@ -29,10 +29,10 @@ pub fn extract_credentials(m3u_url: &str) -> Option<XtreamCredentials> {
         }
     };
 
-    // Check if it's a get.php endpoint (typical Xtream pattern)
+    // Check if it's a typical Xtream endpoint (get.php or player_api.php)
     let path = parsed.path().to_lowercase();
-    if !path.contains("/get.php") {
-        debug!("URL path does not contain /get.php: {}", path);
+    if !(path.contains("/get.php") || path.contains("/player_api.php")) {
+        debug!("URL path does not contain /get.php or /player_api.php: {}", path);
         return None;
     }
 
@@ -67,6 +67,7 @@ pub fn extract_credentials(m3u_url: &str) -> Option<XtreamCredentials> {
         server,
         username,
         password,
+        preferred_live_format: "ts".to_string(),
     })
 }
 
@@ -162,11 +163,21 @@ pub async fn detect_xtream(url: &str) -> Option<(XtreamCredentials, XtreamAuthRe
     // Step 2: Validate credentials
     match validate_credentials(&creds).await {
         Ok(auth) => {
+            // Resolve best server URL (use server_info protocol/port if available)
+            let resolved_server = resolve_server_url(&creds.server, &auth.server_info);
+
+            // Choose preferred live format based on allowed_output_formats (prefer m3u8 > ts > rtmp)
+            let preferred_live_format = choose_live_format(&auth.user_info.allowed_output_formats);
+
+            let mut resolved_creds = creds.clone();
+            resolved_creds.server = resolved_server;
+            resolved_creds.preferred_live_format = preferred_live_format;
+
             info!(
                 "Confirmed Xtream source: {} (account: {})",
-                creds.server, auth.user_info.username
+                resolved_creds.server, auth.user_info.username
             );
-            Some((creds, auth))
+            Some((resolved_creds, auth))
         }
         Err(e) => {
             warn!(
@@ -176,6 +187,61 @@ pub async fn detect_xtream(url: &str) -> Option<(XtreamCredentials, XtreamAuthRe
             None
         }
     }
+}
+
+/// Resolve a full server URL using server_info if available
+fn resolve_server_url(input_server: &str, server_info: &super::types::XtreamServerInfo) -> String {
+    // If server_info.url already has scheme, trust it
+    if server_info.url.starts_with("http://") || server_info.url.starts_with("https://") {
+        return server_info.url.trim_end_matches('/').to_string();
+    }
+
+    // Determine scheme/port
+    let has_https_port = server_info
+        .https_port
+        .as_ref()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false);
+
+    let scheme = server_info
+        .server_protocol
+        .as_deref()
+        .unwrap_or(if has_https_port { "https" } else { "http" });
+
+    let port = if scheme == "https" && has_https_port {
+        server_info.https_port.as_deref()
+    } else {
+        Some(server_info.port.as_str())
+    };
+
+    let port_part = port
+        .filter(|p| !p.is_empty())
+        .map(|p| format!(":{}", p))
+        .unwrap_or_default();
+
+    // server_info.url normalmente é só host
+    let host = server_info.url.trim_end_matches('/');
+    format!("{}://{}{}", scheme, host, port_part)
+        // fallback para input_server se algo der errado
+        .parse::<reqwest::Url>()
+        .map(|u| u.to_string().trim_end_matches('/').to_string())
+        .unwrap_or_else(|_| input_server.trim_end_matches('/').to_string())
+}
+
+/// Choose the best live format, preferring m3u8 > ts > rtmp
+fn choose_live_format(allowed: &Option<Vec<String>>) -> String {
+    let preferred = allowed
+        .as_ref()
+        .and_then(|formats| {
+            formats
+                .iter()
+                .find(|f| f.eq_ignore_ascii_case("m3u8"))
+                .or_else(|| formats.iter().find(|f| f.eq_ignore_ascii_case("ts")))
+                .or_else(|| formats.iter().find(|f| f.eq_ignore_ascii_case("rtmp")))
+        })
+        .map(|s| s.to_lowercase());
+
+    preferred.unwrap_or_else(|| "ts".to_string())
 }
 
 #[cfg(test)]
@@ -238,6 +304,7 @@ mod tests {
             server: "http://example.com:8080".to_string(),
             username: "user".to_string(),
             password: "pass".to_string(),
+            preferred_live_format: "ts".to_string(),
         };
 
         assert_eq!(
