@@ -66,7 +66,11 @@ WHERE source_type = 'xtream';
 -- 6. STATS VIEW UPDATE: Include source_type in playlist_stats view
 -- ============================================================================
 
-CREATE OR REPLACE VIEW playlist_stats AS
+-- Must DROP first because CREATE OR REPLACE cannot add columns in the middle
+-- (PostgreSQL only allows adding columns at the END of a view)
+DROP VIEW IF EXISTS playlist_stats;
+
+CREATE VIEW playlist_stats AS
 SELECT
     p.id,
     p.hash,
