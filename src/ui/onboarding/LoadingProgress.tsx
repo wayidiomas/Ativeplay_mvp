@@ -28,6 +28,7 @@ export function LoadingProgress() {
 
   const parseStarted = useRef(false);
   const pollInterval = useRef<ReturnType<typeof setInterval>>();
+  const earlyNavButtonRef = useRef<HTMLButtonElement>(null);
 
   // Calculate progress percentage from real data
   const calculateProgress = useCallback((status: ParseStatus): number => {
@@ -182,6 +183,13 @@ export function LoadingProgress() {
     navigate('/home', { replace: true });
   }, [hash, realProgress, playlistUrl, setPlaylist, setParseInProgress, navigate]);
 
+  // Focus early nav button when it appears
+  useEffect(() => {
+    if (canNavigate && earlyNavButtonRef.current) {
+      earlyNavButtonRef.current.focus();
+    }
+  }, [canNavigate]);
+
   // Start parsing on mount
   useEffect(() => {
     if (!playlistUrl) {
@@ -309,6 +317,7 @@ export function LoadingProgress() {
         {/* Early navigation button */}
         {canNavigate && phase !== 'complete' && phase !== 'error' && (
           <button
+            ref={earlyNavButtonRef}
             className={styles.earlyNavButton}
             onClick={handleEarlyNavigate}
           >
