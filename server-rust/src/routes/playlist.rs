@@ -385,15 +385,30 @@ pub async fn get_series_episodes(
 
         let has_more = query.offset + paginated.len() < total;
 
-        Ok(Json(serde_json::json!({
-            "seriesName": series.name,
-            "seasonsData": seasons_data,
-            "episodes": paginated,
-            "total": total,
-            "limit": query.limit,
-            "offset": query.offset,
-            "hasMore": has_more
-        })))
+        // Only include seasonsData on first page (offset = 0) to save bandwidth
+        // Frontend caches this data after the first request
+        let response = if query.offset == 0 {
+            serde_json::json!({
+                "seriesName": series.name,
+                "seasonsData": seasons_data,
+                "episodes": paginated,
+                "total": total,
+                "limit": query.limit,
+                "offset": query.offset,
+                "hasMore": has_more
+            })
+        } else {
+            serde_json::json!({
+                "seriesName": series.name,
+                "episodes": paginated,
+                "total": total,
+                "limit": query.limit,
+                "offset": query.offset,
+                "hasMore": has_more
+            })
+        };
+
+        Ok(Json(response))
     } else {
         // No episodes found
         Ok(Json(serde_json::json!({
