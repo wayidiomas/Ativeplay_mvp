@@ -22,18 +22,63 @@ import type {
 // Proxy URL for CORS/mixed-content bypass
 const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
 
-// Tipos do Luna Service (mantido para futuras funcionalidades)
-interface LunaServiceRequest {
-  method: string;
-  parameters: Record<string, unknown>;
-  onSuccess?: (response: unknown) => void;
-  onFailure?: (error: unknown) => void;
+// Tipos do Luna Service para player nativo do webOS
+interface LunaServiceParams {
+  method?: string;
+  parameters?: Record<string, unknown>;
+  onSuccess?: (response: LunaMediaResponse) => void;
+  onFailure?: (error: LunaError) => void;
+  onComplete?: (response: LunaMediaResponse) => void;
+  subscribe?: boolean;
+}
+
+interface LunaError {
+  errorCode?: number;
+  errorText?: string;
+}
+
+interface LunaMediaResponse {
+  returnValue: boolean;
+  mediaId?: string;
+  state?: string;
+  currentTime?: number;
+  duration?: number;
+  bufferRange?: string;
+  sourceInfo?: {
+    container?: string;
+    numPrograms?: number;
+    seekable?: boolean;
+    programInfo?: Array<{
+      numAudioTracks?: number;
+      numSubtitleTracks?: number;
+      audioTrackInfo?: Array<{
+        language?: string;
+        codec?: string;
+      }>;
+    }>;
+  };
+  videoInfo?: {
+    width?: number;
+    height?: number;
+    codec?: string;
+    frameRate?: number;
+  };
+  audioInfo?: {
+    sampleRate?: number;
+    channels?: number;
+  };
+  error?: {
+    errorCode?: number;
+    errorText?: string;
+  };
+  errorCode?: number;
+  errorText?: string;
 }
 
 interface WebOSAPI {
   platform: { tv: boolean };
   service: {
-    request: (uri: string, params: LunaServiceRequest) => void;
+    request: (uri: string, params: LunaServiceParams) => { cancel: () => void };
   };
   deviceInfo: (callback: (info: { modelName: string; version: string }) => void) => void;
 }
@@ -220,6 +265,13 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   // VOD direct playback fallback
   private triedDirectFallback: boolean = false;
+
+  // Luna Service (native webOS player) for unsupported formats
+  private usingLunaService: boolean = false;
+  private lunaMediaId: string | null = null;
+  private lunaSubscription: { cancel: () => void } | null = null;
+  private lunaDuration: number = 0;
+  private lunaCurrentTime: number = 0;
 
   // Constants
   private static readonly HLS_FATAL_ERROR_WINDOW_MS = 60000;
@@ -979,6 +1031,308 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.hls.startLoad(-1);
   }
 
+  // ============================================================================
+  // Luna Service (Native webOS Player) for unsupported formats (MKV, AVI, etc.)
+  // ============================================================================
+
+  /**
+   * Try to play using Luna Service (native webOS media player)
+   * This supports more formats than HTML5 video including MKV, AVI, WMV, FLV
+   */
+  private async tryLunaServicePlayback(url: string): Promise<boolean> {
+    if (!this.isWebOS || !this.webOS) {
+      console.log('[LGWebOSAdapter] Luna Service not available (not webOS)');
+      return false;
+    }
+
+    console.log('[LGWebOSAdapter] Attempting Luna Service playback for:', url.substring(0, 100));
+
+    return new Promise((resolve) => {
+      try {
+        // Hide HTML5 video element when using Luna Service
+        if (this.video) {
+          this.video.style.display = 'none';
+        }
+
+        // Load media via Luna Service
+        this.webOS!.service.request('luna://com.webos.media', {
+          method: 'load',
+          parameters: {
+            uri: url,
+            type: 'media',
+            payload: {
+              option: {
+                appId: 'com.ativeplay.app',
+                windowId: '',
+              },
+            },
+          },
+          onSuccess: (response: LunaMediaResponse) => {
+            if (response.returnValue && response.mediaId) {
+              console.log('[LGWebOSAdapter] Luna Service media loaded:', response.mediaId);
+              this.lunaMediaId = response.mediaId;
+              this.usingLunaService = true;
+
+              // Subscribe to media state changes
+              this.subscribeLunaMediaState(response.mediaId);
+
+              // Start playback
+              this.lunaPlay();
+
+              resolve(true);
+            } else {
+              console.error('[LGWebOSAdapter] Luna Service load failed:', response);
+              this.showVideoElement();
+              resolve(false);
+            }
+          },
+          onFailure: (error: LunaError) => {
+            console.error('[LGWebOSAdapter] Luna Service load error:', error);
+            this.showVideoElement();
+            resolve(false);
+          },
+        });
+      } catch (e) {
+        console.error('[LGWebOSAdapter] Luna Service exception:', e);
+        this.showVideoElement();
+        resolve(false);
+      }
+    });
+  }
+
+  /**
+   * Subscribe to Luna Service media state updates
+   */
+  private subscribeLunaMediaState(mediaId: string): void {
+    if (!this.webOS) return;
+
+    this.lunaSubscription = this.webOS.service.request('luna://com.webos.media', {
+      method: 'subscribe',
+      parameters: {
+        mediaId,
+        subscribe: true,
+      },
+      onSuccess: (response: LunaMediaResponse) => {
+        this.handleLunaStateChange(response);
+      },
+      onFailure: (error: LunaError) => {
+        console.error('[LGWebOSAdapter] Luna subscribe error:', error);
+      },
+      subscribe: true,
+    });
+  }
+
+  /**
+   * Handle Luna Service state change events
+   */
+  private handleLunaStateChange(response: LunaMediaResponse): void {
+    console.log('[LGWebOSAdapter] Luna state:', response.state, response);
+
+    // Update duration
+    if (response.duration !== undefined) {
+      this.lunaDuration = response.duration;
+      this.emit('durationchange', { duration: response.duration });
+    }
+
+    // Update current time
+    if (response.currentTime !== undefined) {
+      this.lunaCurrentTime = response.currentTime;
+      this.emit('timeupdate', { currentTime: response.currentTime });
+    }
+
+    // Handle state changes
+    switch (response.state) {
+      case 'load':
+        this.setState('loading');
+        break;
+      case 'buffering':
+        this.setState('buffering');
+        this.emit('bufferingstart');
+        break;
+      case 'playing':
+        this.setState('playing');
+        this.emit('bufferingend');
+        break;
+      case 'paused':
+        this.setState('paused');
+        break;
+      case 'stopped':
+      case 'idle':
+        this.setState('idle');
+        break;
+      case 'endOfStream':
+        this.setState('ended');
+        this.emit('ended');
+        break;
+    }
+
+    // Handle source info for tracks
+    if (response.sourceInfo?.programInfo?.[0]) {
+      const program = response.sourceInfo.programInfo[0];
+      if (program.audioTrackInfo) {
+        this.tracks.audio = program.audioTrackInfo.map((track, index) => ({
+          index,
+          language: track.language || 'und',
+          label: track.language ? parseLanguageCode(track.language) : `Audio ${index + 1}`,
+          isDefault: index === 0,
+        }));
+        this.emit('trackschange', this.tracks);
+      }
+    }
+
+    // Handle video info
+    if (response.videoInfo) {
+      this.tracks.video = [{
+        index: 0,
+        width: response.videoInfo.width || 0,
+        height: response.videoInfo.height || 0,
+      }];
+    }
+
+    // Handle errors
+    if (response.error || response.errorCode) {
+      const errorMsg = response.error?.errorText || response.errorText || 'Erro de reproducao';
+      console.error('[LGWebOSAdapter] Luna playback error:', response);
+      this.setState('error');
+      this.emit('error', {
+        code: 'LUNA_PLAYBACK_ERROR',
+        message: errorMsg,
+      });
+    }
+  }
+
+  /**
+   * Show HTML5 video element (when not using Luna)
+   */
+  private showVideoElement(): void {
+    if (this.video) {
+      this.video.style.display = '';
+    }
+    this.usingLunaService = false;
+  }
+
+  /**
+   * Play via Luna Service
+   */
+  private lunaPlay(): void {
+    if (!this.webOS || !this.lunaMediaId) return;
+
+    this.webOS.service.request('luna://com.webos.media', {
+      method: 'play',
+      parameters: {
+        mediaId: this.lunaMediaId,
+      },
+      onSuccess: () => {
+        console.log('[LGWebOSAdapter] Luna play success');
+      },
+      onFailure: (error: LunaError) => {
+        console.error('[LGWebOSAdapter] Luna play error:', error);
+      },
+    });
+  }
+
+  /**
+   * Pause via Luna Service
+   */
+  private lunaPause(): void {
+    if (!this.webOS || !this.lunaMediaId) return;
+
+    this.webOS.service.request('luna://com.webos.media', {
+      method: 'pause',
+      parameters: {
+        mediaId: this.lunaMediaId,
+      },
+      onSuccess: () => {
+        console.log('[LGWebOSAdapter] Luna pause success');
+      },
+      onFailure: (error: LunaError) => {
+        console.error('[LGWebOSAdapter] Luna pause error:', error);
+      },
+    });
+  }
+
+  /**
+   * Seek via Luna Service
+   */
+  private lunaSeek(positionMs: number): void {
+    if (!this.webOS || !this.lunaMediaId) return;
+
+    this.webOS.service.request('luna://com.webos.media', {
+      method: 'seek',
+      parameters: {
+        mediaId: this.lunaMediaId,
+        position: positionMs,
+      },
+      onSuccess: () => {
+        console.log('[LGWebOSAdapter] Luna seek success');
+      },
+      onFailure: (error: LunaError) => {
+        console.error('[LGWebOSAdapter] Luna seek error:', error);
+      },
+    });
+  }
+
+  /**
+   * Unload/close Luna Service media
+   */
+  private lunaUnload(): void {
+    // Cancel subscription first
+    if (this.lunaSubscription) {
+      this.lunaSubscription.cancel();
+      this.lunaSubscription = null;
+    }
+
+    if (!this.webOS || !this.lunaMediaId) {
+      this.usingLunaService = false;
+      return;
+    }
+
+    this.webOS.service.request('luna://com.webos.media', {
+      method: 'unload',
+      parameters: {
+        mediaId: this.lunaMediaId,
+      },
+      onSuccess: () => {
+        console.log('[LGWebOSAdapter] Luna unload success');
+      },
+      onFailure: (error: LunaError) => {
+        console.error('[LGWebOSAdapter] Luna unload error:', error);
+      },
+    });
+
+    this.lunaMediaId = null;
+    this.usingLunaService = false;
+    this.lunaDuration = 0;
+    this.lunaCurrentTime = 0;
+
+    // Show HTML5 video element again
+    this.showVideoElement();
+  }
+
+  /**
+   * Set audio track via Luna Service
+   */
+  private lunaSetAudioTrack(index: number): void {
+    if (!this.webOS || !this.lunaMediaId) return;
+
+    this.webOS.service.request('luna://com.webos.media', {
+      method: 'selectTrack',
+      parameters: {
+        mediaId: this.lunaMediaId,
+        type: 'audio',
+        index,
+      },
+      onSuccess: () => {
+        console.log('[LGWebOSAdapter] Luna audio track changed to:', index);
+        this.currentTracks.audioIndex = index;
+        this.emit('audiotrackchange', { index, track: this.tracks.audio[index] });
+      },
+      onFailure: (error: LunaError) => {
+        console.error('[LGWebOSAdapter] Luna audio track change error:', error);
+      },
+    });
+  }
+
   private loadTracksFromElement(): void {
     if (!this.video) return;
 
@@ -1045,6 +1399,38 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     const containerCheck = isUnsupportedContainer(url);
     if (containerCheck.unsupported) {
       console.warn(`[LGWebOSAdapter] Formato ${containerCheck.format} não suportado pelo HTML5 video`);
+
+      // On webOS, try Luna Service (native player) which supports more formats
+      if (this.isWebOS) {
+        console.log(`[LGWebOSAdapter] Tentando Luna Service para formato ${containerCheck.format}`);
+        this.setState('loading');
+
+        // Extract referer from original URL
+        let referer: string | undefined;
+        try {
+          const parsed = new URL(url);
+          referer = parsed.origin;
+        } catch {
+          // Invalid URL, skip referer
+        }
+
+        // Proxify URL to bypass CORS/mixed-content
+        const streamUrl = this.proxifyUrl(url, referer);
+        this.currentUrl = streamUrl;
+        this.options = options;
+
+        // Try Luna Service playback
+        const lunaSuccess = await this.tryLunaServicePlayback(streamUrl);
+        if (lunaSuccess) {
+          console.log(`[LGWebOSAdapter] Luna Service iniciou reprodução de ${containerCheck.format}`);
+          return; // Luna Service is handling playback
+        }
+
+        // Luna Service failed, show error
+        console.error('[LGWebOSAdapter] Luna Service também falhou para este formato');
+      }
+
+      // Not webOS or Luna Service failed
       this.setState('error');
       this.emit('error', {
         code: 'UNSUPPORTED_FORMAT',
@@ -1213,6 +1599,11 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.stopTsRecoveryMonitor();
     this.stopLiveEdgeMonitor();
 
+    // Close Luna Service if active
+    if (this.usingLunaService) {
+      this.lunaUnload();
+    }
+
     if (this.hls) {
       this.hls.destroy();
       this.hls = null;
@@ -1254,6 +1645,10 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // Playback Controls
 
   play(): void {
+    if (this.usingLunaService) {
+      this.lunaPlay();
+      return;
+    }
     if (this.video) {
       this.video.play().catch((e) => {
         console.error('[LGWebOSAdapter] Error playing:', e);
@@ -1262,12 +1657,21 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   pause(): void {
+    if (this.usingLunaService) {
+      this.lunaPause();
+      return;
+    }
     if (this.video) {
       this.video.pause();
     }
   }
 
   stop(): void {
+    if (this.usingLunaService) {
+      this.lunaUnload();
+      this.setState('idle');
+      return;
+    }
     if (this.video) {
       this.video.pause();
       this.video.currentTime = 0;
@@ -1276,18 +1680,30 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   seek(position: number): void {
+    if (this.usingLunaService) {
+      this.lunaSeek(position);
+      return;
+    }
     if (this.video) {
       this.video.currentTime = position / 1000;
     }
   }
 
   seekForward(ms: number): void {
+    if (this.usingLunaService) {
+      this.lunaSeek(this.lunaCurrentTime + ms);
+      return;
+    }
     if (this.video) {
       this.video.currentTime += ms / 1000;
     }
   }
 
   seekBackward(ms: number): void {
+    if (this.usingLunaService) {
+      this.lunaSeek(Math.max(0, this.lunaCurrentTime - ms));
+      return;
+    }
     if (this.video) {
       this.video.currentTime = Math.max(0, this.video.currentTime - ms / 1000);
     }
@@ -1305,6 +1721,11 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   setAudioTrack(index: number): void {
     if (index < 0 || index >= this.tracks.audio.length) return;
+
+    if (this.usingLunaService) {
+      this.lunaSetAudioTrack(index);
+      return;
+    }
 
     if (this.usingHls && this.hls) {
       // Use HLS.js API for audio track switching
@@ -1379,6 +1800,18 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   getPlaybackInfo(): PlaybackInfo {
+    // Luna Service playback info
+    if (this.usingLunaService) {
+      return {
+        currentTime: this.lunaCurrentTime,
+        duration: this.lunaDuration,
+        bufferedTime: 0, // Luna doesn't provide this
+        playbackRate: 1,
+        volume: 100, // Luna uses system volume
+        isMuted: false,
+      };
+    }
+
     if (!this.video) {
       return {
         currentTime: 0,
@@ -1482,6 +1915,13 @@ export class LGWebOSAdapter implements IPlayerAdapter {
    */
   isUsingHls(): boolean {
     return this.usingHls;
+  }
+
+  /**
+   * Check if currently using Luna Service (native webOS player)
+   */
+  isUsingLunaService(): boolean {
+    return this.usingLunaService;
   }
 }
 

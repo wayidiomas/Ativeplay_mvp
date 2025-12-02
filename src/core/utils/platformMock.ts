@@ -44,7 +44,7 @@ interface WindowWithWebOS extends Window {
       tv: boolean;
     };
     service: {
-      request: (uri: string, params: unknown) => void;
+      request: (uri: string, params: unknown) => { cancel: () => void };
     };
     deviceInfo: (callback: (info: WebOSDeviceInfo) => void) => void;
   };
@@ -251,21 +251,71 @@ const mockWebOSDev: WebOSDev = {
 const mockWebOS = {
   platform: { tv: true },
   service: {
-    request: (uri: string, params: unknown) => {
+    request: (uri: string, params: unknown): { cancel: () => void } => {
       console.log('[MOCK webOS] service.request:', uri, params);
+      let cancelled = false;
+
       // Handle connectionmanager request for MAC address
       if (uri === 'luna://com.webos.service.connectionmanager') {
         const p = params as { onSuccess?: (result: unknown) => void };
         const onSuccess = p.onSuccess;
         if (onSuccess) {
           setTimeout(() => {
-            onSuccess({
-              wired: { macAddress: '00:11:22:33:44:55', state: 'connected' },
-              wifi: { macAddress: 'AA:BB:CC:DD:EE:FF', state: 'disconnected' },
-            });
+            if (!cancelled) {
+              onSuccess({
+                wired: { macAddress: '00:11:22:33:44:55', state: 'connected' },
+                wifi: { macAddress: 'AA:BB:CC:DD:EE:FF', state: 'disconnected' },
+              });
+            }
           }, 10);
         }
       }
+
+      // Handle media service requests (for Luna Service mock)
+      if (uri === 'luna://com.webos.media') {
+        const p = params as {
+          method?: string;
+          parameters?: Record<string, unknown>;
+          onSuccess?: (result: unknown) => void;
+          onFailure?: (error: unknown) => void;
+        };
+        console.log('[MOCK webOS] Luna media request:', p.method, p.parameters);
+
+        // Mock Luna Service responses
+        const onSuccess = p.onSuccess;
+        if (onSuccess) {
+          setTimeout(() => {
+            if (!cancelled) {
+              switch (p.method) {
+                case 'load':
+                  onSuccess({ returnValue: true, mediaId: 'mock-media-123' });
+                  break;
+                case 'play':
+                case 'pause':
+                case 'seek':
+                case 'unload':
+                case 'selectTrack':
+                  onSuccess({ returnValue: true });
+                  break;
+                case 'subscribe':
+                  // Mock state updates
+                  onSuccess({ returnValue: true, state: 'playing', currentTime: 0, duration: 7200000 });
+                  break;
+                default:
+                  onSuccess({ returnValue: true });
+              }
+            }
+          }, 50);
+        }
+      }
+
+      // Return cancel function
+      return {
+        cancel: () => {
+          cancelled = true;
+          console.log('[MOCK webOS] Request cancelled for:', uri);
+        },
+      };
     },
   },
   deviceInfo: (callback: (info: WebOSDeviceInfo) => void) => {
