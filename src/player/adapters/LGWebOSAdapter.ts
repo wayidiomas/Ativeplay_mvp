@@ -160,6 +160,28 @@ function isLikelyLiveHls(url: string): boolean {
   return !hasFileName;
 }
 
+/**
+ * Detect container formats not natively supported by HTML5 video
+ * MKV and AVI require transcoding or native player (webOS Luna Service)
+ */
+function isUnsupportedContainer(url: string): { unsupported: boolean; format: string | null } {
+  const originalUrl = extractOriginalUrl(url);
+  const lower = originalUrl.toLowerCase();
+  if (lower.endsWith('.mkv') || lower.includes('.mkv?')) {
+    return { unsupported: true, format: 'MKV' };
+  }
+  if (lower.endsWith('.avi') || lower.includes('.avi?')) {
+    return { unsupported: true, format: 'AVI' };
+  }
+  if (lower.endsWith('.wmv') || lower.includes('.wmv?')) {
+    return { unsupported: true, format: 'WMV' };
+  }
+  if (lower.endsWith('.flv') || lower.includes('.flv?')) {
+    return { unsupported: true, format: 'FLV' };
+  }
+  return { unsupported: false, format: null };
+}
+
 export class LGWebOSAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
   private hls: Hls | null = null;
@@ -191,6 +213,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private frozenCheckCount: number = 0;
   private tsRecoveryAttempts: number = 0;
   private isRawTsStream: boolean = false;
+  private isRecovering: boolean = false; // Flag to ignore errors during recovery
 
   // Live edge monitoring
   private liveEdgeMonitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -460,6 +483,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       // Don't emit error here - HLS.js error handler will take care of it
       if (this.usingHls) {
         console.log('[LGWebOSAdapter] Video error while using HLS.js - letting HLS.js handle it');
+        return;
+      }
+
+      // Ignore errors during recovery process (e.g., when src is cleared for reconnection)
+      if (this.isRecovering) {
+        console.log('[LGWebOSAdapter] Ignoring video error during recovery');
         return;
       }
 
@@ -856,6 +885,9 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.setState('buffering');
     this.frozenCheckCount = 0;
 
+    // Set recovery flag to ignore errors during src clearing
+    this.isRecovering = true;
+
     // Clear current source
     if (this.video) {
       this.video.src = '';
@@ -878,6 +910,9 @@ export class LGWebOSAdapter implements IPlayerAdapter {
         console.warn('[LGWebOSAdapter] TS reconnect play failed:', e);
       }
     }
+
+    // Clear recovery flag
+    this.isRecovering = false;
   }
 
   // ============================================================================
@@ -1004,6 +1039,21 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     });
 
     this.options = options;
+
+    // Check for unsupported container formats (MKV, AVI, WMV, FLV)
+    // These require transcoding or native player (webOS Luna Service)
+    const containerCheck = isUnsupportedContainer(url);
+    if (containerCheck.unsupported) {
+      console.warn(`[LGWebOSAdapter] Formato ${containerCheck.format} não suportado pelo HTML5 video`);
+      this.setState('error');
+      this.emit('error', {
+        code: 'UNSUPPORTED_FORMAT',
+        message: `Formato ${containerCheck.format} não é suportado. Use um formato compatível (MP4, HLS).`,
+        format: containerCheck.format,
+      });
+      throw new Error(`Formato ${containerCheck.format} não suportado`);
+    }
+
     this.setState('loading');
 
     // Stop any running monitors
@@ -1027,6 +1077,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.frozenCheckCount = 0;
     this.tsRecoveryAttempts = 0;
     this.lastPlaybackTime = 0;
+    this.isRecovering = false;
 
     // Extract referer from original URL
     let referer: string | undefined;

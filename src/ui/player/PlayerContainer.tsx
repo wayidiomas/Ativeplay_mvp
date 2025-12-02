@@ -283,16 +283,25 @@ export function PlayerContainer({
     onClose?.();
   }, [close, onClose]);
 
-  // Open video on mount - use refs to avoid re-initialization when functions change
+  // Open video on mount - only depend on url to avoid re-opening on prop changes
+  // startPosition and isLive are captured at mount time via refs
+  const startPositionRef = useRef(startPosition);
+  const isLiveRef = useRef(isLive);
+
   useEffect(() => {
+    console.log('[PlayerContainer] Opening video:', { url: url?.substring(0, 80), startPosition: startPositionRef.current, isLive: isLiveRef.current });
     const streamUrl = buildStreamUrlRef.current(url);
-    openRef.current(streamUrl, { startPosition, autoPlay: true, isLive });
-  }, [url, startPosition, isLive]);
+    openRef.current(streamUrl, { startPosition: startPositionRef.current, autoPlay: true, isLive: isLiveRef.current });
+  }, [url]);
 
   // Ensure player is closed when component unmounts
-  useEffect(() => () => {
-    close();
-  }, [close]);
+  // Using empty deps array - close is stable (useCallback with [])
+  useEffect(() => {
+    return () => {
+      console.log('[PlayerContainer] Cleanup: closing player');
+      close();
+    };
+  }, []);
 
   // Handle ended event
   useEffect(() => {

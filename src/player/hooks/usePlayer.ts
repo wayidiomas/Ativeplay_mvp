@@ -128,9 +128,12 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
 
     const handleEvent = (event: PlayerEvent) => {
       switch (event.type) {
-        case 'statechange':
-          setState((event.data as { state: PlayerState }).state);
+        case 'statechange': {
+          const newState = (event.data as { state: PlayerState }).state;
+          console.log('[usePlayer] State change:', newState);
+          setState(newState);
           break;
+        }
 
         case 'timeupdate':
           setPlaybackInfo((prev) => ({
@@ -174,6 +177,7 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
 
         case 'error': {
           const errorData = event.data as { code?: string; message?: string };
+          console.error('[usePlayer] Error event:', errorData);
           setErrorMessage(errorData.message || 'Erro desconhecido');
           break;
         }
