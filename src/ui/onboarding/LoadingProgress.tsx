@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useOnboardingStore } from '@store/onboardingStore';
 import { usePlaylistStore } from '@store/playlistStore';
-import { parsePlaylist, getParseStatus, validateCache, type ParseStatus } from '@core/services/api';
+import { parsePlaylist, getParseStatus, validateCache, type ParseStatus, type SourceType } from '@core/services/api';
 import styles from './LoadingProgress.module.css';
 
 type Phase = 'connecting' | 'parsing' | 'building' | 'complete' | 'error';
@@ -25,6 +25,9 @@ export function LoadingProgress() {
   const [hash, setHash] = useState<string | null>(null);
   const [canNavigate, setCanNavigate] = useState(false);
   const [realProgress, setRealProgress] = useState<ParseStatus | null>(null);
+  // Hybrid support: store source type and playlist ID from initial parse response
+  const [sourceType, setSourceType] = useState<SourceType | undefined>(undefined);
+  const [playlistId, setPlaylistId] = useState<string | undefined>(undefined);
 
   const parseStarted = useRef(false);
   const pollInterval = useRef<ReturnType<typeof setInterval>>();
@@ -119,6 +122,8 @@ export function LoadingProgress() {
             groupCount: status.groupsCount || 0,
           },
           savedAt: Date.now(),
+          sourceType,
+          playlistId,
         });
 
         // Navigate to home
@@ -178,10 +183,12 @@ export function LoadingProgress() {
         groupCount: realProgress.groupsCount || 0,
       },
       savedAt: Date.now(),
+      sourceType,
+      playlistId,
     });
 
     navigate('/home', { replace: true });
-  }, [hash, realProgress, playlistUrl, setPlaylist, setParseInProgress, navigate]);
+  }, [hash, realProgress, playlistUrl, sourceType, playlistId, setPlaylist, setParseInProgress, navigate]);
 
   // Focus early nav button when it appears
   useEffect(() => {
@@ -211,8 +218,11 @@ export function LoadingProgress() {
         console.log('[LoadingProgress] Parse initiated:', result);
 
         setHash(result.hash);
+        // Store source type and playlist ID for hybrid support
+        setSourceType(result.sourceType);
+        setPlaylistId(result.playlistId);
 
-        // If already complete (cache hit), navigate immediately
+        // If already complete (cache hit or Xtream), navigate immediately
         if (result.status === 'complete' && result.stats) {
           setPhase('complete');
           setPercentage(100);
@@ -224,6 +234,8 @@ export function LoadingProgress() {
             name: extractNameFromUrl(playlistUrl),
             stats: result.stats,
             savedAt: Date.now(),
+            sourceType: result.sourceType,
+            playlistId: result.playlistId,
           });
 
           setTimeout(() => {

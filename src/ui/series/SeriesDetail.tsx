@@ -18,6 +18,8 @@ import {
   type SeriesInfo,
   type PlaylistItem,
   type SeasonData,
+  type XtreamSeriesInfo,
+  type XtreamEpisode,
 } from '@core/services/api';
 import { MdArrowBack, MdPlayArrow } from 'react-icons/md';
 import styles from './SeriesDetail.module.css';
@@ -121,6 +123,9 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
   const hash = usePlaylistStore((s) => s.hash);
   const seriesCache = usePlaylistStore((s) => s.seriesCache);
   const setSeriesCache = usePlaylistStore((s) => s.setSeriesCache);
+  // Xtream support
+  const isXtream = usePlaylistStore((s) => s.isXtream);
+  const getXtreamClient = usePlaylistStore((s) => s.getXtreamClient);
 
   // Page-level focus context
   const { ref: pageRef, focusKey: pageFocusKey } = useFocusable({
@@ -140,10 +145,12 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
   const [seasonsData, setSeasonsData] = useState<SeasonData[]>([]);
   const [selectedSeason, setSelectedSeason] = useState<number>(1);
   const [loading, setLoading] = useState(true);
+  // Xtream series details (plot, cast, director, genre, etc.)
+  const [xtreamSeriesInfo, setXtreamSeriesInfo] = useState<XtreamSeriesInfo | null>(null);
 
   useEffect(() => {
     async function loadSeriesData() {
-      if (!seriesId || !hash) {
+      if (!seriesId) {
         navigate('/home');
         return;
       }
@@ -151,6 +158,70 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
       setLoading(true);
 
       try {
+        // =====================================================================
+        // XTREAM MODE: Use Xtream API directly
+        // =====================================================================
+        if (isXtream()) {
+          const xtreamClient = getXtreamClient();
+          if (!xtreamClient) {
+            console.error('Xtream client not available');
+            navigate('/home');
+            return;
+          }
+
+          console.log('[SeriesDetail] Loading Xtream series info:', seriesId);
+          const seriesInfo = await xtreamClient.getSeriesInfo(seriesId);
+          setXtreamSeriesInfo(seriesInfo);
+
+          // Build SeriesInfo from Xtream data
+          const totalEpisodes = Object.values(seriesInfo.episodes || {})
+            .reduce((sum, eps) => sum + eps.length, 0);
+          const seasonNumbers = Object.keys(seriesInfo.episodes || {})
+            .map(s => parseInt(s, 10))
+            .sort((a, b) => a - b);
+
+          const seriesData: SeriesInfo = {
+            id: seriesId,
+            name: seriesInfo.info?.name || 'Unknown Series',
+            logo: seriesInfo.info?.cover,
+            group: '',
+            totalEpisodes,
+            totalSeasons: seasonNumbers.length,
+            firstSeason: seasonNumbers[0] || 1,
+            lastSeason: seasonNumbers[seasonNumbers.length - 1] || 1,
+          };
+
+          setSeries(seriesData);
+          setSelectedSeason(seriesData.firstSeason);
+
+          // Build seasonsData from Xtream episodes
+          const seasons: SeasonData[] = seasonNumbers.map(seasonNum => {
+            const xtreamEpisodes = seriesInfo.episodes?.[seasonNum.toString()] || [];
+            return {
+              seasonNumber: seasonNum,
+              episodes: xtreamEpisodes.map((ep: XtreamEpisode) => ({
+                itemId: ep.id,
+                season: seasonNum,
+                episode: ep.episodeNum,
+                name: ep.title,
+                url: '', // URL fetched via getPlayUrl when playing
+                // Store Xtream-specific data for playback
+                xtreamExtension: ep.containerExtension,
+              })),
+            };
+          });
+          setSeasonsData(seasons);
+          return;
+        }
+
+        // =====================================================================
+        // M3U MODE: Use backend database
+        // =====================================================================
+        if (!hash) {
+          navigate('/home');
+          return;
+        }
+
         // Get series info from cache or API
         let allSeries = seriesCache;
         if (!allSeries) {
@@ -191,7 +262,7 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     }
 
     loadSeriesData();
-  }, [seriesId, hash, navigate, seriesCache, setSeriesCache]);
+  }, [seriesId, hash, navigate, seriesCache, setSeriesCache, isXtream, getXtreamClient]);
 
   // Get episodes for selected season
   const currentSeasonEpisodes = (() => {
@@ -209,6 +280,8 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
           logo: undefined,
           group: '',
           mediaKind: 'series' as const,
+          // Xtream: Include container extension for play URL generation
+          xtreamExtension: ep.xtreamExtension,
         }));
       }
     }
@@ -324,7 +397,53 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     url?: string;
     seasonNumber?: number;
     episodeNumber?: number;
+    xtreamExtension?: string; // Xtream container extension (e.g., mkv, mp4)
   }) => {
+    // =========================================================================
+    // XTREAM MODE: Fetch play URL from Xtream API
+    // =========================================================================
+    if (isXtream()) {
+      const xtreamClient = getXtreamClient();
+      if (!xtreamClient) {
+        console.error('[SeriesDetail] Xtream client not available');
+        return;
+      }
+
+      try {
+        console.log('[SeriesDetail] Fetching Xtream play URL for episode:', episode.name, episode.id);
+        const playUrl = await xtreamClient.getPlayUrl(
+          parseInt(episode.id, 10),
+          'series',
+          episode.xtreamExtension || 'mp4'
+        );
+
+        const playlistItem: PlaylistItem = {
+          id: episode.id,
+          name: episode.name,
+          url: playUrl,
+          group: series?.group || '',
+          mediaKind: 'series',
+          seasonNumber: episode.seasonNumber,
+          episodeNumber: episode.episodeNumber,
+          seriesId: seriesId,
+          // Xtream fields (for reference, though URL is now resolved)
+          xtreamId: parseInt(episode.id, 10),
+          xtreamExtension: episode.xtreamExtension,
+          xtreamMediaType: 'series',
+        };
+
+        console.log('[SeriesDetail] Playing Xtream episode:', episode.name, playUrl);
+        onSelectItem(playlistItem);
+      } catch (err) {
+        console.error('[SeriesDetail] Failed to get Xtream play URL:', err);
+      }
+      return;
+    }
+
+    // =========================================================================
+    // M3U MODE: Use URL from database
+    // =========================================================================
+
     // If episode already has URL (from seasonsData), use it directly
     if (episode.url) {
       const playlistItem: PlaylistItem = {
@@ -434,7 +553,35 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
                 <span>{series.quality}</span>
               </>
             )}
+            {/* Xtream extra info: rating, genre */}
+            {xtreamSeriesInfo?.info?.rating && (
+              <>
+                <span>•</span>
+                <span>⭐ {xtreamSeriesInfo.info.rating}</span>
+              </>
+            )}
+            {xtreamSeriesInfo?.info?.genre && (
+              <>
+                <span>•</span>
+                <span>{xtreamSeriesInfo.info.genre}</span>
+              </>
+            )}
           </div>
+          {/* Xtream plot/synopsis */}
+          {xtreamSeriesInfo?.info?.plot && (
+            <p className={styles.plot}>{xtreamSeriesInfo.info.plot}</p>
+          )}
+          {/* Xtream cast & director */}
+          {(xtreamSeriesInfo?.info?.cast || xtreamSeriesInfo?.info?.director) && (
+            <div className={styles.credits}>
+              {xtreamSeriesInfo.info.director && (
+                <span><strong>Diretor:</strong> {xtreamSeriesInfo.info.director}</span>
+              )}
+              {xtreamSeriesInfo.info.cast && (
+                <span><strong>Elenco:</strong> {xtreamSeriesInfo.info.cast}</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

@@ -24,6 +24,29 @@ pub struct ClientRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// Source type enum for playlists
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "playlist_source_type", rename_all = "lowercase")]
+pub enum SourceType {
+    M3u,
+    Xtream,
+}
+
+impl Default for SourceType {
+    fn default() -> Self {
+        SourceType::M3u
+    }
+}
+
+impl std::fmt::Display for SourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceType::M3u => write!(f, "m3u"),
+            SourceType::Xtream => write!(f, "xtream"),
+        }
+    }
+}
+
 /// Playlist row from database
 #[derive(Debug, Clone, FromRow)]
 pub struct PlaylistRow {
@@ -41,9 +64,23 @@ pub struct PlaylistRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    // Xtream support fields
+    pub source_type: Option<SourceType>,
+    pub name: Option<String>,
+    pub xtream_server: Option<String>,
+    pub xtream_username: Option<String>,
+    pub xtream_password: Option<String>,
+    pub xtream_expires_at: Option<DateTime<Utc>>,
+    pub xtream_max_connections: Option<i16>,
+    pub xtream_is_trial: Option<bool>,
 }
 
 impl PlaylistRow {
+    /// Check if this is an Xtream playlist
+    pub fn is_xtream(&self) -> bool {
+        self.source_type.as_ref().map(|s| *s == SourceType::Xtream).unwrap_or(false)
+    }
+
     /// Convert to PlaylistStats for API response
     pub fn to_stats(&self) -> PlaylistStats {
         PlaylistStats {

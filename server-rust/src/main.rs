@@ -171,6 +171,31 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/admin/expired", delete(routes::admin::delete_expired))
         // HLS Proxy
         .route("/api/proxy/hls", get(routes::proxy::hls_proxy))
+        // Xtream Codes Proxy routes (for Xtream playlists)
+        .route(
+            "/api/xtream/:playlist_id/info",
+            get(routes::xtream::get_playlist_info),
+        )
+        .route(
+            "/api/xtream/:playlist_id/categories/:type",
+            get(routes::xtream::get_categories),
+        )
+        .route(
+            "/api/xtream/:playlist_id/streams/:type",
+            get(routes::xtream::get_streams),
+        )
+        .route(
+            "/api/xtream/:playlist_id/vod/:vod_id",
+            get(routes::xtream::get_vod_info),
+        )
+        .route(
+            "/api/xtream/:playlist_id/series/:series_id",
+            get(routes::xtream::get_series_info),
+        )
+        .route(
+            "/api/xtream/:playlist_id/play-url",
+            get(routes::xtream::get_play_url),
+        )
         // Watch History endpoints
         .route(
             "/api/watch-history/sync",

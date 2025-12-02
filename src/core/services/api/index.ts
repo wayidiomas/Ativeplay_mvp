@@ -15,6 +15,7 @@ initDeviceId().catch((e) => console.warn('[API] Failed to init device ID:', e));
 // ============================================================================
 
 export type MediaKind = 'live' | 'movie' | 'series' | 'unknown';
+export type SourceType = 'xtream' | 'm3u';
 
 export interface PlaylistStats {
   totalItems: number;
@@ -51,6 +52,10 @@ export interface PlaylistItem {
   seriesId?: string;
   seasonNumber?: number;
   episodeNumber?: number;
+  // Xtream-specific fields (only present for Xtream playlists)
+  xtreamId?: number;
+  xtreamExtension?: string;
+  xtreamMediaType?: 'live' | 'vod' | 'series';
 }
 
 export interface SeriesInfo {
@@ -78,6 +83,8 @@ export interface SeriesEpisode {
   episode: number;
   name: string;
   url: string;
+  // Xtream-specific: container extension for play URL generation
+  xtreamExtension?: string;
 }
 
 export interface ParseResponse {
@@ -86,6 +93,9 @@ export interface ParseResponse {
   message?: string;
   stats?: PlaylistStats;
   groups?: PlaylistGroup[];
+  // Hybrid support: identifies Xtream vs M3U playlists
+  sourceType?: SourceType;
+  playlistId?: string; // UUID for Xtream playlists
 }
 
 /**
@@ -303,6 +313,9 @@ export interface StoredPlaylist {
   name: string;
   stats: PlaylistStats;
   savedAt: number;
+  // Hybrid support: identifies Xtream vs M3U playlists
+  sourceType?: SourceType;
+  playlistId?: string; // UUID for Xtream playlists
 }
 
 /**
@@ -399,6 +412,23 @@ export async function deleteWatchHistoryItem(itemHash: string): Promise<{ succes
     method: 'DELETE',
   });
 }
+
+// ============================================================================
+// Xtream API Re-exports
+// ============================================================================
+
+export {
+  XtreamAPI,
+  createXtreamClient,
+  normalizeXtreamCategories,
+  normalizeXtreamStreams,
+  type XtreamCategory,
+  type XtreamStreamItem,
+  type XtreamVodInfo,
+  type XtreamSeriesInfo,
+  type XtreamEpisode,
+  type XtreamPlaylistInfo,
+} from './xtream';
 
 // Export all
 export default {

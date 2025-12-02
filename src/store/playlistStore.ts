@@ -13,7 +13,9 @@ import type {
   StoredPlaylist,
   PlaylistItem,
   MediaKind,
+  SourceType,
 } from '@core/services/api';
+import { createXtreamClient, XtreamAPI } from '@core/services/api';
 
 // Row data cached per tab
 export interface CachedRow {
@@ -34,6 +36,11 @@ interface PlaylistState {
   url: string | null;
   name: string | null;
   stats: PlaylistStats | null;
+
+  // Hybrid support: Xtream vs M3U
+  sourceType: SourceType | null;
+  playlistId: string | null; // UUID for Xtream playlists
+  xtreamClient: XtreamAPI | null; // Lazy-loaded Xtream client
 
   // UI state
   isLoading: boolean;
@@ -57,6 +64,10 @@ interface PlaylistState {
   getRowsCache: (mediaKind: MediaKind) => CachedRow[] | null;
   clearCache: () => void;
   reset: () => void;
+
+  // Xtream helpers
+  isXtream: () => boolean;
+  getXtreamClient: () => XtreamAPI | null;
 }
 
 // ============================================================================
@@ -75,6 +86,9 @@ const initialState = {
   url: null as string | null,
   name: null as string | null,
   stats: null as PlaylistStats | null,
+  sourceType: null as SourceType | null,
+  playlistId: null as string | null,
+  xtreamClient: null as XtreamAPI | null,
   isLoading: false,
   error: null as string | null,
   parseInProgress: false,
@@ -92,18 +106,27 @@ export const usePlaylistStore = create<PlaylistState>()(
     (set, get) => ({
       ...initialState,
 
-      setPlaylist: (playlist) =>
+      setPlaylist: (playlist) => {
+        const isXtream = playlist.sourceType === 'xtream';
+        const client = isXtream && playlist.playlistId
+          ? createXtreamClient(playlist.playlistId)
+          : null;
+
         set({
           hash: playlist.hash,
           url: playlist.url,
           name: playlist.name,
           stats: playlist.stats,
+          sourceType: playlist.sourceType || 'm3u',
+          playlistId: playlist.playlistId || null,
+          xtreamClient: client,
           error: null,
           // Clear session cache when switching playlists
           groupsCache: null,
           seriesCache: null,
           rowsCache: { ...emptyRowsCache },
-        }),
+        });
+      },
 
       setStats: (stats) => set({ stats }),
 
@@ -138,6 +161,23 @@ export const usePlaylistStore = create<PlaylistState>()(
         }),
 
       reset: () => set(initialState),
+
+      // Xtream helpers
+      isXtream: () => get().sourceType === 'xtream',
+
+      getXtreamClient: () => {
+        const state = get();
+        if (state.sourceType !== 'xtream' || !state.playlistId) {
+          return null;
+        }
+        // Lazy create client if needed
+        if (!state.xtreamClient) {
+          const client = createXtreamClient(state.playlistId);
+          set({ xtreamClient: client });
+          return client;
+        }
+        return state.xtreamClient;
+      },
     }),
     {
       name: 'ativeplay-playlist',
@@ -148,6 +188,8 @@ export const usePlaylistStore = create<PlaylistState>()(
         url: state.url,
         name: state.name,
         stats: state.stats,
+        sourceType: state.sourceType,
+        playlistId: state.playlistId,
       }),
     }
   )
@@ -163,5 +205,8 @@ export const selectIsLoading = (state: PlaylistState) => state.isLoading;
 export const selectError = (state: PlaylistState) => state.error;
 export const selectHasPlaylist = (state: PlaylistState) => !!state.hash;
 export const selectParseInProgress = (state: PlaylistState) => state.parseInProgress;
+export const selectSourceType = (state: PlaylistState) => state.sourceType;
+export const selectIsXtream = (state: PlaylistState) => state.sourceType === 'xtream';
+export const selectPlaylistId = (state: PlaylistState) => state.playlistId;
 
 export default usePlaylistStore;

@@ -164,44 +164,99 @@ function isHlsUrl(url: string): boolean {
  * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
  * VOD URLs have file extensions (.m3u8, .mp4, .mkv) and should NOT match
  * VOD URLs with /movie/, /series/, /vod/ paths should NOT match
+ *
+ * Xtream Codes patterns:
+ * - Live TS:   /live/{user}/{pass}/{stream_id}.ts    → IS a TS stream
+ * - Live HLS:  /live/{user}/{pass}/{stream_id}.m3u8  → NOT a TS stream (use HLS.js)
+ * - Live raw:  /live/{user}/{pass}/{stream_id}       → IS a TS stream (no extension)
+ * - VOD:       /movie/{user}/{pass}/{id}.{ext}       → NOT a TS stream
+ * - Series:    /series/{user}/{pass}/{id}.{ext}      → NOT a TS stream
  */
 function isIptvTsStream(url: string): boolean {
   const originalUrl = extractOriginalUrl(url);
 
-  // If URL has a file extension, it's NOT a raw TS stream (it's VOD or HLS)
-  if (/\.[a-z0-9]{2,4}(\?|$)/i.test(originalUrl)) return false;
+  // Xtream live HLS (.m3u8) is NOT a raw TS stream - should use HLS.js
+  if (/\/live\/[^/]+\/[^/]+\/\d+\.m3u8(\?|$)/i.test(originalUrl)) {
+    return false;
+  }
+
+  // Xtream live URLs ending in .ts or without extension ARE TS streams
+  if (/\/live\/[^/]+\/[^/]+\/\d+(\.ts)?(\?|$)/i.test(originalUrl)) {
+    return true;
+  }
+
+  // Xtream VOD/Series URLs are NOT raw TS streams (they have container files)
+  if (/\/(movie|series)\/[^/]+\/[^/]+\/\d+\.[a-z0-9]+(\?|$)/i.test(originalUrl)) {
+    return false;
+  }
+
+  // If URL has a file extension other than .ts, it's NOT a raw TS stream
+  // (e.g., .mp4, .mkv, .m3u8 are not raw TS)
+  if (/\.(mp4|mkv|avi|wmv|flv|m3u8|webm|mov)(\?|$)/i.test(originalUrl)) {
+    return false;
+  }
 
   // If URL contains VOD path indicators, it's NOT a raw TS stream
-  // This handles Xtream Codes VOD URLs like /movie/123/456/789 or /series/123/456/789
-  if (/(\/movie\/|\/series\/|\/vod\/|\/episode\/|\/filme\/)/i.test(originalUrl)) return false;
+  if (/(\/movie\/|\/vod\/|\/episode\/|\/filme\/)/i.test(originalUrl)) {
+    return false;
+  }
+
+  // Pattern: ends with .ts (TS file extension) - common for IPTV
+  if (/\.ts(\?|$)/i.test(originalUrl)) return true;
 
   // Pattern: ends with /ts (not .ts file extension)
   if (/\/ts(\?|$)/i.test(originalUrl)) return true;
+
   // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
   // This typically matches live IPTV streams like /live/123/456/789
   if (/\/\d+\/\d+\/\d+(\?|$)/.test(originalUrl)) return true;
+
   // Query param indicating TS output
   if (originalUrl.includes('output=ts')) return true;
+
   // Pattern: /play/TOKEN format (common IPTV pattern for live channels)
   // TOKEN is typically base64 or alphanumeric, at least 20 chars to avoid false positives
   // Examples: /play/ABC123... (Globo, SBT, Record live channels)
   if (/\/play\/[a-zA-Z0-9+/=_-]{20,}(\?|$)/i.test(originalUrl)) return true;
+
   // Pattern: /live/ path without extension (common IPTV live pattern)
-  if (/\/live\/[^.]+(\?|$)/i.test(originalUrl)) return true;
+  // But NOT if it's followed by /series/ or /movie/ (which would be Xtream VOD)
+  if (/\/live\/[^/]+\/[^/]+\/\d+(\?|$)/i.test(originalUrl)) return true;
+
   return false;
 }
 
 /**
  * Heuristic to detect live streams when mediaKind is not explicitly provided.
+ *
+ * Xtream Codes detection:
+ * - /live/{user}/{pass}/{id}    → LIVE
+ * - /movie/{user}/{pass}/{id}   → VOD (not live)
+ * - /series/{user}/{pass}/{id}  → VOD (not live, it's episode playback)
  */
 function isLikelyLiveHls(url: string): boolean {
   const originalUrl = extractOriginalUrl(url);
   const lower = originalUrl.toLowerCase();
+
+  // Xtream Codes: /live/ path = definitely live
+  if (/\/live\/[^/]+\/[^/]+\/\d+/i.test(originalUrl)) {
+    return true;
+  }
+
+  // Xtream Codes: /movie/ or /series/ path = definitely VOD
+  if (/\/(movie|series)\/[^/]+\/[^/]+\/\d+/i.test(originalUrl)) {
+    return false;
+  }
+
+  // Generic live hints
   const liveHints = /(live|channel|stream|tv|iptv|24\/7|ao ?vivo)/i;
+  // Generic VOD hints
   const vodHints = /(vod|movie|filme|episode|episodio|series|season|s0?\d|e0?\d)/i;
   const hasFileName = /\.[a-z0-9]{2,4}(\?|$)/i.test(lower);
+
   if (liveHints.test(lower)) return true;
   if (vodHints.test(lower)) return false;
+
   return !hasFileName;
 }
 
@@ -226,6 +281,108 @@ function isUnsupportedContainer(url: string): { unsupported: boolean; format: st
   }
   return { unsupported: false, format: null };
 }
+
+// ============================================================================
+// Xtream Codes URL Detection
+// ============================================================================
+
+/**
+ * Xtream URL patterns:
+ * - Live (TS):  {server}/live/{user}/{pass}/{stream_id}.ts
+ * - Live (HLS): {server}/live/{user}/{pass}/{stream_id}.m3u8
+ * - Live (raw): {server}/live/{user}/{pass}/{stream_id} (no extension)
+ * - VOD:        {server}/movie/{user}/{pass}/{stream_id}.{ext}
+ * - Series:     {server}/series/{user}/{pass}/{episode_id}.{ext}
+ */
+type XtreamMediaType = 'live' | 'vod' | 'series' | null;
+
+interface XtreamUrlInfo {
+  isXtream: boolean;
+  mediaType: XtreamMediaType;
+  streamId: string | null;
+  extension: string | null;
+  isHls: boolean; // True if live stream is served as HLS (.m3u8)
+}
+
+/**
+ * Detect if URL is an Xtream Codes streaming URL
+ * Returns detailed info about the stream type
+ */
+function parseXtreamUrl(url: string): XtreamUrlInfo {
+  const originalUrl = extractOriginalUrl(url);
+
+  // Pattern: /live/{user}/{pass}/{stream_id}.m3u8 (HLS variant)
+  const liveHlsMatch = originalUrl.match(/\/live\/[^/]+\/[^/]+\/(\d+)\.m3u8(\?|$)/i);
+  if (liveHlsMatch) {
+    return {
+      isXtream: true,
+      mediaType: 'live',
+      streamId: liveHlsMatch[1],
+      extension: 'm3u8',
+      isHls: true,
+    };
+  }
+
+  // Pattern: /live/{user}/{pass}/{stream_id}.ts or /live/{user}/{pass}/{stream_id} (no ext)
+  const liveTsMatch = originalUrl.match(/\/live\/[^/]+\/[^/]+\/(\d+)(\.ts)?(\?|$)/i);
+  if (liveTsMatch) {
+    return {
+      isXtream: true,
+      mediaType: 'live',
+      streamId: liveTsMatch[1],
+      extension: 'ts',
+      isHls: false,
+    };
+  }
+
+  // Pattern: /movie/{user}/{pass}/{stream_id}.{ext}
+  const vodMatch = originalUrl.match(/\/movie\/[^/]+\/[^/]+\/(\d+)\.([a-z0-9]+)(\?|$)/i);
+  if (vodMatch) {
+    return {
+      isXtream: true,
+      mediaType: 'vod',
+      streamId: vodMatch[1],
+      extension: vodMatch[2].toLowerCase(),
+      isHls: false,
+    };
+  }
+
+  // Pattern: /series/{user}/{pass}/{episode_id}.{ext}
+  const seriesMatch = originalUrl.match(/\/series\/[^/]+\/[^/]+\/(\d+)\.([a-z0-9]+)(\?|$)/i);
+  if (seriesMatch) {
+    return {
+      isXtream: true,
+      mediaType: 'series',
+      streamId: seriesMatch[1],
+      extension: seriesMatch[2].toLowerCase(),
+      isHls: false,
+    };
+  }
+
+  return {
+    isXtream: false,
+    mediaType: null,
+    streamId: null,
+    extension: null,
+    isHls: false,
+  };
+}
+
+// Note: The following helper functions are available but not currently used elsewhere.
+// They could be exported if other components need Xtream URL detection.
+// For now, only parseXtreamUrl() is used internally by the adapter.
+
+// function isXtreamUrl(url: string): boolean {
+//   return parseXtreamUrl(url).isXtream;
+// }
+// function isXtreamLiveUrl(url: string): boolean {
+//   const info = parseXtreamUrl(url);
+//   return info.isXtream && info.mediaType === 'live';
+// }
+// function isXtreamVodUrl(url: string): boolean {
+//   const info = parseXtreamUrl(url);
+//   return info.isXtream && (info.mediaType === 'vod' || info.mediaType === 'series');
+// }
 
 export class LGWebOSAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
@@ -1485,12 +1642,17 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     // Detect IPTV TS streams - should NOT use HLS.js
     // Note: detection functions now extract original URL from proxified URLs
     const originalUrl = extractOriginalUrl(url);
+    const xtreamInfo = parseXtreamUrl(url);
     const isIptvTs = isIptvTsStream(url);
     const isLiveStream = this.options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
     const isHls = isHlsUrl(url);
 
     console.log('[LGWebOSAdapter] Stream detection:', {
       originalUrl: originalUrl?.substring(0, 100),
+      isXtream: xtreamInfo.isXtream,
+      xtreamMediaType: xtreamInfo.mediaType,
+      xtreamExtension: xtreamInfo.extension,
+      xtreamIsHls: xtreamInfo.isHls, // Xtream live served as HLS (.m3u8)
       isIptvTs,
       isLiveStream,
       isHls,
@@ -1499,8 +1661,13 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
+    // This includes Xtream Live HLS (.m3u8) streams
     if (!isIptvTs && isHls && Hls.isSupported()) {
-      console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
+      if (xtreamInfo.isXtream && xtreamInfo.isHls) {
+        console.log('[LGWebOSAdapter] Loading Xtream Live HLS stream via HLS.js:', streamUrl.substring(0, 100));
+      } else {
+        console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
+      }
       this.usingHls = true;
 
       // Create custom loader to proxy all HLS sub-requests (playlists, segments)
@@ -1522,14 +1689,22 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       this.video.src = streamUrl;
       this.video.load();
     } else {
-      // Direct playback for non-HLS streams (including IPTV TS)
+      // Direct playback for non-HLS streams (including IPTV TS and Xtream VOD)
       if (isIptvTs) {
-        console.log('[LGWebOSAdapter] Loading IPTV TS stream:', streamUrl.substring(0, 100));
+        // Xtream Live or generic IPTV TS stream
+        if (xtreamInfo.isXtream && xtreamInfo.mediaType === 'live') {
+          console.log('[LGWebOSAdapter] Loading Xtream Live stream:', streamUrl.substring(0, 100));
+        } else {
+          console.log('[LGWebOSAdapter] Loading IPTV TS stream:', streamUrl.substring(0, 100));
+        }
         this.isRawTsStream = true;
         // Start TS recovery monitor for live IPTV streams
         if (isLiveStream) {
           this.startTsRecoveryMonitor();
         }
+      } else if (xtreamInfo.isXtream && (xtreamInfo.mediaType === 'vod' || xtreamInfo.mediaType === 'series')) {
+        // Xtream VOD (movie or series episode) - direct playback
+        console.log(`[LGWebOSAdapter] Loading Xtream ${xtreamInfo.mediaType === 'vod' ? 'VOD' : 'Series'} (${xtreamInfo.extension}):`, streamUrl.substring(0, 100));
       } else {
         console.log('[LGWebOSAdapter] Using HTML5 video for stream:', streamUrl.substring(0, 100));
       }

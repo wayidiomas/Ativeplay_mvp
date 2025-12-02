@@ -19,10 +19,13 @@ import {
   getItems,
   searchItems,
   getParseStatus,
+  normalizeXtreamCategories,
+  normalizeXtreamStreams,
   type PlaylistGroup,
   type PlaylistItem,
   type SeriesInfo,
   type MediaKind,
+  type XtreamStreamItem,
 } from '@core/services/api';
 import {
   MdMovie,
@@ -222,6 +225,9 @@ export function Home() {
   const parseInProgress = usePlaylistStore((s) => s.parseInProgress);
   const setParseInProgress = usePlaylistStore((s) => s.setParseInProgress);
   const setStats = usePlaylistStore((s) => s.setStats);
+  // Hybrid Xtream support
+  const isXtream = usePlaylistStore((s) => s.isXtream);
+  const getXtreamClient = usePlaylistStore((s) => s.getXtreamClient);
 
   const [selectedNav, setSelectedNav] = useState<NavItem>('movies');
   const [rows, setRows] = useState<Row[]>([]);
@@ -341,11 +347,86 @@ export function Home() {
 
     // Capture hash for use in async function (TypeScript narrowing)
     const currentHash = hash;
+    const xtreamMode = isXtream();
+    const xtreamClient = xtreamMode ? getXtreamClient() : null;
 
     async function loadData() {
       setLoading(true);
 
       try {
+        // =====================================================================
+        // XTREAM MODE: Load data directly from Xtream API
+        // =====================================================================
+        if (xtreamMode && xtreamClient) {
+          console.log(`[Home] Loading ${mediaKind} from Xtream API`);
+
+          // Get categories based on media type
+          let categories;
+          let streams: XtreamStreamItem[];
+          const xtreamMediaType: 'live' | 'vod' | 'series' =
+            mediaKind === 'live' ? 'live' :
+            mediaKind === 'series' ? 'series' : 'vod';
+
+          if (mediaKind === 'live') {
+            categories = await xtreamClient.getLiveCategories();
+            streams = await xtreamClient.getLiveStreams();
+          } else if (mediaKind === 'series') {
+            categories = await xtreamClient.getSeriesCategories();
+            streams = await xtreamClient.getSeries();
+          } else {
+            // movies / vod
+            categories = await xtreamClient.getVodCategories();
+            streams = await xtreamClient.getVodStreams();
+          }
+
+          // Normalize categories to PlaylistGroup format
+          const groups = normalizeXtreamCategories(categories, mediaKind);
+          setGroupsCache(groups);
+
+          // Normalize streams to PlaylistItem format
+          const allItems = normalizeXtreamStreams(streams, xtreamMediaType);
+
+          // Build a map of items by category ID for fast lookup
+          const itemsByCategory = new Map<string, PlaylistItem[]>();
+          for (const item of allItems) {
+            const categoryId = item.group || 'uncategorized';
+            if (!itemsByCategory.has(categoryId)) {
+              itemsByCategory.set(categoryId, []);
+            }
+            itemsByCategory.get(categoryId)!.push(item);
+          }
+
+          // Store all groups for pagination
+          setAllFilteredGroups(groups);
+
+          // Load first page of groups
+          const groupsToLoad = groups.slice(0, GROUPS_PER_PAGE);
+          setLoadedGroupsCount(groupsToLoad.length);
+          setHasMoreGroups(groups.length > GROUPS_PER_PAGE);
+
+          // Build rows with items from the streams
+          const rowsData: Row[] = groupsToLoad.map((group) => {
+            const categoryItems = itemsByCategory.get(group.id) || [];
+            const slicedItems = categoryItems.slice(0, ITEMS_PER_GROUP);
+            return {
+              group: { ...group, itemCount: categoryItems.length },
+              items: slicedItems,
+              hasMore: categoryItems.length > ITEMS_PER_GROUP,
+            };
+          });
+
+          // Filter out empty rows
+          const nonEmptyRows = rowsData.filter(r => r.items.length > 0);
+          setRows(nonEmptyRows);
+          setRowsCache(mediaKind, nonEmptyRows);
+          console.log(`[Home] Xtream: Cached ${nonEmptyRows.length} rows for ${mediaKind} tab`);
+          return;
+        }
+
+        // =====================================================================
+        // M3U MODE: Load data from backend database
+        // =====================================================================
+
         // Load groups if not cached
         let groups = groupsCache;
         if (!groups) {
@@ -425,7 +506,7 @@ export function Home() {
     }
 
     loadData();
-  }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache, getRowsCache, setRowsCache]);
+  }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache, getRowsCache, setRowsCache, isXtream, getXtreamClient]);
 
   // Search with debounce - uses PostgreSQL fuzzy search (pg_trgm)
   useEffect(() => {
@@ -468,10 +549,31 @@ export function Home() {
     navigate('/onboarding/input', { replace: true });
   }, [navigate, reset]);
 
-  const handleSelectItem = useCallback((item: PlaylistItem) => {
+  const handleSelectItem = useCallback(async (item: PlaylistItem) => {
     console.log('[Home] Selected item:', item.name, item.url);
+
+    // For Xtream items, fetch the play URL first
+    if (item.xtreamId && item.xtreamMediaType && isXtream()) {
+      const client = getXtreamClient();
+      if (client) {
+        try {
+          const playUrl = await client.getPlayUrl(
+            item.xtreamId,
+            item.xtreamMediaType,
+            item.xtreamExtension
+          );
+          // Set item with resolved URL
+          setSelectedItem({ ...item, url: playUrl });
+          return;
+        } catch (err) {
+          console.error('[Home] Failed to get Xtream play URL:', err);
+          // Fall through to use item.url if available
+        }
+      }
+    }
+
     setSelectedItem(item);
-  }, []);
+  }, [isXtream, getXtreamClient]);
 
   const handleClosePlayer = useCallback(() => {
     setSelectedItem(null);

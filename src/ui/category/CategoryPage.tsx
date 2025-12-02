@@ -22,14 +22,27 @@ import {
 import {
   getItems,
   getSeries,
+  normalizeXtreamCategories,
+  normalizeXtreamStreams,
   type PlaylistItem,
   type SeriesInfo,
   type MediaKind,
 } from '@core/services/api';
 import { usePlaylistStore } from '@store/playlistStore';
+
 import { PlayerContainer } from '@ui/player';
 import { VirtualizedGrid } from '@ui/shared/VirtualizedGrid';
 import styles from './CategoryPage.module.css';
+
+// Map MediaKind to Xtream media type
+const mediaKindToXtreamType = (kind: MediaKind): 'live' | 'vod' | 'series' | undefined => {
+  switch (kind) {
+    case 'live': return 'live';
+    case 'movie': return 'vod';
+    case 'series': return 'series';
+    default: return undefined;
+  }
+};
 
 const ITEMS_PER_PAGE = 50;
 
@@ -137,11 +150,16 @@ export function CategoryPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const hash = usePlaylistStore((s) => s.hash);
+  // Xtream support
+  const isXtream = usePlaylistStore((s) => s.isXtream);
+  const getXtreamClient = usePlaylistStore((s) => s.getXtreamClient);
 
   // Get group info from navigation state or decode from URL
   const groupName = location.state?.groupName || decodeURIComponent(groupId || '');
   const mediaKind: MediaKind = location.state?.mediaKind || 'unknown';
   const isSeries = mediaKind === 'series';
+  // Xtream category ID (for filtering by category)
+  const xtreamCategoryId = location.state?.xtreamCategoryId;
 
   // Page-level focus context
   const { ref: pageRef, focusKey: pageFocusKey } = useFocusable({
@@ -172,13 +190,19 @@ export function CategoryPage() {
   const [hasMore, setHasMore] = useState(true);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
+  // Xtream: resolved category name (in case groupName is missing from state)
+  const [resolvedCategoryName, setResolvedCategoryName] = useState<string | null>(null);
 
 
   // Filter series by group (memoized)
+  // Note: For Xtream mode, series are already filtered by category_id in the API call
   const filteredSeries = useMemo(() => {
     if (!isSeries) return [];
+    // Xtream mode: data is already filtered by category_id, no need to filter again
+    if (isXtream()) return allSeries;
+    // M3U mode: filter by group name
     return allSeries.filter(s => s.group === groupName);
-  }, [allSeries, groupName, isSeries]);
+  }, [allSeries, groupName, isSeries, isXtream]);
 
   // Currently displayed series (paginated from filtered)
   const displayedSeries = useMemo(() => {
@@ -187,7 +211,7 @@ export function CategoryPage() {
 
   // Load items (for non-series)
   const loadItems = useCallback(async (currentOffset: number, append = false) => {
-    if (!hash || !groupName || isSeries) return;
+    if (isSeries) return;
 
     try {
       if (append) {
@@ -195,6 +219,59 @@ export function CategoryPage() {
       } else {
         setLoading(true);
       }
+
+      // =========================================================================
+      // XTREAM MODE: Load from Xtream API with category filter
+      // =========================================================================
+      if (isXtream()) {
+        const xtreamClient = getXtreamClient();
+        if (!xtreamClient) {
+          console.error('[CategoryPage] Xtream client not available');
+          setLoading(false);
+          return;
+        }
+
+        const xtreamMediaType = mediaKindToXtreamType(mediaKind);
+        let streams: any[] = [];
+        let categories: any[] = [];
+
+        // Fetch streams and categories by media type
+        if (xtreamMediaType === 'live') {
+          [streams, categories] = await Promise.all([
+            xtreamClient.getLiveStreams(xtreamCategoryId),
+            xtreamClient.getLiveCategories(),
+          ]);
+        } else if (xtreamMediaType === 'vod') {
+          [streams, categories] = await Promise.all([
+            xtreamClient.getVodStreams(xtreamCategoryId),
+            xtreamClient.getVodCategories(),
+          ]);
+        }
+
+        // Resolve category name from categories list if needed
+        if (xtreamCategoryId && categories.length > 0) {
+          const normalizedCategories = normalizeXtreamCategories(categories, mediaKind);
+          const matchingCategory = normalizedCategories.find(c => c.id === xtreamCategoryId);
+          if (matchingCategory) {
+            setResolvedCategoryName(matchingCategory.name);
+          }
+        }
+
+        // Normalize to PlaylistItem format
+        const normalizedItems = normalizeXtreamStreams(streams, xtreamMediaType || 'live');
+
+        // Xtream doesn't support pagination, so we load all at once
+        setItems(normalizedItems);
+        setTotal(normalizedItems.length);
+        setHasMore(false);
+        setOffset(normalizedItems.length);
+        return;
+      }
+
+      // =========================================================================
+      // M3U MODE: Load from backend database
+      // =========================================================================
+      if (!hash || !groupName) return;
 
       const response = await getItems(hash, {
         group: groupName,
@@ -217,14 +294,62 @@ export function CategoryPage() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [hash, groupName, isSeries]);
+  }, [hash, groupName, isSeries, isXtream, getXtreamClient, mediaKind, xtreamCategoryId]);
 
   // Load series (for series groups)
   const loadSeries = useCallback(async () => {
-    if (!hash || !isSeries) return;
+    if (!isSeries) return;
 
     try {
       setLoading(true);
+
+      // =========================================================================
+      // XTREAM MODE: Load series from Xtream API
+      // =========================================================================
+      if (isXtream()) {
+        const xtreamClient = getXtreamClient();
+        if (!xtreamClient) {
+          console.error('[CategoryPage] Xtream client not available');
+          setLoading(false);
+          return;
+        }
+
+        // Fetch series and categories in parallel
+        const [streams, categories] = await Promise.all([
+          xtreamClient.getSeries(xtreamCategoryId),
+          xtreamClient.getSeriesCategories(),
+        ]);
+
+        // Resolve category name from categories list if needed
+        if (xtreamCategoryId && categories.length > 0) {
+          const normalizedCategories = normalizeXtreamCategories(categories, mediaKind);
+          const matchingCategory = normalizedCategories.find(c => c.id === xtreamCategoryId);
+          if (matchingCategory) {
+            setResolvedCategoryName(matchingCategory.name);
+          }
+        }
+
+        // Normalize to SeriesInfo format
+        const normalizedSeries: SeriesInfo[] = streams.map((s: any) => ({
+          id: String(s.seriesId),
+          name: s.name,
+          logo: s.cover,
+          group: resolvedCategoryName || groupName,
+          totalEpisodes: 0, // Not available until we call getSeriesInfo
+          totalSeasons: 0,
+          firstSeason: 1,
+          lastSeason: 1,
+        }));
+
+        setAllSeries(normalizedSeries);
+        return;
+      }
+
+      // =========================================================================
+      // M3U MODE: Load from backend database
+      // =========================================================================
+      if (!hash) return;
+
       const response = await getSeries(hash);
       setAllSeries(response.series);
     } catch (error) {
@@ -232,7 +357,7 @@ export function CategoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [hash, isSeries]);
+  }, [hash, isSeries, isXtream, getXtreamClient, xtreamCategoryId, groupName]);
 
   // Update total and hasMore when filteredSeries changes
   useEffect(() => {
@@ -273,15 +398,37 @@ export function CategoryPage() {
   }, [navigate]);
 
   // Handle item selection - open player inline
-  const handleSelectItem = useCallback((item: PlaylistItem) => {
+  const handleSelectItem = useCallback(async (item: PlaylistItem) => {
     if (item.seriesId) {
       navigate(`/series/${item.seriesId}`);
       return;
     }
-    // Open player inline instead of navigating
+
+    // =========================================================================
+    // XTREAM MODE: Fetch play URL from Xtream API
+    // =========================================================================
+    if (item.xtreamId && item.xtreamMediaType && isXtream()) {
+      const xtreamClient = getXtreamClient();
+      if (xtreamClient) {
+        try {
+          console.log('[CategoryPage] Fetching Xtream play URL for:', item.name);
+          const playUrl = await xtreamClient.getPlayUrl(
+            item.xtreamId,
+            item.xtreamMediaType,
+            item.xtreamExtension
+          );
+          setSelectedItem({ ...item, url: playUrl });
+          return;
+        } catch (err) {
+          console.error('[CategoryPage] Failed to get Xtream play URL:', err);
+        }
+      }
+    }
+
+    // M3U MODE: Use URL directly
     console.log('[CategoryPage] Selected item:', item.name, item.url);
     setSelectedItem(item);
-  }, [navigate]);
+  }, [navigate, isXtream, getXtreamClient]);
 
   // Handle player close
   const handleClosePlayer = useCallback(() => {
@@ -352,7 +499,7 @@ export function CategoryPage() {
           </button>
           <div className={styles.titleArea}>
             {getHeaderIcon()}
-            <h1>{groupName}</h1>
+            <h1>{resolvedCategoryName || groupName}</h1>
             <span className={styles.count}>
               ({total.toLocaleString()} {isSeries ? 'séries' : 'items'})
             </span>

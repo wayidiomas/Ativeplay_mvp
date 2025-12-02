@@ -1,10 +1,12 @@
 //! Playlist repository for database operations
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::models::{NewPlaylist, PlaylistRow};
+use crate::db::models::{NewPlaylist, PlaylistRow, SourceType};
 use crate::models::playlist::PlaylistStats;
+use crate::services::xtream::{XtreamAuthResponse, XtreamCredentials};
 
 /// Create or update a playlist
 pub async fn upsert_playlist(
@@ -56,7 +58,9 @@ pub async fn find_by_hash(
         sqlx::query_as::<_, PlaylistRow>(
             r#"
             SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
-                   series_count, unknown_count, group_count, created_at, updated_at, expires_at
+                   series_count, unknown_count, group_count, created_at, updated_at, expires_at,
+                   source_type, name, xtream_server, xtream_username, xtream_password,
+                   xtream_expires_at, xtream_max_connections, xtream_is_trial
             FROM playlists
             WHERE hash = $1 AND client_id = $2
             "#,
@@ -69,7 +73,9 @@ pub async fn find_by_hash(
         sqlx::query_as::<_, PlaylistRow>(
             r#"
             SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
-                   series_count, unknown_count, group_count, created_at, updated_at, expires_at
+                   series_count, unknown_count, group_count, created_at, updated_at, expires_at,
+                   source_type, name, xtream_server, xtream_username, xtream_password,
+                   xtream_expires_at, xtream_max_connections, xtream_is_trial
             FROM playlists
             WHERE hash = $1 AND client_id IS NULL
             "#,
@@ -90,7 +96,9 @@ pub async fn find_by_hash_any(
     let row = sqlx::query_as::<_, PlaylistRow>(
         r#"
         SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
-               series_count, unknown_count, group_count, created_at, updated_at, expires_at
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at,
+               source_type, name, xtream_server, xtream_username, xtream_password,
+               xtream_expires_at, xtream_max_connections, xtream_is_trial
         FROM playlists
         WHERE hash = $1
         ORDER BY updated_at DESC
@@ -179,7 +187,9 @@ pub async fn list_by_client(
     let rows = sqlx::query_as::<_, PlaylistRow>(
         r#"
         SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
-               series_count, unknown_count, group_count, created_at, updated_at, expires_at
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at,
+               source_type, name, xtream_server, xtream_username, xtream_password,
+               xtream_expires_at, xtream_max_connections, xtream_is_trial
         FROM playlists
         WHERE client_id = $1
         ORDER BY updated_at DESC
@@ -239,7 +249,9 @@ pub async fn find_by_device(
     let row = sqlx::query_as::<_, PlaylistRow>(
         r#"
         SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
-               series_count, unknown_count, group_count, created_at, updated_at, expires_at
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at,
+               source_type, name, xtream_server, xtream_username, xtream_password,
+               xtream_expires_at, xtream_max_connections, xtream_is_trial
         FROM playlists
         WHERE device_id = $1
         "#,
@@ -249,4 +261,110 @@ pub async fn find_by_device(
     .await?;
 
     Ok(row)
+}
+
+/// Find playlist by ID
+pub async fn find_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<PlaylistRow>, sqlx::Error> {
+    let row = sqlx::query_as::<_, PlaylistRow>(
+        r#"
+        SELECT id, client_id, device_id, hash, url, total_items, live_count, movie_count,
+               series_count, unknown_count, group_count, created_at, updated_at, expires_at,
+               source_type, name, xtream_server, xtream_username, xtream_password,
+               xtream_expires_at, xtream_max_connections, xtream_is_trial
+        FROM playlists
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row)
+}
+
+/// Save an Xtream playlist (credentials only, no items)
+///
+/// This is used when a playlist URL is detected as Xtream Codes.
+/// Instead of parsing the M3U, we store just the credentials and
+/// consume the Xtream Player API directly.
+pub async fn save_xtream_playlist(
+    pool: &PgPool,
+    creds: &XtreamCredentials,
+    auth: &XtreamAuthResponse,
+    device_id: Option<&str>,
+) -> Result<Uuid, sqlx::Error> {
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+    let expires_at = now + chrono::Duration::days(7); // 7-day TTL for Xtream playlists
+
+    // Calculate hash from URL for consistency
+    let url = format!(
+        "{}/get.php?username={}&password={}",
+        creds.server, creds.username, creds.password
+    );
+    let hash = crate::services::m3u_parser::hash_url(&url);
+
+    // Parse Xtream account expiration
+    let xtream_expires_at = auth.user_info.exp_timestamp()
+        .and_then(|ts| DateTime::from_timestamp(ts, 0));
+
+    // Parse max connections
+    let max_connections = auth.user_info.max_connections_i16();
+
+    // Parse is_trial
+    let is_trial = auth.user_info.is_trial_account();
+
+    // Name for display
+    let name = format!("Xtream - {}", creds.server.replace("http://", "").replace("https://", ""));
+
+    // If device_id is provided, first delete any existing playlist for this device
+    if let Some(did) = device_id {
+        let _ = sqlx::query("DELETE FROM playlists WHERE device_id = $1")
+            .bind(did)
+            .execute(pool)
+            .await;
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO playlists (
+            id, hash, url, name, source_type, device_id,
+            total_items, live_count, movie_count, series_count, unknown_count, group_count,
+            xtream_server, xtream_username, xtream_password,
+            xtream_expires_at, xtream_max_connections, xtream_is_trial,
+            expires_at, created_at, updated_at
+        ) VALUES (
+            $1, $2, $3, $4, 'xtream', $5,
+            0, 0, 0, 0, 0, 0,
+            $6, $7, $8,
+            $9, $10, $11,
+            $12, $13, $13
+        )
+        "#,
+    )
+    .bind(id)
+    .bind(&hash)
+    .bind(&url)
+    .bind(&name)
+    .bind(device_id)
+    .bind(&creds.server)
+    .bind(&creds.username)
+    .bind(&creds.password)
+    .bind(xtream_expires_at)
+    .bind(max_connections)
+    .bind(is_trial)
+    .bind(expires_at)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    tracing::info!(
+        "Saved Xtream playlist {} for device {:?} (server: {}, account expires: {:?})",
+        hash, device_id, creds.server, xtream_expires_at
+    );
+
+    Ok(id)
 }

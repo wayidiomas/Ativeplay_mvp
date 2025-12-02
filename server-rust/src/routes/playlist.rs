@@ -14,6 +14,7 @@ use crate::db::repository::playlists;
 use crate::models::{GroupsResponse, ItemsQuery, ItemsResponse, ParseRequest, ParseResponse, SeriesResponse};
 use crate::services::m3u_parser::hash_url;
 use crate::services::redis::ParseProgress;
+use crate::services::xtream::{self, XtreamUserInfo, XtreamServerInfo};
 use crate::AppState;
 
 /// Background parse response
@@ -28,6 +29,11 @@ pub struct BackgroundParseResponse {
     pub stats: Option<crate::models::PlaylistStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<crate::models::PlaylistGroup>>,
+    // Hybrid support: identifies Xtream vs M3U playlists
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
 }
 
 /// POST /api/playlist/parse - Parse a playlist URL (background processing)
@@ -50,6 +56,72 @@ pub async fn parse_playlist(
         ));
     }
 
+    // =========================================================================
+    // XTREAM DETECTION: Try to detect Xtream Codes URL before M3U parsing
+    // If detected, save only credentials (~200 bytes) instead of parsing M3U
+    // =========================================================================
+    if let Some(creds) = xtream::extract_credentials(&payload.url) {
+        tracing::info!("Detected potential Xtream URL for server: {}", creds.server);
+
+        // Validate credentials via Xtream Player API
+        match xtream::validate_credentials(&creds).await {
+            Ok(auth) => {
+                tracing::info!(
+                    "Xtream credentials validated for {} (status: {}, expires: {:?})",
+                    creds.server,
+                    auth.user_info.status,
+                    auth.user_info.exp_date
+                );
+
+                // Save only credentials to database (NOT the entire M3U content)
+                let device_id = payload.device_id.as_deref();
+
+                match playlists::save_xtream_playlist(&state.pool, &creds, &auth, device_id).await {
+                    Ok(playlist_id) => {
+                        let hash = crate::services::m3u_parser::hash_url(&payload.url);
+
+                        // Return Xtream-specific response with sourceType and playlistId
+                        return Ok(Json(BackgroundParseResponse {
+                            status: "complete".to_string(),
+                            hash,
+                            message: Some("Xtream playlist saved".to_string()),
+                            stats: Some(crate::models::PlaylistStats {
+                                total_items: 0, // Will be fetched dynamically from Xtream API
+                                live_count: 0,
+                                movie_count: 0,
+                                series_count: 0,
+                                unknown_count: 0,
+                                group_count: 0,
+                            }),
+                            groups: None, // Groups fetched dynamically from Xtream API
+                            source_type: Some("xtream".to_string()),
+                            playlist_id: Some(playlist_id.to_string()),
+                        }));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to save Xtream playlist: {}", e);
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({ "error": format!("Failed to save Xtream playlist: {}", e) })),
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                // Xtream validation failed - could be invalid credentials or not an Xtream server
+                // Fall through to normal M3U parsing
+                tracing::info!(
+                    "Xtream validation failed for {}: {} - falling back to M3U parsing",
+                    creds.server,
+                    e
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // NORMAL M3U FLOW: Not Xtream or Xtream validation failed
+    // =========================================================================
     let hash = hash_url(&payload.url);
     let device_id = payload.device_id.as_deref();
     let expires_at = Utc::now() + Duration::days(1);
@@ -64,6 +136,8 @@ pub async fn parse_playlist(
                 message: Some("Already parsing this playlist".to_string()),
                 stats: None,
                 groups: None,
+                source_type: None,
+                playlist_id: None,
             }));
         }
     }
@@ -117,6 +191,8 @@ pub async fn parse_playlist(
                 message: Some("Loaded from cache".to_string()),
                 stats: Some(existing.to_stats()),
                 groups: Some(groups),
+                source_type: Some("m3u".to_string()),
+                playlist_id: None,
             }));
         } else {
             tracing::warn!("Found empty cache for {}, will re-parse", hash);
@@ -228,6 +304,8 @@ pub async fn parse_playlist(
         message: Some("Parsing started in background".to_string()),
         stats: None,
         groups: None,
+        source_type: Some("m3u".to_string()),
+        playlist_id: None,
     }))
 }
 
