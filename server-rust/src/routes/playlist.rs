@@ -238,19 +238,41 @@ pub async fn get_groups(
     }))
 }
 
-/// GET /api/playlist/:hash/series - Get all series
+/// Query params for series
+#[derive(Deserialize, Default)]
+pub struct SeriesQuery {
+    /// Filter by group name
+    pub group: Option<String>,
+}
+
+/// GET /api/playlist/:hash/series - Get all series (optionally filtered by group)
 pub async fn get_series(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<String>,
+    Query(query): Query<SeriesQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Get series from PostgreSQL
-    let series = state.db_cache.get_series(&hash).await.map_err(|e| {
-        tracing::error!("Failed to get series: {}", e);
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
-        )
-    })?;
+    // Get series from PostgreSQL (filtered if group is provided)
+    let series = if let Some(group) = &query.group {
+        state
+            .db_cache
+            .get_series_by_group(&hash, group)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to get series by group: {}", e);
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
+                )
+            })?
+    } else {
+        state.db_cache.get_series(&hash).await.map_err(|e| {
+            tracing::error!("Failed to get series: {}", e);
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
+            )
+        })?
+    };
 
     Ok(Json(SeriesResponse {
         total: series.len(),
