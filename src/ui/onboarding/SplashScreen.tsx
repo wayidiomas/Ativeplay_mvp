@@ -52,10 +52,14 @@ export function SplashScreen() {
 
         if (result.valid) {
           // Cache is valid → go to home
-          console.log('[SplashScreen] Cache valid, going to home');
+          console.log('[SplashScreen] Cache valid, going to home', {
+            sourceType: result.sourceType,
+            playlistId: result.playlistId,
+          });
           setMessage('Playlist encontrada!');
 
           // Update store with fresh data from backend
+          // CRITICAL: Include sourceType and playlistId for Xtream client initialization
           if (result.stats) {
             setPlaylist({
               hash: savedHash,
@@ -63,6 +67,8 @@ export function SplashScreen() {
               name: extractNameFromUrl(result.url || savedUrl || ''),
               stats: result.stats,
               savedAt: Date.now(),
+              sourceType: result.sourceType,
+              playlistId: result.playlistId,
             });
           }
 

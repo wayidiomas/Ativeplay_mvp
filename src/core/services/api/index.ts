@@ -120,6 +120,9 @@ export interface ValidateResponse {
   stats?: PlaylistStats;
   expiresAt?: number;
   createdAt?: number;
+  // Hybrid support: identifies Xtream vs M3U playlists (critical for auto-resume)
+  sourceType?: SourceType;
+  playlistId?: string;
 }
 
 export interface ItemsResponse {

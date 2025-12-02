@@ -482,10 +482,16 @@ pub struct ValidateResponse {
     pub expires_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
+    // Hybrid support: identifies Xtream vs M3U playlists (critical for auto-resume)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
 }
 
 /// GET /api/playlist/:hash/validate - Check if cache is valid
 /// Returns cache status without full data - useful for auto-resume on TV restart
+/// For Xtream playlists, returns source_type and playlist_id for client initialization
 pub async fn validate_cache(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<String>,
@@ -503,6 +509,9 @@ pub async fn validate_cache(
                 stats: Some(metadata.stats),
                 expires_at: Some(metadata.expires_at),
                 created_at: Some(metadata.created_at),
+                // Include Xtream metadata for auto-resume
+                source_type: metadata.source_type,
+                playlist_id: metadata.playlist_id,
             })
         }
         _ => Json(ValidateResponse {
@@ -512,6 +521,8 @@ pub async fn validate_cache(
             stats: None,
             expires_at: None,
             created_at: None,
+            source_type: None,
+            playlist_id: None,
         }),
     }
 }

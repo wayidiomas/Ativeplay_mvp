@@ -44,6 +44,10 @@ impl DbCacheService {
         let stats = playlist.to_stats();
         let created_at = playlist.created_at.timestamp_millis();
 
+        // Extract Xtream metadata if present
+        let source_type = playlist.source_type.as_ref().map(|s| s.to_string());
+        let playlist_id = Some(playlist.id.to_string());
+
         Ok(Some(CacheMetadata {
             hash: playlist.hash,
             url: playlist.url,
@@ -52,6 +56,8 @@ impl DbCacheService {
             series: series_list,
             created_at,
             expires_at: i64::MAX, // Eternal TTL as per user decision
+            source_type,
+            playlist_id,
         }))
     }
 
@@ -401,6 +407,10 @@ impl DbCacheService {
             let stats = playlist.to_stats();
             let created_at = playlist.created_at.timestamp_millis();
 
+            // Extract Xtream metadata if present
+            let source_type = playlist.source_type.as_ref().map(|s| s.to_string());
+            let playlist_id = Some(playlist.id.to_string());
+
             result.push(CacheMetadata {
                 hash: playlist.hash,
                 url: playlist.url,
@@ -409,6 +419,8 @@ impl DbCacheService {
                 series: series_list,
                 created_at,
                 expires_at: i64::MAX,
+                source_type,
+                playlist_id,
             });
         }
 

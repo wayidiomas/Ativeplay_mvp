@@ -163,6 +163,11 @@ pub struct CacheMetadata {
     pub series: Vec<SeriesInfo>,
     pub created_at: i64,
     pub expires_at: i64,
+    // Hybrid support: identifies Xtream vs M3U playlists
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
 }
 
 /// Request to parse a playlist

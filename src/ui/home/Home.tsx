@@ -508,9 +508,11 @@ export function Home() {
     loadData();
   }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache, getRowsCache, setRowsCache, isXtream, getXtreamClient]);
 
-  // Search with debounce - uses PostgreSQL fuzzy search (pg_trgm)
+  // Search with debounce
+  // - M3U mode: uses PostgreSQL fuzzy search (pg_trgm) - fast server-side
+  // - Xtream mode: uses client-side filtering over loaded items (API has no search)
   useEffect(() => {
-    const term = searchTerm.trim();
+    const term = searchTerm.trim().toLowerCase();
     if (!hash || term.length < 2) {
       setSearchResults([]);
       return;
@@ -520,7 +522,32 @@ export function Home() {
     const timeoutId = setTimeout(async () => {
       setSearchLoading(true);
       try {
-        // Use server-side fuzzy search (much faster than client-side filtering)
+        // =====================================================================
+        // XTREAM MODE: Client-side search over loaded items
+        // Xtream API doesn't have a search endpoint, so we filter locally
+        // =====================================================================
+        if (isXtream()) {
+          // Collect all items from cached rows
+          const allItems: PlaylistItem[] = [];
+          for (const row of rows) {
+            allItems.push(...row.items);
+          }
+
+          // Simple fuzzy match: check if term appears in name
+          const filtered = allItems.filter((item) =>
+            item.name.toLowerCase().includes(term)
+          );
+
+          if (!cancelled) {
+            setSearchResults(filtered.slice(0, 100));
+            console.log(`[Home] Xtream client-side search: "${term}" → ${filtered.length} results`);
+          }
+          return;
+        }
+
+        // =====================================================================
+        // M3U MODE: Server-side fuzzy search (much faster for large playlists)
+        // =====================================================================
         const res = await searchItems(hash, term, 100);
         if (!cancelled) setSearchResults(res.items);
       } catch (error) {
@@ -532,7 +559,7 @@ export function Home() {
     }, 300);
 
     return () => { cancelled = true; clearTimeout(timeoutId); };
-  }, [hash, searchTerm]);
+  }, [hash, searchTerm, isXtream, rows]);
 
   const handleNavClick = useCallback((item: NavItem) => {
     setSelectedNav(item);
