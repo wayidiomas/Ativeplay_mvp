@@ -117,12 +117,23 @@ function isHlsUrl(url: string): boolean {
 
 /**
  * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
+ * VOD URLs have file extensions (.m3u8, .mp4, .mkv) and should NOT match
+ * VOD URLs with /movie/, /series/, /vod/ paths should NOT match
  */
 function isIptvTsStream(url: string): boolean {
   const originalUrl = extractOriginalUrl(url);
+
+  // If URL has a file extension, it's NOT a raw TS stream (it's VOD or HLS)
+  if (/\.[a-z0-9]{2,4}(\?|$)/i.test(originalUrl)) return false;
+
+  // If URL contains VOD path indicators, it's NOT a raw TS stream
+  // This handles Xtream Codes VOD URLs like /movie/123/456/789 or /series/123/456/789
+  if (/(\/movie\/|\/series\/|\/vod\/|\/episode\/|\/filme\/)/i.test(originalUrl)) return false;
+
   // Pattern: ends with /ts (not .ts file extension)
   if (/\/ts(\?|$)/i.test(originalUrl)) return true;
   // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
+  // This typically matches live IPTV streams like /live/123/456/789
   if (/\/\d+\/\d+\/\d+(\?|$)/.test(originalUrl)) return true;
   // Query param indicating TS output
   if (originalUrl.includes('output=ts')) return true;
@@ -439,6 +450,13 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('error', () => {
+      // If using HLS.js, let it handle errors with its own fallback mechanism
+      // Don't emit error here - HLS.js error handler will take care of it
+      if (this.usingHls) {
+        console.log('[LGWebOSAdapter] Video error while using HLS.js - letting HLS.js handle it');
+        return;
+      }
+
       const error = this.video?.error;
       const errorCode = error?.code;
 
@@ -1038,11 +1056,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
-    // VOD content should also use HLS.js even without .m3u8 in URL
-    // because the proxy handles content properly and HLS.js has better error recovery
-    const shouldUseHlsJs = !isIptvTs && (isHls || !isLiveStream) && Hls.isSupported();
-
-    if (shouldUseHlsJs) {
+    if (!isIptvTs && isHls && Hls.isSupported()) {
       console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
       this.usingHls = true;
 
