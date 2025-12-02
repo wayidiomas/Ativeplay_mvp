@@ -564,8 +564,55 @@ export function Home() {
         setFocus(firstRowHeaderFocusKey);
         return false;
       }
-      // Block right navigation (rightmost tab) - don't go to search/exit
+      // Allow right navigation to search
+      if (direction === 'right') {
+        setFocus('nav-search');
+        return false;
+      }
+      return true;
+    },
+  });
+
+  // Search input wrapper focus
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const { ref: searchWrapperRef, focused: searchFocused } = useFocusable({
+    focusKey: 'nav-search',
+    onEnterPress: () => {
+      // Focus the actual input element for typing
+      searchInputRef.current?.focus();
+    },
+    onArrowPress: (direction) => {
+      if (direction === 'left') {
+        setFocus('nav-live');
+        return false;
+      }
+      if (direction === 'right') {
+        setFocus('nav-exit');
+        return false;
+      }
+      if (direction === 'down' && firstRowHeaderFocusKey) {
+        setFocus(firstRowHeaderFocusKey);
+        return false;
+      }
+      return true;
+    },
+  });
+
+  // Exit button focus
+  const { ref: exitRef, focused: exitFocused } = useFocusable({
+    focusKey: 'nav-exit',
+    onEnterPress: handleExit,
+    onArrowPress: (direction) => {
+      if (direction === 'left') {
+        setFocus('nav-search');
+        return false;
+      }
+      // Block right - rightmost element
       if (direction === 'right') return false;
+      if (direction === 'down' && firstRowHeaderFocusKey) {
+        setFocus(firstRowHeaderFocusKey);
+        return false;
+      }
       return true;
     },
   });
@@ -919,9 +966,14 @@ export function Home() {
           </nav>
 
           <div className={styles.searchContainer}>
-            <div className={styles.searchInputWrapper}>
+            <div
+              ref={searchWrapperRef}
+              className={`${styles.searchInputWrapper} ${searchFocused ? styles.focused : ''}`}
+              data-focused={searchFocused}
+            >
               <MdSearch className={styles.searchIcon} size={20} />
               <input
+                ref={searchInputRef}
                 type="text"
                 className={styles.searchInput}
                 placeholder="Buscar..."
@@ -929,7 +981,12 @@ export function Home() {
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
-            <button className={styles.exitButton} onClick={handleExit}>
+            <button
+              ref={exitRef}
+              className={`${styles.exitButton} ${exitFocused ? styles.focused : ''}`}
+              onClick={handleExit}
+              data-focused={exitFocused}
+            >
               <MdExitToApp size={20} style={{ marginRight: 8 }} />
               Sair
             </button>

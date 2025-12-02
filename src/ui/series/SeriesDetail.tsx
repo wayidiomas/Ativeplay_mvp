@@ -3,7 +3,7 @@
  * Página de detalhes de uma série com lista de episódios estilo Netflix
  */
 
-import { useEffect, useState, memo } from 'react';
+import { useEffect, useState, memo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   useFocusable,
@@ -75,6 +75,41 @@ const EpisodeCard = memo(({ episode, fullData, focusKey, onSelect }: EpisodeCard
   );
 }, (prev, next) => prev.episode.id === next.episode.id && prev.focusKey === next.focusKey);
 
+// Season button with spatial navigation for TV remotes
+interface SeasonButtonProps {
+  season: number;
+  isSelected: boolean;
+  focusKey: string;
+  onSelect: () => void;
+  onArrowPress?: (direction: string) => boolean;
+}
+
+const SeasonButton = memo(({ season, isSelected, focusKey, onSelect, onArrowPress }: SeasonButtonProps) => {
+  const { ref, focused } = useFocusable({
+    focusKey,
+    onEnterPress: onSelect,
+    onArrowPress,
+  });
+
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focused]);
+
+  return (
+    <button
+      ref={ref}
+      className={`${styles.seasonButton} ${isSelected ? styles.selected : ''} ${focused ? styles.focused : ''}`}
+      onClick={onSelect}
+      tabIndex={-1}
+      data-focused={focused}
+    >
+      T{season}
+    </button>
+  );
+}, (prev, next) => prev.season === next.season && prev.isSelected === next.isSelected);
+
 interface SeriesDetailProps {
   onSelectItem: (item: PlaylistItem) => void;
 }
@@ -93,7 +128,7 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     saveLastFocusedChild: true,
   });
 
-  // Back button focus
+  // Back button focus - simple version, navigation handled by handleBackArrowPress
   const { ref: backRef, focused: backFocused } = useFocusable({
     focusKey: 'series-back',
     onEnterPress: () => navigate('/home'),
@@ -190,6 +225,37 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     const seasons = new Set(episodes.map((ep) => ep.seasonNumber || 1));
     return Array.from(seasons).sort((a, b) => a - b);
   })();
+
+  // Handle season button navigation
+  const handleSeasonArrowPress = useCallback((direction: string, seasonIndex: number) => {
+    if (direction === 'left') {
+      if (seasonIndex > 0) {
+        setFocus(`series-season-${availableSeasons[seasonIndex - 1]}`);
+      } else {
+        // At first season - go to back button
+        setFocus('series-back');
+      }
+      return false;
+    }
+    if (direction === 'right') {
+      if (seasonIndex < availableSeasons.length - 1) {
+        setFocus(`series-season-${availableSeasons[seasonIndex + 1]}`);
+      }
+      // Block at last season
+      return false;
+    }
+    if (direction === 'down' && currentSeasonEpisodes.length > 0) {
+      // Navigate to first episode
+      setFocus(`series-ep-${currentSeasonEpisodes[0]?.id}`);
+      return false;
+    }
+    if (direction === 'up') {
+      // Navigate to back button
+      setFocus('series-back');
+      return false;
+    }
+    return true;
+  }, [availableSeasons, currentSeasonEpisodes]);
 
   // Build episode lookup for full data (when using seasonsData)
   const episodeLookup = new Map(episodes.map((ep) => [ep.id, ep]));
@@ -319,22 +385,22 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
         </div>
       </div>
 
-      {/* Season Selector */}
+      {/* Season Selector - TV Remote Friendly */}
       {availableSeasons.length > 1 && (
         <div className={styles.seasonSelector}>
-          <label htmlFor="season-select">Temporada:</label>
-          <select
-            id="season-select"
-            value={selectedSeason}
-            onChange={(e) => setSelectedSeason(Number(e.target.value))}
-            className={styles.seasonDropdown}
-          >
-            {availableSeasons.map((season) => (
-              <option key={season} value={season}>
-                Temporada {season}
-              </option>
+          <span className={styles.seasonLabel}>Temporada:</span>
+          <div className={styles.seasonButtons}>
+            {availableSeasons.map((season, index) => (
+              <SeasonButton
+                key={season}
+                season={season}
+                isSelected={season === selectedSeason}
+                focusKey={`series-season-${season}`}
+                onSelect={() => setSelectedSeason(season)}
+                onArrowPress={(direction) => handleSeasonArrowPress(direction, index)}
+              />
             ))}
-          </select>
+          </div>
         </div>
       )}
 

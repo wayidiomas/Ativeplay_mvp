@@ -119,6 +119,55 @@
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* Season buttons for TV Remote navigation */
+.seasonLabel {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-right: 8px;
+}
+
+.seasonButtons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seasonButton {
+  padding: 10px 20px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 60px;
+  text-align: center;
+}
+
+.seasonButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.seasonButton.selected {
+  background: linear-gradient(120deg, #e50914, #ff6b6b);
+  color: #fff;
+}
+
+/* TV Remote Focus State */
+.seasonButton.focused,
+.seasonButton[data-focused="true"] {
+  border: 2px solid #e50914;
+  box-shadow: 0 0 12px rgba(229, 9, 20, 0.5);
+  background: rgba(229, 9, 20, 0.15);
+}
+
+.seasonButton.selected.focused,
+.seasonButton.selected[data-focused="true"] {
+  box-shadow: 0 0 16px rgba(229, 9, 20, 0.7);
+}
+
 .episodesList {
   margin-top: 30px;
 }

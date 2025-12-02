@@ -323,7 +323,7 @@ export function CategoryPage() {
         setFocus(`category-grid-item-${firstItem.id}`);
       }
     }
-  }, [loading, displayItems.length, isSeries]);
+  }, [loading, displayItems.length, isSeries, displayedSeries, items]);
 
   // If an item is selected, show the player
   if (selectedItem) {

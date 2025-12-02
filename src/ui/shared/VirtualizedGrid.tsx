@@ -66,18 +66,26 @@ const GridItemWrapper = memo(function GridItemWrapper({
   index,
   onFocused,
   onSelect,
+  onArrowPress,
   children,
 }: {
   focusKey: string;
   index: number;
   onFocused: (index: number) => void;
   onSelect?: () => void;
+  onArrowPress?: (direction: string, index: number) => boolean;
   children: React.ReactNode;
 }) {
   const { ref, focused, focusSelf } = useFocusable({
     focusKey,
     onEnterPress: onSelect,
     onFocus: () => onFocused(index),
+    onArrowPress: (direction) => {
+      if (onArrowPress) {
+        return onArrowPress(direction, index);
+      }
+      return true;
+    },
   });
 
   // Scroll into view when focused
@@ -182,7 +190,7 @@ export function VirtualizedGrid<T>({
     [focusedIndex, columnCount, items.length]
   );
 
-  // Handle arrow key navigation
+  // Handle arrow key navigation at container level
   const handleArrowPress = useCallback(
     (direction: string) => {
       const newIndex = calculateNavigation(direction);
@@ -195,9 +203,56 @@ export function VirtualizedGrid<T>({
         return false; // We handle navigation
       }
 
-      return true; // Allow escape from grid
+      // Block horizontal escape at boundaries, allow vertical escape
+      if (direction === 'left' || direction === 'right') {
+        return false; // Block horizontal escape
+      }
+
+      return true; // Allow up/down escape from grid (to header, etc)
     },
     [focusKey, calculateNavigation, items, getItemKey]
+  );
+
+  // Handle arrow key navigation at item level
+  const handleItemArrowPress = useCallback(
+    (direction: string, index: number) => {
+      const currentCol = index % columnCount;
+
+      // Calculate navigation
+      let newIndex: number | null = null;
+
+      if (direction === 'right' && currentCol < columnCount - 1 && index < items.length - 1) {
+        newIndex = index + 1;
+      } else if (direction === 'left' && currentCol > 0) {
+        newIndex = index - 1;
+      } else if (direction === 'down') {
+        const downIndex = index + columnCount;
+        if (downIndex < items.length) {
+          newIndex = downIndex;
+        }
+      } else if (direction === 'up') {
+        const upIndex = index - columnCount;
+        if (upIndex >= 0) {
+          newIndex = upIndex;
+        }
+      }
+
+      if (newIndex !== null) {
+        const item = items[newIndex];
+        if (item) {
+          setFocus(`${focusKey}-item-${getItemKey(item)}`);
+        }
+        return false;
+      }
+
+      // Block horizontal escape at boundaries
+      if (direction === 'left' || direction === 'right') {
+        return false;
+      }
+
+      return true; // Allow up/down escape for header navigation
+    },
+    [focusKey, columnCount, items, getItemKey]
   );
 
   // Focus context for spatial navigation
@@ -333,6 +388,7 @@ export function VirtualizedGrid<T>({
                             ? () => onItemSelect(item, itemIndex)
                             : undefined
                         }
+                        onArrowPress={handleItemArrowPress}
                       >
                         {renderItem(item, itemIndex, itemFocusKey, isFocused)}
                       </GridItemWrapper>

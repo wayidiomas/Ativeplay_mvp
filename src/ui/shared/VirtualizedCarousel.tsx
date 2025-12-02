@@ -150,49 +150,59 @@ export function VirtualizedCarousel<T>({
   // Handle arrow key navigation
   const handleArrowPress = useCallback(
     (direction: string) => {
-      if (direction === 'right' && focusedIndex < items.length - 1) {
-        const newIndex = focusedIndex + 1;
-        const item = items[newIndex];
-        if (item) {
-          setFocus(`${focusKey}-item-${getItemKey(item)}`);
+      if (direction === 'right') {
+        if (focusedIndex < items.length - 1) {
+          const newIndex = focusedIndex + 1;
+          const item = items[newIndex];
+          if (item) {
+            setFocus(`${focusKey}-item-${getItemKey(item)}`);
+          }
         }
-        return false; // We handle navigation
-      } else if (direction === 'left' && focusedIndex > 0) {
-        const newIndex = focusedIndex - 1;
-        const item = items[newIndex];
-        if (item) {
-          setFocus(`${focusKey}-item-${getItemKey(item)}`);
+        return false; // Block horizontal escape at boundaries
+      }
+      if (direction === 'left') {
+        if (focusedIndex > 0) {
+          const newIndex = focusedIndex - 1;
+          const item = items[newIndex];
+          if (item) {
+            setFocus(`${focusKey}-item-${getItemKey(item)}`);
+          }
         }
-        return false;
-      } else if (direction === 'up' && upFocusKey) {
+        return false; // Block horizontal escape at boundaries
+      }
+      if (direction === 'up' && upFocusKey) {
         setFocus(upFocusKey);
         return false;
       }
-      return true; // Allow up/down to escape carousel
+      return true; // Allow up/down to escape carousel for row navigation
     },
     [focusKey, focusedIndex, items, getItemKey, upFocusKey]
   );
 
   const handleItemArrowPress = useCallback((direction: string, index: number) => {
-    if (direction === 'right' && index < items.length - 1) {
-      const nextItem = items[index + 1];
-      if (nextItem) {
-        setFocus(`${focusKey}-item-${getItemKey(nextItem)}`);
-        return false;
+    if (direction === 'right') {
+      if (index < items.length - 1) {
+        const nextItem = items[index + 1];
+        if (nextItem) {
+          setFocus(`${focusKey}-item-${getItemKey(nextItem)}`);
+        }
       }
+      return false; // Block horizontal escape at boundaries
     }
-    if (direction === 'left' && index > 0) {
-      const prevItem = items[index - 1];
-      if (prevItem) {
-        setFocus(`${focusKey}-item-${getItemKey(prevItem)}`);
-        return false;
+    if (direction === 'left') {
+      if (index > 0) {
+        const prevItem = items[index - 1];
+        if (prevItem) {
+          setFocus(`${focusKey}-item-${getItemKey(prevItem)}`);
+        }
       }
+      return false; // Block horizontal escape at boundaries
     }
     if (direction === 'up' && upFocusKey) {
       setFocus(upFocusKey);
       return false;
     }
-    return true; // Let container handle other directions
+    return true; // Allow down to escape for row navigation
   }, [items, focusKey, getItemKey, upFocusKey]);
 
   // Compute preferred child focus key (first item)
