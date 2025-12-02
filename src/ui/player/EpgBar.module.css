@@ -1,0 +1,365 @@
+/* EpgBar.module.css */
+/* EPG Bar for live TV channels - Shows current/next programs */
+
+.epgBar {
+  position: absolute;
+  left: 48px;
+  right: 48px;
+  bottom: 180px; /* Above the player controls */
+  background: rgba(20, 20, 20, 0.95);
+  border-radius: 12px;
+  padding: 0;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  max-width: 600px;
+}
+
+.epgBar.hidden {
+  opacity: 0;
+  transform: translateY(20px);
+  pointer-events: none;
+}
+
+.epgBar.expanded {
+  max-width: 700px;
+}
+
+/* Loading State */
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  color: #aaa;
+  font-size: 14px;
+}
+
+/* ============================================================================ */
+/* Compact View - Always visible                                                 */
+/* ============================================================================ */
+
+.compactView {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+}
+
+.nowPlaying {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.liveIcon {
+  font-size: 20px;
+  color: #e50914;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.nowLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: #e50914;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.compactInfo {
+  flex: 1;
+  min-width: 0; /* Allow text truncation */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.compactTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: #f1f1f1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compactTime {
+  font-size: 12px;
+  color: #888;
+}
+
+/* Mini Progress Bar */
+.miniProgress {
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.miniProgressBar {
+  height: 100%;
+  background: linear-gradient(90deg, #e50914, #ff4444);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* EPG Toggle Button */
+.epgToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  color: #dadada;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.epgToggle:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.epgToggle.focused,
+.epgToggle[data-focused="true"] {
+  background: rgba(229, 9, 20, 0.25);
+  border-color: #e50914;
+  color: #fff;
+  box-shadow: 0 0 16px rgba(229, 9, 20, 0.4);
+  transform: scale(1.05);
+}
+
+.epgToggle svg {
+  font-size: 18px;
+}
+
+/* ============================================================================ */
+/* Expanded View - Details                                                       */
+/* ============================================================================ */
+
+.expandedView {
+  padding: 0 16px 16px;
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 400px;
+  }
+}
+
+.currentProgram {
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.programHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.programLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: #e50914;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.remaining {
+  font-size: 12px;
+  color: #888;
+}
+
+.programTitle {
+  font-size: 18px;
+  font-weight: 600;
+  color: #f1f1f1;
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+
+.programTime {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.timeIcon {
+  font-size: 16px;
+  color: #888;
+}
+
+.programDescription {
+  font-size: 13px;
+  color: #999;
+  line-height: 1.5;
+  margin-bottom: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Full Progress Bar */
+.progressContainer {
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progressBar {
+  height: 100%;
+  background: linear-gradient(90deg, #e50914, #ff6b6b);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+/* Catchup Button */
+.catchupButton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 24px;
+  color: #f1f1f1;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.catchupButton:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.catchupButton.focused,
+.catchupButton[data-focused="true"] {
+  background: rgba(229, 9, 20, 0.3);
+  border-color: #e50914;
+  color: #fff;
+  box-shadow: 0 0 20px rgba(229, 9, 20, 0.5);
+  transform: scale(1.05);
+}
+
+.catchupButton svg {
+  font-size: 18px;
+}
+
+/* ============================================================================ */
+/* Next Programs Section                                                         */
+/* ============================================================================ */
+
+.nextPrograms {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.nextLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.nextProgram {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.nextProgram + .nextProgram {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.nextTime {
+  font-size: 13px;
+  font-weight: 600;
+  color: #888;
+  min-width: 50px;
+}
+
+.nextTitle {
+  font-size: 14px;
+  color: #bbb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================================ */
+/* Responsive - Smaller TVs                                                      */
+/* ============================================================================ */
+
+@media (max-width: 1280px) {
+  .epgBar {
+    left: 32px;
+    right: 32px;
+    bottom: 160px;
+    max-width: 500px;
+  }
+
+  .compactView {
+    padding: 10px 14px;
+    gap: 12px;
+  }
+
+  .compactTitle {
+    font-size: 14px;
+  }
+
+  .programTitle {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 960px) {
+  .epgBar {
+    left: 24px;
+    right: 24px;
+    bottom: 140px;
+    max-width: 400px;
+  }
+
+  .expandedView {
+    padding: 0 12px 12px;
+  }
+
+  .programDescription {
+    display: none; /* Hide description on small screens */
+  }
+}

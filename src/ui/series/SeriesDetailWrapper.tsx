@@ -30,6 +30,8 @@ export function SeriesDetailWrapper() {
         url={selectedItem.url}
         title={selectedItem.parsedTitle?.title || selectedItem.name}
         isLive={selectedItem.mediaKind === 'live'}
+        xtreamStreamId={selectedItem.xtreamId?.toString()}
+        hasTvArchive={selectedItem.xtreamTvArchive}
         onClose={handleClosePlayer}
         onEnded={handleVideoEnded}
       />

@@ -24,12 +24,17 @@ import {
   MdErrorOutline
 } from 'react-icons/md';
 import styles from './PlayerContainer.module.css';
+import { EpgBar } from './EpgBar';
 
 interface PlayerContainerProps {
   url: string;
   title?: string;
   startPosition?: number;
   isLive?: boolean;
+  /** Xtream stream ID for EPG (only for live Xtream channels) */
+  xtreamStreamId?: string;
+  /** Whether the channel supports TV archive/catchup */
+  hasTvArchive?: boolean;
   onClose?: () => void;
   onEnded?: () => void;
 }
@@ -189,6 +194,8 @@ export function PlayerContainer({
   title = '',
   startPosition = 0,
   isLive = false,
+  xtreamStreamId,
+  hasTvArchive = false,
   onClose,
   onEnded,
 }: PlayerContainerProps) {
@@ -643,6 +650,17 @@ export function PlayerContainer({
               disabled={!controlsVisible}
             />
           </div>
+
+          {/* EPG Bar - Only for live Xtream channels */}
+          {isLive && xtreamStreamId && (
+            <EpgBar
+              streamId={xtreamStreamId}
+              hasTvArchive={hasTvArchive}
+              visible={controlsVisible}
+              onNavigateUp={() => setFocus('player-close')}
+              onNavigateDown={() => setFocus('player-play-pause')}
+            />
+          )}
 
           {/* Bottom Bar */}
           <div className={styles.bottomBar}>

@@ -56,6 +56,12 @@ export interface PlaylistItem {
   xtreamId?: number;
   xtreamExtension?: string;
   xtreamMediaType?: 'live' | 'vod' | 'series';
+  /** EPG channel ID for fetching program guide (Xtream live only) */
+  xtreamEpgChannelId?: string;
+  /** Whether channel has TV archive/catchup support (Xtream live only) */
+  xtreamTvArchive?: boolean;
+  /** TV archive duration in days (Xtream live only) */
+  xtreamTvArchiveDuration?: number;
 }
 
 export interface SeriesInfo {

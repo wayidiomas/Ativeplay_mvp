@@ -399,6 +399,10 @@ export function normalizeXtreamStreams(
     xtreamId: parseInt(s.id, 10),
     xtreamExtension: s.extension,
     xtreamMediaType: mediaType,
+    // EPG and TV Archive fields (live channels only)
+    xtreamEpgChannelId: s.epgChannelId,
+    xtreamTvArchive: s.tvArchive,
+    xtreamTvArchiveDuration: s.tvArchiveDuration,
   }));
 }
 
