@@ -41,7 +41,7 @@ import styles from './Home.module.css';
 
 type NavItem = 'movies' | 'series' | 'live';
 
-const ITEMS_PER_GROUP = 24;
+const ITEMS_PER_GROUP = 12; // Fewer items per carousel for better TV experience
 
 interface Row {
   group: PlaylistGroup;
@@ -161,14 +161,22 @@ const FocusableSection = memo(({ focusKey, carouselFocusKey, className, children
 /**
  * FocusableSectionHeader - Section header with "Ver tudo" button for TV remote
  */
-const FocusableSectionHeader = memo(({ title, focusKey, onSeeAll }: {
+const FocusableSectionHeader = memo(({ title, focusKey, onSeeAll, onArrowUp }: {
   title: string;
   focusKey: string;
   onSeeAll: () => void;
+  onArrowUp?: () => void;
 }) => {
   const { ref, focused } = useFocusable({
     focusKey,
     onEnterPress: onSeeAll,
+    onArrowPress: (direction) => {
+      if (direction === 'up' && onArrowUp) {
+        onArrowUp();
+        return false;
+      }
+      return true;
+    },
   });
 
   // Scroll into view when focused
@@ -276,6 +284,17 @@ export function Home() {
   const [allFilteredGroups, setAllFilteredGroups] = useState<PlaylistGroup[]>([]);
   const [loadedGroupsCount, setLoadedGroupsCount] = useState(0); // Track groups loaded (not rows, since empty rows are filtered)
   const [loadingRowId, setLoadingRowId] = useState<string | null>(null);
+
+  // First row keys to help D-PAD navigation to header/nav
+  const firstRowHeaderFocusKey = rows.length > 0 ? `header-${rows[0].group.id}` : undefined;
+
+  const activeNavFocusKey = useMemo(() => {
+    switch (selectedNav) {
+      case 'movies': return 'nav-movies';
+      case 'series': return 'nav-series';
+      case 'live': return 'nav-live';
+    }
+  }, [selectedNav]);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const lastItemCount = useRef<number>(0);
@@ -509,16 +528,37 @@ export function Home() {
   const { ref: navMoviesRef, focused: navMoviesFocused } = useFocusable({
     focusKey: 'nav-movies',
     onEnterPress: () => handleNavClick('movies'),
+    onArrowPress: (direction) => {
+      if (direction === 'down' && firstRowHeaderFocusKey) {
+        setFocus(firstRowHeaderFocusKey);
+        return false;
+      }
+      return true;
+    },
   });
 
   const { ref: navSeriesRef, focused: navSeriesFocused } = useFocusable({
     focusKey: 'nav-series',
     onEnterPress: () => handleNavClick('series'),
+    onArrowPress: (direction) => {
+      if (direction === 'down' && firstRowHeaderFocusKey) {
+        setFocus(firstRowHeaderFocusKey);
+        return false;
+      }
+      return true;
+    },
   });
 
   const { ref: navLiveRef, focused: navLiveFocused } = useFocusable({
     focusKey: 'nav-live',
     onEnterPress: () => handleNavClick('live'),
+    onArrowPress: (direction) => {
+      if (direction === 'down' && firstRowHeaderFocusKey) {
+        setFocus(firstRowHeaderFocusKey);
+        return false;
+      }
+      return true;
+    },
   });
 
   // Set initial focus after content loads
@@ -697,6 +737,8 @@ export function Home() {
           // Trigger loadMoreGroups when focusing cards in last 2 rows
           const isNearEnd = hasMoreGroups && rowIndex >= rows.length - 2;
           const carouselFocusKey = `carousel-${row.group.id}`;
+          const headerFocusKey = `header-${row.group.id}`;
+          const isFirstRow = rowIndex === 0;
 
           // For series rows, use series data; for items, use items data
           if (row.isSeries && row.series) {
@@ -709,8 +751,9 @@ export function Home() {
               >
                 <FocusableSectionHeader
                   title={row.group.name}
-                  focusKey={`header-${row.group.id}`}
+                  focusKey={headerFocusKey}
                   onSeeAll={() => handleSeeAll(row.group)}
+                  onArrowUp={isFirstRow && activeNavFocusKey ? () => setFocus(activeNavFocusKey) : undefined}
                 />
                 <VirtualizedCarousel
                   focusKey={carouselFocusKey}
@@ -724,6 +767,7 @@ export function Home() {
                   )}
                   onItemFocus={isNearEnd ? () => loadMoreGroups() : undefined}
                   onItemSelect={(series) => handleSelectSeries(series.id)}
+                  upFocusKey={isFirstRow ? headerFocusKey : undefined}
                   cardWidth={200}
                   cardGap={12}
                   height={280}
@@ -741,8 +785,9 @@ export function Home() {
             >
               <FocusableSectionHeader
                 title={row.group.name}
-                focusKey={`header-${row.group.id}`}
+                focusKey={headerFocusKey}
                 onSeeAll={() => handleSeeAll(row.group)}
+                onArrowUp={isFirstRow && activeNavFocusKey ? () => setFocus(activeNavFocusKey) : undefined}
               />
               <VirtualizedCarousel
                 focusKey={carouselFocusKey}
@@ -756,6 +801,7 @@ export function Home() {
                 )}
                 onItemFocus={isNearEnd ? () => loadMoreGroups() : undefined}
                 onItemSelect={(item) => handleSelectItem(item)}
+                upFocusKey={isFirstRow ? headerFocusKey : undefined}
                 cardWidth={200}
                 cardGap={12}
                 height={280}

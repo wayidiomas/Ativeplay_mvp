@@ -53,6 +53,8 @@ export interface VirtualizedCarouselProps<T> {
   overscan?: number;
   /** CSS class for container */
   className?: string;
+  /** Optional focus target when pressing UP (e.g., section header) */
+  upFocusKey?: string;
 }
 
 /**
@@ -122,6 +124,7 @@ export function VirtualizedCarousel<T>({
   height = 280,
   overscan = DEFAULT_OVERSCAN,
   className = '',
+  upFocusKey,
 }: VirtualizedCarouselProps<T>) {
   const parentRef = useRef<HTMLDivElement | null>(null);
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -153,10 +156,13 @@ export function VirtualizedCarousel<T>({
           setFocus(`${focusKey}-item-${getItemKey(item)}`);
         }
         return false;
+      } else if (direction === 'up' && upFocusKey) {
+        setFocus(upFocusKey);
+        return false;
       }
       return true; // Allow up/down to escape carousel
     },
-    [focusKey, focusedIndex, items, getItemKey]
+    [focusKey, focusedIndex, items, getItemKey, upFocusKey]
   );
 
   // Compute preferred child focus key (first item)
