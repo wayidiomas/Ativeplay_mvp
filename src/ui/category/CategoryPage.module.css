@@ -70,7 +70,7 @@
 
 .main {
   flex: 1;
-  padding: 24px;
+  padding: 20px 32px 48px;
   overflow-y: auto;
 }
 

@@ -382,10 +382,10 @@ export function CategoryPage() {
                 <SeriesCardContent series={series} isFocused={isFocused} />
               )}
               onItemSelect={(series) => handleSelectSeries(series)}
-              columnCount={5}
-              cardWidth={200}
-              cardHeight={280}
-              cardGap={16}
+              columnCount={4}
+              cardWidth={240}
+              cardHeight={360}
+              cardGap={20}
               className={styles.gridContainer}
             />
           ) : (
@@ -400,10 +400,10 @@ export function CategoryPage() {
                 <ItemCardContent item={item} mediaKind={mediaKind} isFocused={isFocused} />
               )}
               onItemSelect={(item) => handleSelectItem(item)}
-              columnCount={5}
-              cardWidth={200}
-              cardHeight={280}
-              cardGap={16}
+              columnCount={4}
+              cardWidth={240}
+              cardHeight={360}
+              cardGap={20}
               className={styles.gridContainer}
             />
           )}
