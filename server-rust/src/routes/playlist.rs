@@ -57,11 +57,12 @@ pub async fn parse_playlist(
     }
 
     // =========================================================================
-    // XTREAM DETECTION: Try to detect Xtream Codes URL before M3U parsing
-    // If detected, save only credentials (~200 bytes) instead of parsing M3U
+    // XTREAM DETECTION: Detect Xtream Codes URL - NO FALLBACK TO M3U
+    // If URL matches Xtream pattern, it MUST be treated as Xtream only.
+    // If validation fails, return error instead of downloading M3U.
     // =========================================================================
     if let Some(creds) = xtream::extract_credentials(&payload.url) {
-        tracing::info!("Detected potential Xtream URL for server: {}", creds.server);
+        tracing::info!("Detected Xtream URL for server: {}", creds.server);
 
         // Validate credentials via Xtream Player API
         match xtream::validate_credentials(&creds).await {
@@ -102,25 +103,34 @@ pub async fn parse_playlist(
                         tracing::error!("Failed to save Xtream playlist: {}", e);
                         return Err((
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({ "error": format!("Failed to save Xtream playlist: {}", e) })),
+                            Json(serde_json::json!({ "error": format!("Falha ao salvar playlist Xtream: {}", e) })),
                         ));
                     }
                 }
             }
             Err(e) => {
-                // Xtream validation failed - could be invalid credentials or not an Xtream server
-                // Fall through to normal M3U parsing
-                tracing::info!(
-                    "Xtream validation failed for {}: {} - falling back to M3U parsing",
+                // CRITICAL: Xtream URL detected but validation failed
+                // DO NOT fall back to M3U parsing - return error to client
+                tracing::error!(
+                    "Xtream validation failed for {}: {} - NOT falling back to M3U",
                     creds.server,
                     e
                 );
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("Falha na validação Xtream: {}", e),
+                        "code": "XTREAM_VALIDATION_FAILED",
+                        "server": creds.server
+                    })),
+                ));
             }
         }
     }
 
     // =========================================================================
-    // NORMAL M3U FLOW: Not Xtream or Xtream validation failed
+    // NORMAL M3U FLOW: URL is NOT an Xtream URL (no /get.php pattern)
+    // Only generic M3U/M3U8 playlists reach this point
     // =========================================================================
     let hash = hash_url(&payload.url);
     let device_id = payload.device_id.as_deref();
