@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   useFocusable,
   FocusContext,
+  setFocus,
 } from '@noriginmedia/norigin-spatial-navigation';
 import { useOnboardingStore } from '@store/onboardingStore';
 import { useQRSession } from '@core/hooks/useQRSession';
@@ -29,9 +30,11 @@ export function PlaylistInput() {
     startSession,
     stopSession,
   } = useQRSession((receivedPlaylistUrl) => {
-    // Quando URL é recebida do celular, preenche o input
+    // Quando URL é recebida do celular, preenche o input e foca no botão
     setUrl(receivedPlaylistUrl);
     setError('');
+    // Focus on submit button so user can just press Enter
+    setTimeout(() => setFocus('submit-button'), 100);
   });
 
   const { ref: containerRef, focusKey } = useFocusable({
@@ -52,10 +55,10 @@ export function PlaylistInput() {
   });
 
   useEffect(() => {
-    // Foca no input ao montar
-    inputRef.current?.focus();
-    // Inicia sessão QR code
+    // Inicia sessão QR code (não foca no input para evitar teclado automático)
     startSession();
+    // Focus on the input wrapper for spatial navigation (not the actual input)
+    setFocus('url-input');
 
     return () => {
       stopSession();

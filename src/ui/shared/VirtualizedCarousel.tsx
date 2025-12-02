@@ -65,18 +65,26 @@ const VirtualizedCardWrapper = memo(function VirtualizedCardWrapper({
   index,
   onFocused,
   onSelect,
+  onArrowPress,
   children,
 }: {
   focusKey: string;
   index: number;
   onFocused: (index: number) => void;
   onSelect?: () => void;
+  onArrowPress?: (direction: string, index: number) => boolean;
   children: React.ReactNode;
 }) {
   const { ref, focused, focusSelf } = useFocusable({
     focusKey,
     onEnterPress: onSelect,
     onFocus: () => onFocused(index),
+    onArrowPress: (direction) => {
+      if (onArrowPress) {
+        return onArrowPress(direction, index);
+      }
+      return true;
+    },
   });
 
   // Scroll into view when focused (for vertical navigation between rows)
@@ -164,6 +172,28 @@ export function VirtualizedCarousel<T>({
     },
     [focusKey, focusedIndex, items, getItemKey, upFocusKey]
   );
+
+  const handleItemArrowPress = useCallback((direction: string, index: number) => {
+    if (direction === 'right' && index < items.length - 1) {
+      const nextItem = items[index + 1];
+      if (nextItem) {
+        setFocus(`${focusKey}-item-${getItemKey(nextItem)}`);
+        return false;
+      }
+    }
+    if (direction === 'left' && index > 0) {
+      const prevItem = items[index - 1];
+      if (prevItem) {
+        setFocus(`${focusKey}-item-${getItemKey(prevItem)}`);
+        return false;
+      }
+    }
+    if (direction === 'up' && upFocusKey) {
+      setFocus(upFocusKey);
+      return false;
+    }
+    return true; // Let container handle other directions
+  }, [items, focusKey, getItemKey, upFocusKey]);
 
   // Compute preferred child focus key (first item)
   const preferredChildFocusKey = items.length > 0
@@ -285,6 +315,7 @@ export function VirtualizedCarousel<T>({
                       ? () => onItemSelect(item, virtualItem.index)
                       : undefined
                   }
+                  onArrowPress={handleItemArrowPress}
                 >
                   {renderItem(item, virtualItem.index, itemFocusKey, isFocused)}
                 </VirtualizedCardWrapper>

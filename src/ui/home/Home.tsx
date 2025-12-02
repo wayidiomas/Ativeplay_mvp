@@ -41,7 +41,7 @@ import styles from './Home.module.css';
 
 type NavItem = 'movies' | 'series' | 'live';
 
-const ITEMS_PER_GROUP = 8; // Fewer items per carousel for faster load and better TV experience
+const ITEMS_PER_GROUP = 6; // Fewer items per carousel for faster load and better TV experience
 const CARD_WIDTH = 240; // Larger cards for better visibility on small TVs (32")
 const CARD_GAP = 16;
 const CAROUSEL_HEIGHT = 320;
@@ -538,6 +538,8 @@ export function Home() {
         setFocus(firstRowHeaderFocusKey);
         return false;
       }
+      // Block left navigation (leftmost tab)
+      if (direction === 'left') return false;
       return true;
     },
   });
@@ -562,6 +564,8 @@ export function Home() {
         setFocus(firstRowHeaderFocusKey);
         return false;
       }
+      // Block right navigation (rightmost tab) - don't go to search/exit
+      if (direction === 'right') return false;
       return true;
     },
   });
