@@ -503,11 +503,26 @@ export function Home() {
 
   const handleClosePlayer = useCallback(() => {
     setSelectedItem(null);
-  }, []);
+    // Restore focus to first carousel after closing player
+    // This is needed because initialFocusSet is already true from initial load
+    if (rows.length > 0) {
+      const firstRow = rows[0];
+      setTimeout(() => {
+        setFocus(`carousel-${firstRow.group.id}`);
+      }, 50);
+    }
+  }, [rows]);
 
   const handleVideoEnded = useCallback(() => {
     setSelectedItem(null);
-  }, []);
+    // Restore focus after video ends (same logic as handleClosePlayer)
+    if (rows.length > 0) {
+      const firstRow = rows[0];
+      setTimeout(() => {
+        setFocus(`carousel-${firstRow.group.id}`);
+      }, 50);
+    }
+  }, [rows]);
 
   const handleSelectSeries = useCallback((seriesId: string) => {
     navigate(`/series/${seriesId}`);
