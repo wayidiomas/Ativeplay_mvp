@@ -196,19 +196,41 @@ pub async fn get_items(
     }))
 }
 
-/// GET /api/playlist/:hash/groups - Get all groups
+/// Query params for groups
+#[derive(Deserialize, Default)]
+pub struct GroupsQuery {
+    /// Filter by media kind (movie, series, live)
+    pub media_kind: Option<String>,
+}
+
+/// GET /api/playlist/:hash/groups - Get all groups (optionally filtered by media_kind)
 pub async fn get_groups(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<String>,
+    Query(query): Query<GroupsQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Get groups from PostgreSQL
-    let groups = state.db_cache.get_groups(&hash).await.map_err(|e| {
-        tracing::error!("Failed to get groups: {}", e);
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
-        )
-    })?;
+    // Get groups from PostgreSQL (filtered if media_kind is provided)
+    let groups = if let Some(media_kind) = &query.media_kind {
+        state
+            .db_cache
+            .get_groups_by_kind(&hash, media_kind)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to get groups by kind: {}", e);
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
+                )
+            })?
+    } else {
+        state.db_cache.get_groups(&hash).await.map_err(|e| {
+            tracing::error!("Failed to get groups: {}", e);
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Playlist não encontrada ou expirada" })),
+            )
+        })?
+    };
 
     Ok(Json(GroupsResponse {
         total: groups.len(),
