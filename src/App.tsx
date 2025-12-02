@@ -7,6 +7,8 @@ import {
 } from '@ui/onboarding';
 import { Home } from '@ui/home';
 import { SeriesDetailWrapper } from '@ui/series/SeriesDetailWrapper';
+import { MovieDetailWrapper } from '@ui/movie';
+import { AccountInfo } from '@ui/settings';
 import { CategoryPage } from '@ui/category/CategoryPage';
 
 function App() {
@@ -27,8 +29,14 @@ function App() {
         {/* Series Detail */}
         <Route path="/series/:seriesId" element={<SeriesDetailWrapper />} />
 
+        {/* Movie Detail - VOD with rich metadata */}
+        <Route path="/movie/:movieId" element={<MovieDetailWrapper />} />
+
         {/* Category Page - Grid view of all items in a group */}
         <Route path="/category/:groupId" element={<CategoryPage />} />
+
+        {/* Settings - Account Info */}
+        <Route path="/account" element={<AccountInfo />} />
 
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />

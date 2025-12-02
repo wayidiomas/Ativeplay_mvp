@@ -12,6 +12,8 @@ import {
 } from '@noriginmedia/norigin-spatial-navigation';
 import { usePlayer } from '@player/hooks/usePlayer';
 import type { AudioTrack, SubtitleTrack } from '@player/types';
+import { usePlaylistStore } from '@store/playlistStore';
+import type { XtreamEpgEntry } from '@core/services/api/xtream';
 import {
   MdPlayArrow,
   MdPause,
@@ -201,6 +203,9 @@ export function PlayerContainer({
 }: PlayerContainerProps) {
   const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
 
+  // Get Xtream client for TV Archive functionality
+  const getXtreamClient = usePlaylistStore((s) => s.getXtreamClient);
+
   const buildStreamUrl = useCallback(
     (original: string) => {
       if (!BRIDGE_URL) return original;
@@ -289,6 +294,45 @@ export function PlayerContainer({
     close();
     onClose?.();
   }, [close, onClose]);
+
+  // Handle TV Archive / Catchup - Watch from start of current program
+  const handleWatchFromStart = useCallback(async (program: XtreamEpgEntry) => {
+    if (!xtreamStreamId || !hasTvArchive) return;
+
+    const client = getXtreamClient();
+    if (!client) {
+      console.error('[PlayerContainer] Xtream client not available for catchup');
+      return;
+    }
+
+    try {
+      // Calculate start timestamp and duration
+      const startTime = Math.floor(new Date(program.start).getTime() / 1000);
+      const endTime = Math.floor(new Date(program.end).getTime() / 1000);
+      const durationMins = Math.ceil((endTime - startTime) / 60);
+
+      console.log('[PlayerContainer] Fetching timeshift URL:', {
+        streamId: xtreamStreamId,
+        startTime,
+        durationMins,
+        programTitle: program.title,
+      });
+
+      const timeshiftUrl = await client.getTimeshiftUrl(
+        parseInt(xtreamStreamId, 10),
+        startTime,
+        durationMins
+      );
+
+      // Switch to timeshift URL
+      const streamUrl = buildStreamUrl(timeshiftUrl);
+      console.log('[PlayerContainer] Switching to timeshift stream:', streamUrl.substring(0, 80));
+      open(streamUrl, { startPosition: 0, autoPlay: true, isLive: false });
+
+    } catch (err) {
+      console.error('[PlayerContainer] Failed to get timeshift URL:', err);
+    }
+  }, [xtreamStreamId, hasTvArchive, getXtreamClient, buildStreamUrl, open]);
 
   // Open video on mount - only depend on url to avoid re-opening on prop changes
   // startPosition and isLive are captured at mount time via refs
@@ -656,6 +700,7 @@ export function PlayerContainer({
             <EpgBar
               streamId={xtreamStreamId}
               hasTvArchive={hasTvArchive}
+              onWatchFromStart={handleWatchFromStart}
               visible={controlsVisible}
               onNavigateUp={() => setFocus('player-close')}
               onNavigateDown={() => setFocus('player-play-pause')}
