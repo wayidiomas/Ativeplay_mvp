@@ -11,7 +11,18 @@ import type {
   PlaylistGroup,
   SeriesInfo,
   StoredPlaylist,
+  PlaylistItem,
+  MediaKind,
 } from '@core/services/api';
+
+// Row data cached per tab
+export interface CachedRow {
+  group: PlaylistGroup;
+  items: PlaylistItem[];
+  series?: SeriesInfo[];
+  isSeries?: boolean;
+  hasMore?: boolean;
+}
 
 // ============================================================================
 // Types
@@ -32,6 +43,7 @@ interface PlaylistState {
   // Cache for current session (not persisted)
   groupsCache: PlaylistGroup[] | null;
   seriesCache: SeriesInfo[] | null;
+  rowsCache: Record<MediaKind, CachedRow[]>; // Cache rows per tab (movie, series, live)
 
   // Actions
   setPlaylist: (playlist: StoredPlaylist) => void;
@@ -41,6 +53,8 @@ interface PlaylistState {
   setParseInProgress: (inProgress: boolean) => void;
   setGroupsCache: (groups: PlaylistGroup[] | null) => void;
   setSeriesCache: (series: SeriesInfo[] | null) => void;
+  setRowsCache: (mediaKind: MediaKind, rows: CachedRow[]) => void;
+  getRowsCache: (mediaKind: MediaKind) => CachedRow[] | null;
   clearCache: () => void;
   reset: () => void;
 }
@@ -48,6 +62,13 @@ interface PlaylistState {
 // ============================================================================
 // Initial State
 // ============================================================================
+
+const emptyRowsCache: Record<MediaKind, CachedRow[]> = {
+  movie: [],
+  series: [],
+  live: [],
+  unknown: [],
+};
 
 const initialState = {
   hash: null as string | null,
@@ -59,6 +80,7 @@ const initialState = {
   parseInProgress: false,
   groupsCache: null as PlaylistGroup[] | null,
   seriesCache: null as SeriesInfo[] | null,
+  rowsCache: { ...emptyRowsCache } as Record<MediaKind, CachedRow[]>,
 };
 
 // ============================================================================
@@ -67,7 +89,7 @@ const initialState = {
 
 export const usePlaylistStore = create<PlaylistState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       ...initialState,
 
       setPlaylist: (playlist) =>
@@ -80,6 +102,7 @@ export const usePlaylistStore = create<PlaylistState>()(
           // Clear session cache when switching playlists
           groupsCache: null,
           seriesCache: null,
+          rowsCache: { ...emptyRowsCache },
         }),
 
       setStats: (stats) => set({ stats }),
@@ -94,10 +117,24 @@ export const usePlaylistStore = create<PlaylistState>()(
 
       setSeriesCache: (seriesCache) => set({ seriesCache }),
 
+      setRowsCache: (mediaKind, rows) =>
+        set((state) => ({
+          rowsCache: {
+            ...state.rowsCache,
+            [mediaKind]: rows,
+          },
+        })),
+
+      getRowsCache: (mediaKind) => {
+        const rows = get().rowsCache[mediaKind];
+        return rows && rows.length > 0 ? rows : null;
+      },
+
       clearCache: () =>
         set({
           groupsCache: null,
           seriesCache: null,
+          rowsCache: { ...emptyRowsCache },
         }),
 
       reset: () => set(initialState),

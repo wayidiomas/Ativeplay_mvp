@@ -204,61 +204,6 @@ const FocusableSectionHeader = memo(({ title, focusKey, onSeeAll, onArrowUp }: {
   );
 });
 
-/**
- * Legacy MediaCard with focus handling for search results
- * (search doesn't use virtualization yet)
- */
-const MediaCard = memo(({ item, onSelect, focusKey }: {
-  item: PlaylistItem;
-  onSelect: (item: PlaylistItem) => void;
-  focusKey: string;
-}) => {
-  const [imageError, setImageError] = useState(false);
-
-  const { ref, focused } = useFocusable({
-    focusKey,
-    onEnterPress: () => onSelect(item),
-  });
-
-  // Auto-scroll into view when focused (for TV remote navigation)
-  useEffect(() => {
-    if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
-    }
-  }, [focused]);
-
-  return (
-    <button
-      type="button"
-      ref={ref}
-      className={`${styles.card} ${focused ? styles.focused : ''}`}
-      onClick={() => onSelect(item)}
-      tabIndex={0}
-      data-focused={focused}
-    >
-      {item.logo && !imageError ? (
-        <img
-          src={item.logo}
-          alt={item.name}
-          className={styles.cardPoster}
-          loading="lazy"
-          onError={() => setImageError(true)}
-        />
-      ) : (
-        <div className={styles.cardPlaceholder}>
-          {item.mediaKind === 'live' ? <MdLiveTv size={32} /> : <MdMovie size={32} />}
-        </div>
-      )}
-      <div className={styles.cardOverlay}>
-        <div className={styles.cardTitle}>{item.parsedTitle?.title || item.name}</div>
-        <div className={styles.cardMeta}>
-          {item.parsedTitle?.year && <span>{item.parsedTitle.year}</span>}
-        </div>
-      </div>
-    </button>
-  );
-}, (prev, next) => prev.item.id === next.item.id && prev.focusKey === next.focusKey);
-
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -272,6 +217,8 @@ export function Home() {
   const seriesCache = usePlaylistStore((s) => s.seriesCache);
   const setGroupsCache = usePlaylistStore((s) => s.setGroupsCache);
   const setSeriesCache = usePlaylistStore((s) => s.setSeriesCache);
+  const getRowsCache = usePlaylistStore((s) => s.getRowsCache);
+  const setRowsCache = usePlaylistStore((s) => s.setRowsCache);
   const parseInProgress = usePlaylistStore((s) => s.parseInProgress);
   const setParseInProgress = usePlaylistStore((s) => s.setParseInProgress);
   const setStats = usePlaylistStore((s) => s.setStats);
@@ -367,9 +314,30 @@ export function Home() {
     }
   }, [selectedNav]);
 
-  // Load groups and series from API (with caching)
+  // Load groups and series from API (with caching per tab)
   useEffect(() => {
     if (!hash) return;
+
+    // Check if we have cached rows for this tab - instant switch!
+    const cachedRows = getRowsCache(mediaKind);
+    if (cachedRows && cachedRows.length > 0) {
+      console.log(`[Home] Using cached rows for ${mediaKind} tab (${cachedRows.length} rows)`);
+      setRows(cachedRows);
+      setLoading(false);
+      // Also restore pagination state from cache
+      if (groupsCache) {
+        const filteredGroups = groupsCache.filter(g => {
+          if (mediaKind === 'movie') {
+            return g.mediaKind === 'movie' || g.mediaKind === 'unknown';
+          }
+          return g.mediaKind === mediaKind;
+        });
+        setAllFilteredGroups(filteredGroups);
+        setLoadedGroupsCount(cachedRows.length);
+        setHasMoreGroups(filteredGroups.length > cachedRows.length);
+      }
+      return;
+    }
 
     // Capture hash for use in async function (TypeScript narrowing)
     const currentHash = hash;
@@ -444,6 +412,10 @@ export function Home() {
         // Filter out empty rows
         const nonEmptyRows = rowsData.filter(r => r.items.length > 0 || (r.series && r.series.length > 0));
         setRows(nonEmptyRows);
+
+        // Cache rows for this tab for instant switching
+        setRowsCache(mediaKind, nonEmptyRows);
+        console.log(`[Home] Cached ${nonEmptyRows.length} rows for ${mediaKind} tab`);
       } catch (error) {
         console.error('[Home] Error loading data:', error);
         setRows([]);
@@ -453,7 +425,7 @@ export function Home() {
     }
 
     loadData();
-  }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache]);
+  }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache, getRowsCache, setRowsCache]);
 
   // Search with debounce - uses PostgreSQL fuzzy search (pg_trgm)
   useEffect(() => {
@@ -696,10 +668,15 @@ export function Home() {
     );
 
     const nonEmptyRows = newRowsData.filter(r => r.items.length > 0 || (r.series && r.series.length > 0));
-    setRows(prev => [...prev, ...nonEmptyRows]);
+    setRows(prev => {
+      const updatedRows = [...prev, ...nonEmptyRows];
+      // Update cache with new rows
+      setRowsCache(mediaKind, updatedRows);
+      return updatedRows;
+    });
     setLoadedGroupsCount(endIndex); // Track actual groups loaded
     setHasMoreGroups(endIndex < allFilteredGroups.length);
-  }, [hash, hasMoreGroups, loading, loadedGroupsCount, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache]);
+  }, [hash, hasMoreGroups, loading, loadedGroupsCount, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache, setRowsCache]);
 
   // Handler for "Ver tudo" (See All) button
   const handleSeeAll = useCallback((group: PlaylistGroup) => {
@@ -725,16 +702,21 @@ export function Home() {
         const nextSeries = allGroupSeries.slice(currentCount, currentCount + ITEMS_PER_GROUP);
         const hasMore = currentCount + nextSeries.length < allGroupSeries.length;
 
-        setRows(prev => prev.map((r, idx) => {
-          if (idx === rowIndex) {
-            return {
-              ...r,
-              series: [...(r.series || []), ...nextSeries],
-              hasMore,
-            };
-          }
-          return r;
-        }));
+        setRows(prev => {
+          const updatedRows = prev.map((r, idx) => {
+            if (idx === rowIndex) {
+              return {
+                ...r,
+                series: [...(r.series || []), ...nextSeries],
+                hasMore,
+              };
+            }
+            return r;
+          });
+          // Update cache with updated rows
+          setRowsCache(mediaKind, updatedRows);
+          return updatedRows;
+        });
       } else {
         // For regular items, load from API
         const itemsRes = await getItems(hash, {
@@ -744,23 +726,28 @@ export function Home() {
           offset: row.items.length,
         });
 
-        setRows(prev => prev.map((r, idx) => {
-          if (idx === rowIndex) {
-            return {
-              ...r,
-              items: [...r.items, ...itemsRes.items],
-              hasMore: itemsRes.hasMore,
-            };
-          }
-          return r;
-        }));
+        setRows(prev => {
+          const updatedRows = prev.map((r, idx) => {
+            if (idx === rowIndex) {
+              return {
+                ...r,
+                items: [...r.items, ...itemsRes.items],
+                hasMore: itemsRes.hasMore,
+              };
+            }
+            return r;
+          });
+          // Update cache with updated rows
+          setRowsCache(mediaKind, updatedRows);
+          return updatedRows;
+        });
       }
     } catch (error) {
       console.error('[Home] Failed to load more items:', error);
     } finally {
       setLoadingRowId(null);
     }
-  }, [hash, rows, loadingRowId, seriesCache]);
+  }, [hash, rows, loadingRowId, seriesCache, mediaKind, setRowsCache]);
 
   // ============================================================================
   // Render
@@ -914,19 +901,45 @@ export function Home() {
       );
     }
 
+    // Use VirtualizedCarousel for search results to avoid rendering all items at once
     return (
       <div className={styles.section}>
-        <h2 className={styles.sectionTitle}>Resultados</h2>
-        <div className={styles.carouselTrack}>
-          {searchResults.map((item) => (
-            <MediaCard
-              key={item.id}
-              item={item}
-              onSelect={handleSelectItem}
-              focusKey={`search-${item.id}`}
-            />
-          ))}
-        </div>
+        <h2 className={styles.sectionTitle}>Resultados ({searchResults.length})</h2>
+        <VirtualizedCarousel<PlaylistItem>
+          focusKey="search-results"
+          items={searchResults}
+          hasMore={false}
+          isLoading={false}
+          onLoadMore={() => {}}
+          getItemKey={(item) => item.id}
+          renderItem={(item, _index, _focusKey, isFocused) => (
+            <button
+              type="button"
+              className={`${styles.card} ${isFocused ? styles.focused : ''}`}
+              data-focused={isFocused}
+              tabIndex={-1}
+            >
+              {item.logo ? (
+                <img src={item.logo} alt={item.name} className={styles.cardPoster} loading="lazy" />
+              ) : (
+                <div className={styles.cardPlaceholder}>
+                  <MdMovie size={48} />
+                </div>
+              )}
+              <div className={styles.cardOverlay}>
+                <span className={styles.cardTitle}>{item.parsedTitle?.title || item.name}</span>
+                <div className={styles.cardMeta}>
+                  {item.parsedTitle?.year && <span>{item.parsedTitle.year}</span>}
+                  {item.parsedTitle?.quality && <span>{item.parsedTitle.quality}</span>}
+                </div>
+              </div>
+            </button>
+          )}
+          onItemSelect={(item) => handleSelectItem(item)}
+          cardWidth={CARD_WIDTH}
+          cardGap={CARD_GAP}
+          height={CAROUSEL_HEIGHT}
+        />
       </div>
     );
   };
