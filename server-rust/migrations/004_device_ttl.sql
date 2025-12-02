@@ -71,6 +71,7 @@ CREATE OR REPLACE FUNCTION cleanup_watch_history(keep_count INTEGER DEFAULT 100)
 RETURNS INTEGER AS $$
 DECLARE
     deleted_count INTEGER := 0;
+    temp_count INTEGER;
     device_rec RECORD;
 BEGIN
     -- For each device, keep only the most recent N entries
@@ -83,7 +84,8 @@ BEGIN
         DELETE FROM watch_history
         WHERE id IN (SELECT id FROM ranked WHERE rn > keep_count);
 
-        GET DIAGNOSTICS deleted_count = deleted_count + ROW_COUNT;
+        GET DIAGNOSTICS temp_count = ROW_COUNT;
+        deleted_count := deleted_count + temp_count;
     END LOOP;
 
     RETURN deleted_count;
