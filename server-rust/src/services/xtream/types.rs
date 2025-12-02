@@ -5,8 +5,168 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+
+// ============================================================================
+// Flexible Deserialization Helpers (handle Xtream API inconsistencies)
+// ============================================================================
+
+/// Deserialize a value that could be either a string or an integer into Option<String>
+/// Xtream APIs are inconsistent - sometimes return "1" sometimes return 1
+fn deserialize_string_or_int<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct StringOrIntVisitor;
+
+    impl<'de> Visitor<'de> for StringOrIntVisitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string, an integer, or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(StringOrIntInnerVisitor)
+        }
+    }
+
+    struct StringOrIntInnerVisitor;
+
+    impl<'de> Visitor<'de> for StringOrIntInnerVisitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or an integer")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value.to_string()))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value.to_string()))
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value.to_string()))
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value.to_string()))
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(if value { "1".to_string() } else { "0".to_string() }))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_option(StringOrIntVisitor)
+}
+
+/// Deserialize a required string that could be either string or integer
+fn deserialize_string_or_int_required<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct StringOrIntRequiredVisitor;
+
+    impl<'de> Visitor<'de> for StringOrIntRequiredVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or an integer")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value.to_string())
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value.to_string())
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(StringOrIntRequiredVisitor)
+}
 
 // ============================================================================
 // Normalization Helpers (inspired by @iptv/xtream-api)
@@ -231,18 +391,21 @@ pub struct XtreamAuthResponse {
 /// User account information
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamUserInfo {
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub username: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub password: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub status: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub exp_date: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub is_trial: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub active_cons: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub created_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub max_connections: Option<String>,
     #[serde(default)]
     pub allowed_output_formats: Option<Vec<String>>,
@@ -273,19 +436,21 @@ impl XtreamUserInfo {
 /// Server information
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamServerInfo {
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub url: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub port: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub https_port: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub server_protocol: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub rtmp_port: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub timezone: Option<String>,
     #[serde(default)]
     pub timestamp_now: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub time_now: Option<String>,
 }
 
@@ -296,7 +461,9 @@ pub struct XtreamServerInfo {
 /// Category for live, VOD, or series
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamCategory {
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub category_id: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub category_name: String,
     #[serde(default)]
     pub parent_id: Option<i32>,
@@ -311,26 +478,28 @@ pub struct XtreamCategory {
 pub struct XtreamLiveStream {
     #[serde(default)]
     pub num: Option<i32>,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub name: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub stream_type: String,
     pub stream_id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub stream_icon: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub epg_channel_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub added: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub category_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub custom_sid: Option<String>,
     #[serde(default)]
     pub tv_archive: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub direct_source: Option<String>,
     #[serde(default)]
     pub tv_archive_duration: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub is_adult: Option<String>,
 }
 
@@ -343,24 +512,26 @@ pub struct XtreamLiveStream {
 pub struct XtreamVodStream {
     #[serde(default)]
     pub num: Option<i32>,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub name: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub stream_type: String,
     pub stream_id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub stream_icon: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub rating: Option<String>,
     #[serde(default, rename = "rating_5based")]
     pub rating_5based: Option<f32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub added: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub category_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub container_extension: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub custom_sid: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub direct_source: Option<String>,
 }
 
