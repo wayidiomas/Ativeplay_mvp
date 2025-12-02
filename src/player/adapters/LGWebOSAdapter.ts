@@ -137,6 +137,12 @@ function isIptvTsStream(url: string): boolean {
   if (/\/\d+\/\d+\/\d+(\?|$)/.test(originalUrl)) return true;
   // Query param indicating TS output
   if (originalUrl.includes('output=ts')) return true;
+  // Pattern: /play/TOKEN format (common IPTV pattern for live channels)
+  // TOKEN is typically base64 or alphanumeric, at least 20 chars to avoid false positives
+  // Examples: /play/ABC123... (Globo, SBT, Record live channels)
+  if (/\/play\/[a-zA-Z0-9+/=_-]{20,}(\?|$)/i.test(originalUrl)) return true;
+  // Pattern: /live/ path without extension (common IPTV live pattern)
+  if (/\/live\/[^.]+(\?|$)/i.test(originalUrl)) return true;
   return false;
 }
 
