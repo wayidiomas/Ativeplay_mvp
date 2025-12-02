@@ -185,7 +185,7 @@ const FocusableSectionHeader = memo(({ title, focusKey, onSeeAll, onArrowUp }: {
   // Scroll into view when focused
   useEffect(() => {
     if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      ref.current.scrollIntoView({ behavior: 'auto', block: 'nearest' });
     }
   }, [focused]);
 
@@ -223,7 +223,7 @@ const MediaCard = memo(({ item, onSelect, focusKey }: {
   // Auto-scroll into view when focused (for TV remote navigation)
   useEffect(() => {
     if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      ref.current.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
     }
   }, [focused]);
 

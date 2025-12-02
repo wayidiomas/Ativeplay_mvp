@@ -191,7 +191,22 @@
   gap: 12px;
 }
 
+.episodesVirtualized {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.episodesVirtualized::-webkit-scrollbar {
+  width: 8px;
+}
+
+.episodesVirtualized::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
 .episodeCard {
+  height: 100%;
   display: flex;
   align-items: center;
   gap: 16px;

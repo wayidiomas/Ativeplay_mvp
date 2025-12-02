@@ -3,8 +3,9 @@
  * Página de detalhes de uma série com lista de episódios estilo Netflix
  */
 
-import { useEffect, useState, memo, useCallback } from 'react';
+import { useEffect, useState, memo, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   useFocusable,
   FocusContext,
@@ -21,6 +22,11 @@ import {
 import { MdArrowBack, MdPlayArrow } from 'react-icons/md';
 import styles from './SeriesDetail.module.css';
 
+// Episode list virtualization constants
+const EPISODE_HEIGHT = 122; // episodeCard height (90px thumbnail + 32px padding)
+const EPISODE_GAP = 12;
+const EPISODE_ROW_HEIGHT = EPISODE_HEIGHT + EPISODE_GAP;
+
 // Episode card with spatial navigation
 interface EpisodeCardProps {
   episode: {
@@ -32,20 +38,15 @@ interface EpisodeCardProps {
   fullData: PlaylistItem | null;
   focusKey: string;
   onSelect: () => void;
+  onArrowPress?: (direction: string) => boolean;
 }
 
-const EpisodeCard = memo(({ episode, fullData, focusKey, onSelect }: EpisodeCardProps) => {
+const EpisodeCard = memo(({ episode, fullData, focusKey, onSelect, onArrowPress }: EpisodeCardProps) => {
   const { ref, focused } = useFocusable({
     focusKey,
     onEnterPress: onSelect,
+    onArrowPress,
   });
-
-  // Auto-scroll into view when focused (for TV remote navigation)
-  useEffect(() => {
-    if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-    }
-  }, [focused]);
 
   return (
     <button
@@ -93,7 +94,7 @@ const SeasonButton = memo(({ season, isSelected, focusKey, onSelect, onArrowPres
 
   useEffect(() => {
     if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      ref.current.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
     }
   }, [focused]);
 
@@ -257,6 +258,58 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
     return true;
   }, [availableSeasons, currentSeasonEpisodes]);
 
+  // Virtualized episode list
+  const episodesContainerRef = useRef<HTMLDivElement>(null);
+
+  const episodeVirtualizer = useVirtualizer({
+    count: currentSeasonEpisodes.length,
+    getScrollElement: () => episodesContainerRef.current,
+    estimateSize: () => EPISODE_ROW_HEIGHT,
+    overscan: 3,
+  });
+
+  // Handle episode navigation (scroll first, then focus for virtualization)
+  const handleEpisodeArrowPress = useCallback((direction: string, index: number) => {
+    if (direction === 'down') {
+      if (index < currentSeasonEpisodes.length - 1) {
+        const nextEpisode = currentSeasonEpisodes[index + 1];
+        if (nextEpisode) {
+          // Scroll first to ensure item is rendered
+          episodeVirtualizer.scrollToIndex(index + 1, { align: 'center', behavior: 'auto' });
+          setTimeout(() => {
+            setFocus(`series-ep-${nextEpisode.id}`);
+          }, 50);
+        }
+      }
+      return false; // Block at last episode
+    }
+    if (direction === 'up') {
+      if (index > 0) {
+        const prevEpisode = currentSeasonEpisodes[index - 1];
+        if (prevEpisode) {
+          // Scroll first to ensure item is rendered
+          episodeVirtualizer.scrollToIndex(index - 1, { align: 'center', behavior: 'auto' });
+          setTimeout(() => {
+            setFocus(`series-ep-${prevEpisode.id}`);
+          }, 50);
+        }
+      } else {
+        // At first episode, go to season buttons or back button
+        if (availableSeasons.length > 1) {
+          setFocus(`series-season-${selectedSeason}`);
+        } else {
+          setFocus('series-back');
+        }
+      }
+      return false;
+    }
+    // Block horizontal navigation in episode list
+    if (direction === 'left' || direction === 'right') {
+      return false;
+    }
+    return true;
+  }, [currentSeasonEpisodes, availableSeasons, selectedSeason, episodeVirtualizer]);
+
   // Build episode lookup for full data (when using seasonsData)
   const episodeLookup = new Map(episodes.map((ep) => [ep.id, ep]));
 
@@ -404,22 +457,53 @@ export function SeriesDetail({ onSelectItem }: SeriesDetailProps) {
         </div>
       )}
 
-        {/* Episodes List */}
+        {/* Episodes List - Virtualized */}
         <div className={styles.episodesList}>
           <h2 className={styles.episodesTitle}>Episódios - Temporada {selectedSeason}</h2>
           {currentSeasonEpisodes.length === 0 ? (
             <div className={styles.noEpisodes}>Nenhum episódio encontrado para esta temporada.</div>
           ) : (
-            <div className={styles.episodes}>
-              {currentSeasonEpisodes.map((episode) => (
-                <EpisodeCard
-                  key={episode.id}
-                  episode={episode}
-                  fullData={getFullEpisode(episode.id)}
-                  focusKey={`series-ep-${episode.id}`}
-                  onSelect={() => handleEpisodeClick(episode)}
-                />
-              ))}
+            <div
+              ref={episodesContainerRef}
+              className={styles.episodesVirtualized}
+              style={{
+                height: '500px', // Fixed height for virtualization
+                overflow: 'auto',
+              }}
+            >
+              <div
+                style={{
+                  height: `${episodeVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {episodeVirtualizer.getVirtualItems().map((virtualItem) => {
+                  const episode = currentSeasonEpisodes[virtualItem.index];
+                  if (!episode) return null;
+                  return (
+                    <div
+                      key={episode.id}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: `${EPISODE_HEIGHT}px`,
+                        transform: `translateY(${virtualItem.start}px)`,
+                      }}
+                    >
+                      <EpisodeCard
+                        episode={episode}
+                        fullData={getFullEpisode(episode.id)}
+                        focusKey={`series-ep-${episode.id}`}
+                        onSelect={() => handleEpisodeClick(episode)}
+                        onArrowPress={(dir) => handleEpisodeArrowPress(dir, virtualItem.index)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

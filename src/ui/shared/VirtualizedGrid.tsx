@@ -91,7 +91,7 @@ const GridItemWrapper = memo(function GridItemWrapper({
   // Scroll into view when focused
   useEffect(() => {
     if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      ref.current.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
     }
   }, [focused]);
 

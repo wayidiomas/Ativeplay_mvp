@@ -90,7 +90,7 @@ const VirtualizedCardWrapper = memo(function VirtualizedCardWrapper({
   // Scroll into view when focused (for vertical navigation between rows)
   useEffect(() => {
     if (focused && ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      ref.current.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
     }
   }, [focused]);
 
