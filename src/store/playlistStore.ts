@@ -26,6 +26,9 @@ export interface CachedRow {
   hasMore?: boolean;
 }
 
+// Xtream items cache by category ID
+export type XtreamItemsCache = Record<string, PlaylistItem[]>;
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -51,6 +54,7 @@ interface PlaylistState {
   groupsCache: PlaylistGroup[] | null;
   seriesCache: SeriesInfo[] | null;
   rowsCache: Record<MediaKind, CachedRow[]>; // Cache rows per tab (movie, series, live)
+  xtreamItemsCache: Record<MediaKind, XtreamItemsCache>; // Xtream items by category ID per media type
 
   // Actions
   setPlaylist: (playlist: StoredPlaylist) => void;
@@ -62,6 +66,8 @@ interface PlaylistState {
   setSeriesCache: (series: SeriesInfo[] | null) => void;
   setRowsCache: (mediaKind: MediaKind, rows: CachedRow[]) => void;
   getRowsCache: (mediaKind: MediaKind) => CachedRow[] | null;
+  setXtreamItemsCache: (mediaKind: MediaKind, itemsByCategory: XtreamItemsCache) => void;
+  getXtreamItemsCache: (mediaKind: MediaKind) => XtreamItemsCache | null;
   clearCache: () => void;
   reset: () => void;
 
@@ -81,6 +87,13 @@ const emptyRowsCache: Record<MediaKind, CachedRow[]> = {
   unknown: [],
 };
 
+const emptyXtreamItemsCache: Record<MediaKind, XtreamItemsCache> = {
+  movie: {},
+  series: {},
+  live: {},
+  unknown: {},
+};
+
 const initialState = {
   hash: null as string | null,
   url: null as string | null,
@@ -95,6 +108,7 @@ const initialState = {
   groupsCache: null as PlaylistGroup[] | null,
   seriesCache: null as SeriesInfo[] | null,
   rowsCache: { ...emptyRowsCache } as Record<MediaKind, CachedRow[]>,
+  xtreamItemsCache: { ...emptyXtreamItemsCache } as Record<MediaKind, XtreamItemsCache>,
 };
 
 // ============================================================================
@@ -125,6 +139,7 @@ export const usePlaylistStore = create<PlaylistState>()(
           groupsCache: null,
           seriesCache: null,
           rowsCache: { ...emptyRowsCache },
+          xtreamItemsCache: { ...emptyXtreamItemsCache },
         });
       },
 
@@ -153,11 +168,25 @@ export const usePlaylistStore = create<PlaylistState>()(
         return rows && rows.length > 0 ? rows : null;
       },
 
+      setXtreamItemsCache: (mediaKind, itemsByCategory) =>
+        set((state) => ({
+          xtreamItemsCache: {
+            ...state.xtreamItemsCache,
+            [mediaKind]: itemsByCategory,
+          },
+        })),
+
+      getXtreamItemsCache: (mediaKind) => {
+        const cache = get().xtreamItemsCache[mediaKind];
+        return cache && Object.keys(cache).length > 0 ? cache : null;
+      },
+
       clearCache: () =>
         set({
           groupsCache: null,
           seriesCache: null,
           rowsCache: { ...emptyRowsCache },
+          xtreamItemsCache: { ...emptyXtreamItemsCache },
         }),
 
       reset: () => set(initialState),

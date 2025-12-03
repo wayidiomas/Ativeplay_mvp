@@ -228,6 +228,8 @@ export function Home() {
   // Hybrid Xtream support
   const isXtream = usePlaylistStore((s) => s.isXtream);
   const getXtreamClient = usePlaylistStore((s) => s.getXtreamClient);
+  const setXtreamItemsCache = usePlaylistStore((s) => s.setXtreamItemsCache);
+  const getXtreamItemsCache = usePlaylistStore((s) => s.getXtreamItemsCache);
 
   const [selectedNav, setSelectedNav] = useState<NavItem>('movies');
   const [rows, setRows] = useState<Row[]>([]);
@@ -387,14 +389,17 @@ export function Home() {
           const allItems = normalizeXtreamStreams(streams, xtreamMediaType);
 
           // Build a map of items by category ID for fast lookup
-          const itemsByCategory = new Map<string, PlaylistItem[]>();
+          const itemsByCategory: Record<string, PlaylistItem[]> = {};
           for (const item of allItems) {
             const categoryId = item.group || 'uncategorized';
-            if (!itemsByCategory.has(categoryId)) {
-              itemsByCategory.set(categoryId, []);
+            if (!itemsByCategory[categoryId]) {
+              itemsByCategory[categoryId] = [];
             }
-            itemsByCategory.get(categoryId)!.push(item);
+            itemsByCategory[categoryId].push(item);
           }
+
+          // Cache itemsByCategory for pagination (loadMoreGroups needs this)
+          setXtreamItemsCache(mediaKind, itemsByCategory);
 
           // Store all groups for pagination
           setAllFilteredGroups(groups);
@@ -406,7 +411,7 @@ export function Home() {
 
           // Build rows with items from the streams
           const rowsData: Row[] = groupsToLoad.map((group) => {
-            const categoryItems = itemsByCategory.get(group.id) || [];
+            const categoryItems = itemsByCategory[group.id] || [];
             const slicedItems = categoryItems.slice(0, ITEMS_PER_GROUP);
             return {
               group: { ...group, itemCount: categoryItems.length },
@@ -506,7 +511,7 @@ export function Home() {
     }
 
     loadData();
-  }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache, getRowsCache, setRowsCache, isXtream, getXtreamClient]);
+  }, [hash, selectedNav, mediaKind, groupsCache, seriesCache, setGroupsCache, setSeriesCache, getRowsCache, setRowsCache, isXtream, getXtreamClient, setXtreamItemsCache]);
 
   // Search with debounce
   // - M3U mode: uses PostgreSQL fuzzy search (pg_trgm) - fast server-side
@@ -750,6 +755,7 @@ export function Home() {
     if (!hash || !hasMoreGroups || loading) return;
 
     const currentHash = hash;
+    const xtreamMode = isXtream();
     // Use loadedGroupsCount instead of rows.length to avoid duplicates
     // (rows.length can be less than loaded groups if some rows were empty)
     const startIndex = loadedGroupsCount;
@@ -760,6 +766,44 @@ export function Home() {
       setHasMoreGroups(false);
       return;
     }
+
+    // =====================================================================
+    // XTREAM MODE: Use cached items (loaded during initial load)
+    // =====================================================================
+    if (xtreamMode) {
+      const itemsCache = getXtreamItemsCache(mediaKind);
+      if (!itemsCache) {
+        console.warn('[Home] Xtream items cache not available for pagination');
+        setHasMoreGroups(false);
+        return;
+      }
+
+      const newRowsData: Row[] = groupsToLoad.map((group) => {
+        const categoryItems = itemsCache[group.id] || [];
+        const slicedItems = categoryItems.slice(0, ITEMS_PER_GROUP);
+        return {
+          group: { ...group, itemCount: categoryItems.length },
+          items: slicedItems,
+          hasMore: categoryItems.length > ITEMS_PER_GROUP,
+        };
+      });
+
+      const nonEmptyRows = newRowsData.filter(r => r.items.length > 0);
+      console.log(`[Home] Xtream loadMoreGroups: adding ${nonEmptyRows.length} rows (${startIndex}-${endIndex})`);
+
+      setRows(prev => {
+        const updatedRows = [...prev, ...nonEmptyRows];
+        setRowsCache(mediaKind, updatedRows);
+        return updatedRows;
+      });
+      setLoadedGroupsCount(endIndex);
+      setHasMoreGroups(endIndex < allFilteredGroups.length);
+      return;
+    }
+
+    // =====================================================================
+    // M3U MODE: Load from backend API
+    // =====================================================================
 
     // Load series if needed for series tab
     let series = seriesCache;
@@ -805,7 +849,7 @@ export function Home() {
     });
     setLoadedGroupsCount(endIndex); // Track actual groups loaded
     setHasMoreGroups(endIndex < allFilteredGroups.length);
-  }, [hash, hasMoreGroups, loading, loadedGroupsCount, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache, setRowsCache]);
+  }, [hash, hasMoreGroups, loading, loadedGroupsCount, allFilteredGroups, seriesCache, selectedNav, mediaKind, setSeriesCache, setRowsCache, isXtream, getXtreamItemsCache]);
 
   // Handler for "Ver tudo" (See All) button
   const handleSeeAll = useCallback((group: PlaylistGroup) => {
