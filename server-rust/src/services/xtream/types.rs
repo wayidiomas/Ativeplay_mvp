@@ -200,6 +200,96 @@ where
     }
 }
 
+/// Deserialize an optional i32 that can come as string/int/bool/null
+fn deserialize_optional_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|u| u as i64))
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .map(|v| Some(v as i32))
+            .ok_or_else(|| D::Error::custom("invalid number")),
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<i32>()
+                    .map(Some)
+                    .map_err(|_| D::Error::custom(format!("invalid i32 string: {}", s)))
+            }
+        }
+        Some(serde_json::Value::Bool(b)) => Ok(Some(if b { 1 } else { 0 })),
+        Some(other) => Err(D::Error::custom(format!("expected i32, got: {}", other))),
+    }
+}
+
+/// Deserialize an optional i64 that can come as string/int/bool/null
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|u| u as i64))
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("invalid number")),
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<i64>()
+                    .map(Some)
+                    .map_err(|_| D::Error::custom(format!("invalid i64 string: {}", s)))
+            }
+        }
+        Some(serde_json::Value::Bool(b)) => Ok(Some(if b { 1 } else { 0 })),
+        Some(other) => Err(D::Error::custom(format!("expected i64, got: {}", other))),
+    }
+}
+
+/// Deserialize an optional f32 that can come as string/number/null
+fn deserialize_optional_f32<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => n
+            .as_f64()
+            .map(|f| Some(f as f32))
+            .ok_or_else(|| D::Error::custom("invalid number")),
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<f32>()
+                    .map(Some)
+                    .map_err(|_| D::Error::custom(format!("invalid f32 string: {}", s)))
+            }
+        }
+        Some(other) => Err(D::Error::custom(format!("expected f32, got: {}", other))),
+    }
+}
+
 /// Deserialize a string array that may contain null values
 /// Filters out null/non-string values and returns only valid strings
 fn deserialize_string_array_with_nulls<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -735,15 +825,15 @@ where
 pub struct XtreamSeason {
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub air_date: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub episode_count: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     pub id: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub overview: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub season_number: Option<i32>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover: Option<String>,
@@ -801,7 +891,7 @@ pub struct XtreamEpisode {
     pub custom_sid: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub added: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub season: Option<i32>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub direct_source: Option<String>,
@@ -810,23 +900,23 @@ pub struct XtreamEpisode {
 /// Episode metadata
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamEpisodeInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     pub tmdb_id: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub releasedate: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub plot: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     pub duration_secs: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub duration: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub movie_image: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub bitrate: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_f32")]
     pub rating: Option<f32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub season: Option<i32>,
 }
 
