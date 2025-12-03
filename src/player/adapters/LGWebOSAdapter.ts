@@ -393,6 +393,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private currentUrl: string = '';
   private options: PlayerOptions = {};
   private listeners: Set<PlayerEventCallback> = new Set();
+  private containerId?: string;
   private tracks: TrackInfo = { audio: [], subtitle: [], video: [] };
   private currentTracks: CurrentTracks = {
     audioIndex: 0,
@@ -442,6 +443,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private static readonly LIVE_EDGE_MAX_DRIFT_SECONDS = 30;
 
   constructor(containerId?: string) {
+    this.containerId = containerId;
     if (typeof window !== 'undefined') {
       this.webOS = window.webOS || null;
       this.isWebOS = !!this.webOS;
@@ -472,15 +474,53 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.video.setAttribute('playsinline', '');
     console.log('[LGWebOSAdapter] Video element created in container:', containerId);
 
+    this.attachVideoToContainer(containerId);
+    this.setupVideoListeners();
+  }
+
+  /**
+   * Attach video element to container, or re-attach if container was recreated by React
+   * This fixes the singleton pattern issue where video element becomes orphaned
+   * when React unmounts/remounts the player container
+   */
+  private attachVideoToContainer(containerId?: string): void {
+    if (!this.video) return;
+
     const container = containerId
       ? document.getElementById(containerId)
       : document.body;
 
-    if (container) {
-      container.appendChild(this.video);
+    if (!container) {
+      console.warn('[LGWebOSAdapter] Container not found:', containerId);
+      return;
     }
 
-    this.setupVideoListeners();
+    // Check if video is already in this container
+    if (this.video.parentNode === container) {
+      return;
+    }
+
+    // Check if video is in DOM but in a different/detached container
+    if (this.video.parentNode) {
+      const isInDom = document.body.contains(this.video);
+      if (!isInDom) {
+        console.log('[LGWebOSAdapter] Video element was orphaned (parent detached), re-attaching to:', containerId);
+      } else {
+        console.log('[LGWebOSAdapter] Video element moving to new container:', containerId);
+      }
+    }
+
+    container.appendChild(this.video);
+    console.log('[LGWebOSAdapter] Video element attached to container:', containerId);
+  }
+
+  /**
+   * Ensure video element is properly attached to the DOM
+   * Called before open() to fix singleton reuse issues
+   */
+  public ensureVideoAttached(): void {
+    this.attachVideoToContainer(this.containerId);
+    this.showVideoElement();
   }
 
   private emit(type: PlayerEvent['type'], data?: unknown): void {
@@ -1640,6 +1680,10 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       isLive: options.isLive,
       hasUrl: !!url,
     });
+
+    // Ensure video element is attached to the DOM container
+    // This fixes singleton reuse when React recreates the container
+    this.ensureVideoAttached();
 
     this.options = options;
 
