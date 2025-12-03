@@ -595,13 +595,29 @@ export function Home() {
             item.xtreamExtension
           );
           // Set item with resolved URL
-          setSelectedItem({ ...item, url: playUrl });
+          if (playUrl) {
+            setSelectedItem({ ...item, url: playUrl });
+          } else {
+            console.error('[Home] Empty play URL returned from Xtream API');
+          }
           return;
         } catch (err) {
           console.error('[Home] Failed to get Xtream play URL:', err);
+          // Don't proceed to player if URL fetch failed for Xtream items
+          // that don't have a fallback URL
+          if (!item.url) {
+            console.error('[Home] No fallback URL available, cannot play');
+            return;
+          }
           // Fall through to use item.url if available
         }
       }
+    }
+
+    // Only proceed if we have a valid URL
+    if (!item.url) {
+      console.error('[Home] Cannot play item without URL:', item.name);
+      return;
     }
 
     setSelectedItem(item);

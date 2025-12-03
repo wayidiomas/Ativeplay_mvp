@@ -22,63 +22,18 @@ import type {
 // Proxy URL for CORS/mixed-content bypass
 const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
 
-// Tipos do Luna Service para player nativo do webOS
-interface LunaServiceParams {
-  method?: string;
-  parameters?: Record<string, unknown>;
-  onSuccess?: (response: LunaMediaResponse) => void;
-  onFailure?: (error: LunaError) => void;
-  onComplete?: (response: LunaMediaResponse) => void;
-  subscribe?: boolean;
-}
-
-interface LunaError {
-  errorCode?: number;
-  errorText?: string;
-}
-
-interface LunaMediaResponse {
-  returnValue: boolean;
-  mediaId?: string;
-  state?: string;
-  currentTime?: number;
-  duration?: number;
-  bufferRange?: string;
-  sourceInfo?: {
-    container?: string;
-    numPrograms?: number;
-    seekable?: boolean;
-    programInfo?: Array<{
-      numAudioTracks?: number;
-      numSubtitleTracks?: number;
-      audioTrackInfo?: Array<{
-        language?: string;
-        codec?: string;
-      }>;
-    }>;
-  };
-  videoInfo?: {
-    width?: number;
-    height?: number;
-    codec?: string;
-    frameRate?: number;
-  };
-  audioInfo?: {
-    sampleRate?: number;
-    channels?: number;
-  };
-  error?: {
-    errorCode?: number;
-    errorText?: string;
-  };
-  errorCode?: number;
-  errorText?: string;
+// Tipos do Luna Service (mantido para futuras funcionalidades)
+interface LunaServiceRequest {
+  method: string;
+  parameters: Record<string, unknown>;
+  onSuccess?: (response: unknown) => void;
+  onFailure?: (error: unknown) => void;
 }
 
 interface WebOSAPI {
   platform: { tv: boolean };
   service: {
-    request: (uri: string, params: LunaServiceParams) => { cancel: () => void };
+    request: (uri: string, params: LunaServiceRequest) => void;
   };
   deviceInfo: (callback: (info: { modelName: string; version: string }) => void) => void;
 }
@@ -164,225 +119,40 @@ function isHlsUrl(url: string): boolean {
  * Detect if URL is an IPTV live stream pattern (raw TS, not HLS)
  * VOD URLs have file extensions (.m3u8, .mp4, .mkv) and should NOT match
  * VOD URLs with /movie/, /series/, /vod/ paths should NOT match
- *
- * Xtream Codes patterns:
- * - Live TS:   /live/{user}/{pass}/{stream_id}.ts    → IS a TS stream
- * - Live HLS:  /live/{user}/{pass}/{stream_id}.m3u8  → NOT a TS stream (use HLS.js)
- * - Live raw:  /live/{user}/{pass}/{stream_id}       → IS a TS stream (no extension)
- * - VOD:       /movie/{user}/{pass}/{id}.{ext}       → NOT a TS stream
- * - Series:    /series/{user}/{pass}/{id}.{ext}      → NOT a TS stream
  */
 function isIptvTsStream(url: string): boolean {
   const originalUrl = extractOriginalUrl(url);
 
-  // Xtream live HLS (.m3u8) is NOT a raw TS stream - should use HLS.js
-  if (/\/live\/[^/]+\/[^/]+\/\d+\.m3u8(\?|$)/i.test(originalUrl)) {
-    return false;
-  }
-
-  // Xtream live URLs ending in .ts or without extension ARE TS streams
-  if (/\/live\/[^/]+\/[^/]+\/\d+(\.ts)?(\?|$)/i.test(originalUrl)) {
-    return true;
-  }
-
-  // Xtream VOD/Series URLs are NOT raw TS streams (they have container files)
-  if (/\/(movie|series)\/[^/]+\/[^/]+\/\d+\.[a-z0-9]+(\?|$)/i.test(originalUrl)) {
-    return false;
-  }
-
-  // If URL has a file extension other than .ts, it's NOT a raw TS stream
-  // (e.g., .mp4, .mkv, .m3u8 are not raw TS)
-  if (/\.(mp4|mkv|avi|wmv|flv|m3u8|webm|mov)(\?|$)/i.test(originalUrl)) {
-    return false;
-  }
+  // If URL has a file extension, it's NOT a raw TS stream (it's VOD or HLS)
+  if (/\.[a-z0-9]{2,4}(\?|$)/i.test(originalUrl)) return false;
 
   // If URL contains VOD path indicators, it's NOT a raw TS stream
-  if (/(\/movie\/|\/vod\/|\/episode\/|\/filme\/)/i.test(originalUrl)) {
-    return false;
-  }
-
-  // Pattern: ends with .ts (TS file extension) - common for IPTV
-  if (/\.ts(\?|$)/i.test(originalUrl)) return true;
+  // This handles Xtream Codes VOD URLs like /movie/123/456/789 or /series/123/456/789
+  if (/(\/movie\/|\/series\/|\/vod\/|\/episode\/|\/filme\/)/i.test(originalUrl)) return false;
 
   // Pattern: ends with /ts (not .ts file extension)
   if (/\/ts(\?|$)/i.test(originalUrl)) return true;
-
   // Pattern: numeric Xtream Codes path /digits/digits/digits (no extension)
   // This typically matches live IPTV streams like /live/123/456/789
   if (/\/\d+\/\d+\/\d+(\?|$)/.test(originalUrl)) return true;
-
   // Query param indicating TS output
   if (originalUrl.includes('output=ts')) return true;
-
-  // Pattern: /play/TOKEN format (common IPTV pattern for live channels)
-  // TOKEN is typically base64 or alphanumeric, at least 20 chars to avoid false positives
-  // Examples: /play/ABC123... (Globo, SBT, Record live channels)
-  if (/\/play\/[a-zA-Z0-9+/=_-]{20,}(\?|$)/i.test(originalUrl)) return true;
-
-  // Pattern: /live/ path without extension (common IPTV live pattern)
-  // But NOT if it's followed by /series/ or /movie/ (which would be Xtream VOD)
-  if (/\/live\/[^/]+\/[^/]+\/\d+(\?|$)/i.test(originalUrl)) return true;
-
   return false;
 }
 
 /**
  * Heuristic to detect live streams when mediaKind is not explicitly provided.
- *
- * Xtream Codes detection:
- * - /live/{user}/{pass}/{id}    → LIVE
- * - /movie/{user}/{pass}/{id}   → VOD (not live)
- * - /series/{user}/{pass}/{id}  → VOD (not live, it's episode playback)
  */
 function isLikelyLiveHls(url: string): boolean {
   const originalUrl = extractOriginalUrl(url);
   const lower = originalUrl.toLowerCase();
-
-  // Xtream Codes: /live/ path = definitely live
-  if (/\/live\/[^/]+\/[^/]+\/\d+/i.test(originalUrl)) {
-    return true;
-  }
-
-  // Xtream Codes: /movie/ or /series/ path = definitely VOD
-  if (/\/(movie|series)\/[^/]+\/[^/]+\/\d+/i.test(originalUrl)) {
-    return false;
-  }
-
-  // Generic live hints
   const liveHints = /(live|channel|stream|tv|iptv|24\/7|ao ?vivo)/i;
-  // Generic VOD hints
   const vodHints = /(vod|movie|filme|episode|episodio|series|season|s0?\d|e0?\d)/i;
   const hasFileName = /\.[a-z0-9]{2,4}(\?|$)/i.test(lower);
-
   if (liveHints.test(lower)) return true;
   if (vodHints.test(lower)) return false;
-
   return !hasFileName;
 }
-
-/**
- * Detect container formats not natively supported by HTML5 video
- * MKV and AVI require transcoding or native player (webOS Luna Service)
- */
-function isUnsupportedContainer(url: string): { unsupported: boolean; format: string | null } {
-  const originalUrl = extractOriginalUrl(url);
-  const lower = originalUrl.toLowerCase();
-  if (lower.endsWith('.mkv') || lower.includes('.mkv?')) {
-    return { unsupported: true, format: 'MKV' };
-  }
-  if (lower.endsWith('.avi') || lower.includes('.avi?')) {
-    return { unsupported: true, format: 'AVI' };
-  }
-  if (lower.endsWith('.wmv') || lower.includes('.wmv?')) {
-    return { unsupported: true, format: 'WMV' };
-  }
-  if (lower.endsWith('.flv') || lower.includes('.flv?')) {
-    return { unsupported: true, format: 'FLV' };
-  }
-  return { unsupported: false, format: null };
-}
-
-// ============================================================================
-// Xtream Codes URL Detection
-// ============================================================================
-
-/**
- * Xtream URL patterns:
- * - Live (TS):  {server}/live/{user}/{pass}/{stream_id}.ts
- * - Live (HLS): {server}/live/{user}/{pass}/{stream_id}.m3u8
- * - Live (raw): {server}/live/{user}/{pass}/{stream_id} (no extension)
- * - VOD:        {server}/movie/{user}/{pass}/{stream_id}.{ext}
- * - Series:     {server}/series/{user}/{pass}/{episode_id}.{ext}
- */
-type XtreamMediaType = 'live' | 'vod' | 'series' | null;
-
-interface XtreamUrlInfo {
-  isXtream: boolean;
-  mediaType: XtreamMediaType;
-  streamId: string | null;
-  extension: string | null;
-  isHls: boolean; // True if live stream is served as HLS (.m3u8)
-}
-
-/**
- * Detect if URL is an Xtream Codes streaming URL
- * Returns detailed info about the stream type
- */
-function parseXtreamUrl(url: string): XtreamUrlInfo {
-  const originalUrl = extractOriginalUrl(url);
-
-  // Pattern: /live/{user}/{pass}/{stream_id}.m3u8 (HLS variant)
-  const liveHlsMatch = originalUrl.match(/\/live\/[^/]+\/[^/]+\/(\d+)\.m3u8(\?|$)/i);
-  if (liveHlsMatch) {
-    return {
-      isXtream: true,
-      mediaType: 'live',
-      streamId: liveHlsMatch[1],
-      extension: 'm3u8',
-      isHls: true,
-    };
-  }
-
-  // Pattern: /live/{user}/{pass}/{stream_id}.ts or /live/{user}/{pass}/{stream_id} (no ext)
-  const liveTsMatch = originalUrl.match(/\/live\/[^/]+\/[^/]+\/(\d+)(\.ts)?(\?|$)/i);
-  if (liveTsMatch) {
-    return {
-      isXtream: true,
-      mediaType: 'live',
-      streamId: liveTsMatch[1],
-      extension: 'ts',
-      isHls: false,
-    };
-  }
-
-  // Pattern: /movie/{user}/{pass}/{stream_id}.{ext}
-  const vodMatch = originalUrl.match(/\/movie\/[^/]+\/[^/]+\/(\d+)\.([a-z0-9]+)(\?|$)/i);
-  if (vodMatch) {
-    return {
-      isXtream: true,
-      mediaType: 'vod',
-      streamId: vodMatch[1],
-      extension: vodMatch[2].toLowerCase(),
-      isHls: false,
-    };
-  }
-
-  // Pattern: /series/{user}/{pass}/{episode_id}.{ext}
-  const seriesMatch = originalUrl.match(/\/series\/[^/]+\/[^/]+\/(\d+)\.([a-z0-9]+)(\?|$)/i);
-  if (seriesMatch) {
-    return {
-      isXtream: true,
-      mediaType: 'series',
-      streamId: seriesMatch[1],
-      extension: seriesMatch[2].toLowerCase(),
-      isHls: false,
-    };
-  }
-
-  return {
-    isXtream: false,
-    mediaType: null,
-    streamId: null,
-    extension: null,
-    isHls: false,
-  };
-}
-
-// Note: The following helper functions are available but not currently used elsewhere.
-// They could be exported if other components need Xtream URL detection.
-// For now, only parseXtreamUrl() is used internally by the adapter.
-
-// function isXtreamUrl(url: string): boolean {
-//   return parseXtreamUrl(url).isXtream;
-// }
-// function isXtreamLiveUrl(url: string): boolean {
-//   const info = parseXtreamUrl(url);
-//   return info.isXtream && info.mediaType === 'live';
-// }
-// function isXtreamVodUrl(url: string): boolean {
-//   const info = parseXtreamUrl(url);
-//   return info.isXtream && (info.mediaType === 'vod' || info.mediaType === 'series');
-// }
 
 export class LGWebOSAdapter implements IPlayerAdapter {
   private video: HTMLVideoElement | null = null;
@@ -393,7 +163,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private currentUrl: string = '';
   private options: PlayerOptions = {};
   private listeners: Set<PlayerEventCallback> = new Set();
-  private containerId?: string;
   private tracks: TrackInfo = { audio: [], subtitle: [], video: [] };
   private currentTracks: CurrentTracks = {
     audioIndex: 0,
@@ -416,20 +185,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private frozenCheckCount: number = 0;
   private tsRecoveryAttempts: number = 0;
   private isRawTsStream: boolean = false;
-  private isRecovering: boolean = false; // Flag to ignore errors during recovery
 
   // Live edge monitoring
   private liveEdgeMonitorInterval: ReturnType<typeof setInterval> | null = null;
 
   // VOD direct playback fallback
   private triedDirectFallback: boolean = false;
-
-  // Luna Service (native webOS player) for unsupported formats
-  private usingLunaService: boolean = false;
-  private lunaMediaId: string | null = null;
-  private lunaSubscription: { cancel: () => void } | null = null;
-  private lunaDuration: number = 0;
-  private lunaCurrentTime: number = 0;
 
   // Constants
   private static readonly HLS_FATAL_ERROR_WINDOW_MS = 60000;
@@ -443,7 +204,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   private static readonly LIVE_EDGE_MAX_DRIFT_SECONDS = 30;
 
   constructor(containerId?: string) {
-    this.containerId = containerId;
     if (typeof window !== 'undefined') {
       this.webOS = window.webOS || null;
       this.isWebOS = !!this.webOS;
@@ -464,63 +224,30 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       left: 0;
       width: 100%;
       height: 100%;
-      background: black;
-      display: block;
-      visibility: visible;
-      opacity: 1;
-      z-index: 0;
       object-fit: contain;
+      background: black;
+      z-index: 1;
     `;
     this.video.setAttribute('playsinline', '');
-    console.log('[LGWebOSAdapter] Video element created in container:', containerId);
-
-    this.attachVideoToContainer(containerId);
-    this.setupVideoListeners();
-  }
-
-  /**
-   * Attach video element to container, or re-attach if container was recreated by React
-   * This fixes the singleton pattern issue where video element becomes orphaned
-   * when React unmounts/remounts the player container
-   */
-  private attachVideoToContainer(containerId?: string): void {
-    if (!this.video) return;
 
     const container = containerId
       ? document.getElementById(containerId)
       : document.body;
 
-    if (!container) {
-      console.warn('[LGWebOSAdapter] Container not found:', containerId);
-      return;
+    console.log('[LGWebOSAdapter] createVideoElement:', {
+      containerId,
+      containerFound: !!container,
+      containerTagName: container?.tagName,
+    });
+
+    if (container) {
+      container.appendChild(this.video);
+      console.log('[LGWebOSAdapter] Video appended to container:', containerId || 'body');
+    } else {
+      console.error('[LGWebOSAdapter] Container not found:', containerId);
     }
 
-    // Check if video is already in this container
-    if (this.video.parentNode === container) {
-      return;
-    }
-
-    // Check if video is in DOM but in a different/detached container
-    if (this.video.parentNode) {
-      const isInDom = document.body.contains(this.video);
-      if (!isInDom) {
-        console.log('[LGWebOSAdapter] Video element was orphaned (parent detached), re-attaching to:', containerId);
-      } else {
-        console.log('[LGWebOSAdapter] Video element moving to new container:', containerId);
-      }
-    }
-
-    container.appendChild(this.video);
-    console.log('[LGWebOSAdapter] Video element attached to container:', containerId);
-  }
-
-  /**
-   * Ensure video element is properly attached to the DOM
-   * Called before open() to fix singleton reuse issues
-   */
-  public ensureVideoAttached(): void {
-    this.attachVideoToContainer(this.containerId);
-    this.showVideoElement();
+    this.setupVideoListeners();
   }
 
   private emit(type: PlayerEvent['type'], data?: unknown): void {
@@ -541,11 +268,22 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   /**
    * Proxify URL to bypass CORS/mixed-content on TVs
+   * VOD files (.mp4, .mkv, etc.) are accessed directly to avoid IP blocking
+   * HLS streams (.m3u8) still need proxy for CORS on playlist/segment requests
    */
   private proxifyUrl(url: string, referer?: string): string {
     if (!BRIDGE_URL) return url;
     if (!/^https?:\/\//i.test(url)) return url;
     if (url.includes('/api/proxy/hls')) return url;
+
+    // Skip proxy for VOD files - access directly to avoid IP blocking
+    // TV video elements can play these directly without CORS issues
+    const vodExtensions = /\.(mp4|mkv|avi|mov|wmv|flv|webm)(\?|$)/i;
+    if (vodExtensions.test(url)) {
+      console.log('[LGWebOSAdapter] Skipping proxy for VOD file:', url.substring(0, 80));
+      return url;
+    }
+
     const params = new URLSearchParams({ url });
     if (referer) params.set('referer', referer);
     return `${BRIDGE_URL}/api/proxy/hls?${params}`;
@@ -682,7 +420,17 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Handle stalled event - browser is trying to fetch but data is not forthcoming
     this.video.addEventListener('stalled', () => {
-      console.log('[LGWebOSAdapter] Video stalled, attempting recovery...');
+      console.log('[LGWebOSAdapter] Video stalled:', {
+        currentTime: this.video?.currentTime,
+        readyState: this.video?.readyState,
+        networkState: this.video?.networkState,
+        paused: this.video?.paused,
+        ended: this.video?.ended,
+        buffered: this.video?.buffered?.length,
+        src: this.video?.src?.substring(0, 60),
+        parentId: this.video?.parentElement?.id || 'none',
+        inDOM: document.body.contains(this.video),
+      });
       if (this.options.isLive && this.hls) {
         // For live streams, jump to live edge to recover
         this.hls.startLoad(-1);
@@ -690,6 +438,48 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     });
 
     this.video.addEventListener('playing', () => {
+      // Debug: Check for duplicate video elements or z-index issues
+      const allVideos = document.querySelectorAll('video');
+      const container = document.getElementById('player-container');
+      const containerRect = container?.getBoundingClientRect();
+      const videoRect = this.video?.getBoundingClientRect();
+
+      console.log('[LGWebOSAdapter] Video playing event:', {
+        currentTime: this.video?.currentTime,
+        readyState: this.video?.readyState,
+        videoWidth: this.video?.videoWidth,
+        videoHeight: this.video?.videoHeight,
+        paused: this.video?.paused,
+        parentId: this.video?.parentElement?.id || 'none',
+        // Check for duplicates
+        totalVideoElements: allVideos.length,
+        // Video element dimensions
+        videoRect: videoRect ? {
+          width: videoRect.width,
+          height: videoRect.height,
+          top: videoRect.top,
+          left: videoRect.left,
+        } : null,
+        // Container dimensions
+        containerRect: containerRect ? {
+          width: containerRect.width,
+          height: containerRect.height,
+        } : null,
+        // Computed styles
+        computedStyle: this.video ? {
+          display: getComputedStyle(this.video).display,
+          visibility: getComputedStyle(this.video).visibility,
+          opacity: getComputedStyle(this.video).opacity,
+          zIndex: getComputedStyle(this.video).zIndex,
+          width: getComputedStyle(this.video).width,
+          height: getComputedStyle(this.video).height,
+        } : null,
+        // Container computed styles
+        containerStyle: container ? {
+          zIndex: getComputedStyle(container).zIndex,
+          overflow: getComputedStyle(container).overflow,
+        } : null,
+      });
       if (this.isBuffering) {
         this.isBuffering = false;
         this.emit('bufferingend');
@@ -738,12 +528,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       // Don't emit error here - HLS.js error handler will take care of it
       if (this.usingHls) {
         console.log('[LGWebOSAdapter] Video error while using HLS.js - letting HLS.js handle it');
-        return;
-      }
-
-      // Ignore errors during recovery process (e.g., when src is cleared for reconnection)
-      if (this.isRecovering) {
-        console.log('[LGWebOSAdapter] Ignoring video error during recovery');
         return;
       }
 
@@ -1140,9 +924,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.setState('buffering');
     this.frozenCheckCount = 0;
 
-    // Set recovery flag to ignore errors during src clearing
-    this.isRecovering = true;
-
     // Clear current source
     if (this.video) {
       this.video.src = '';
@@ -1165,9 +946,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
         console.warn('[LGWebOSAdapter] TS reconnect play failed:', e);
       }
     }
-
-    // Clear recovery flag
-    this.isRecovering = false;
   }
 
   // ============================================================================
@@ -1234,394 +1012,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.hls.startLoad(-1);
   }
 
-  // ============================================================================
-  // Luna Service (Native webOS Player) for unsupported formats (MKV, AVI, etc.)
-  // ============================================================================
-
-  /**
-   * Get the windowId from the foreground app info
-   * This is required for Luna Service video to render on real TV devices
-   * Empty windowId only works on the emulator
-   */
-  private async getWindowId(): Promise<string> {
-    if (!this.webOS) {
-      return '';
-    }
-
-    return new Promise((resolve) => {
-      try {
-        this.webOS!.service.request('luna://com.webos.applicationManager', {
-          method: 'getForegroundAppInfo',
-          parameters: {},
-          onSuccess: (response: { windowId?: string; appId?: string; returnValue?: boolean }) => {
-            const windowId = response.windowId || '';
-            console.log('[LGWebOSAdapter] Got windowId from getForegroundAppInfo:', windowId, 'appId:', response.appId);
-            resolve(windowId);
-          },
-          onFailure: (error: LunaError) => {
-            console.error('[LGWebOSAdapter] Failed to get windowId:', error);
-            // Fallback to empty string (works on emulator)
-            resolve('');
-          },
-        });
-      } catch (e) {
-        console.error('[LGWebOSAdapter] Exception getting windowId:', e);
-        resolve('');
-      }
-    });
-  }
-
-  /**
-   * Try to play using Luna Service (native webOS media player)
-   * This supports more formats than HTML5 video including MKV, AVI, WMV, FLV
-   */
-  private async tryLunaServicePlayback(url: string): Promise<boolean> {
-    if (!this.isWebOS || !this.webOS) {
-      console.log('[LGWebOSAdapter] Luna Service not available (not webOS)');
-      return false;
-    }
-
-    console.log('[LGWebOSAdapter] Attempting Luna Service playback for:', url.substring(0, 100));
-
-    // Get windowId first - required for video to render on real TV devices
-    const windowId = await this.getWindowId();
-    console.log('[LGWebOSAdapter] Using windowId for Luna Service:', windowId || '(empty - emulator mode)');
-
-    return new Promise((resolve) => {
-      try {
-        // Hide HTML5 video element when using Luna Service
-        if (this.video) {
-          this.video.style.display = 'none';
-        }
-
-        // Load media via Luna Service
-        this.webOS!.service.request('luna://com.webos.media', {
-          method: 'load',
-          parameters: {
-            uri: url,
-            type: 'media',
-            payload: {
-              option: {
-                appId: 'com.ativeplay.app',
-                windowId: windowId,
-              },
-            },
-          },
-          onSuccess: (response: LunaMediaResponse) => {
-            if (response.returnValue && response.mediaId) {
-              console.log('[LGWebOSAdapter] Luna Service media loaded:', response.mediaId);
-              this.lunaMediaId = response.mediaId;
-              this.usingLunaService = true;
-
-              // Subscribe to media state changes
-              this.subscribeLunaMediaState(response.mediaId);
-
-              // Start playback
-              this.lunaPlay();
-
-              resolve(true);
-            } else {
-              console.error('[LGWebOSAdapter] Luna Service load failed:', response);
-              this.showVideoElement();
-              resolve(false);
-            }
-          },
-          onFailure: (error: LunaError) => {
-            console.error('[LGWebOSAdapter] Luna Service load error:', error);
-            this.showVideoElement();
-            resolve(false);
-          },
-        });
-      } catch (e) {
-        console.error('[LGWebOSAdapter] Luna Service exception:', e);
-        this.showVideoElement();
-        resolve(false);
-      }
-    });
-  }
-
-  /**
-   * Subscribe to Luna Service media state updates
-   */
-  private subscribeLunaMediaState(mediaId: string): void {
-    if (!this.webOS) return;
-
-    this.lunaSubscription = this.webOS.service.request('luna://com.webos.media', {
-      method: 'subscribe',
-      parameters: {
-        mediaId,
-        subscribe: true,
-      },
-      onSuccess: (response: LunaMediaResponse) => {
-        this.handleLunaStateChange(response);
-      },
-      onFailure: (error: LunaError) => {
-        console.error('[LGWebOSAdapter] Luna subscribe error:', error);
-      },
-      subscribe: true,
-    });
-  }
-
-  /**
-   * Handle Luna Service state change events
-   * Luna API returns state as object properties, e.g. { playing: {...} }, { paused: {...} }
-   */
-  private handleLunaStateChange(response: LunaMediaResponse): void {
-    // Detect which state property is present
-    const stateKeys = ['playing', 'paused', 'buffering', 'loading', 'idle', 'stopped', 'endOfStream', 'loadCompleted'];
-    const detectedState = stateKeys.find(key => key in response);
-
-    console.log('[LGWebOSAdapter] Luna state:', detectedState || 'update', response);
-
-    // Update duration from sourceInfo or direct property
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sourceInfo = response.sourceInfo as any;
-    if (sourceInfo?.duration !== undefined) {
-      this.lunaDuration = sourceInfo.duration / 1000; // Convert ms to seconds
-      this.emit('durationchange', { duration: this.lunaDuration });
-    } else if (response.duration !== undefined) {
-      this.lunaDuration = response.duration;
-      this.emit('durationchange', { duration: response.duration });
-    }
-
-    // Update current time - Luna returns { currentTime: { currentTime: number } } in ms
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const currentTimeData = (response as any).currentTime;
-    if (currentTimeData?.currentTime !== undefined) {
-      this.lunaCurrentTime = currentTimeData.currentTime / 1000; // Convert ms to seconds
-      this.emit('timeupdate', { currentTime: this.lunaCurrentTime });
-    } else if (typeof response.currentTime === 'number') {
-      this.lunaCurrentTime = response.currentTime;
-      this.emit('timeupdate', { currentTime: response.currentTime });
-    }
-
-    // Handle state changes based on detected property
-    if ('loadCompleted' in response) {
-      // loadCompleted means ready to play - emit duration if available
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const loadData = (response as any).loadCompleted;
-      if (loadData?.duration !== undefined) {
-        this.lunaDuration = loadData.duration / 1000;
-        this.emit('durationchange', { duration: this.lunaDuration });
-      }
-    }
-
-    if ('playing' in response) {
-      this.setState('playing');
-      this.emit('bufferingend');
-    } else if ('paused' in response) {
-      this.setState('paused');
-    } else if ('buffering' in response) {
-      this.setState('buffering');
-      this.emit('bufferingstart');
-    } else if ('loading' in response || 'load' in response) {
-      this.setState('loading');
-    } else if ('stopped' in response || 'idle' in response) {
-      this.setState('idle');
-    } else if ('endOfStream' in response) {
-      this.setState('ended');
-      this.emit('ended');
-    }
-
-    // Also check response.state for backward compatibility
-    if (response.state) {
-      switch (response.state) {
-        case 'load':
-          this.setState('loading');
-          break;
-        case 'buffering':
-          this.setState('buffering');
-          this.emit('bufferingstart');
-          break;
-        case 'playing':
-          this.setState('playing');
-          this.emit('bufferingend');
-          break;
-        case 'paused':
-          this.setState('paused');
-          break;
-        case 'stopped':
-        case 'idle':
-          this.setState('idle');
-          break;
-        case 'endOfStream':
-          this.setState('ended');
-          this.emit('ended');
-          break;
-      }
-    }
-
-    // Handle source info for tracks
-    if (response.sourceInfo?.programInfo?.[0]) {
-      const program = response.sourceInfo.programInfo[0];
-      if (program.audioTrackInfo) {
-        this.tracks.audio = program.audioTrackInfo.map((track, index) => ({
-          index,
-          language: track.language || 'und',
-          label: track.language ? parseLanguageCode(track.language) : `Audio ${index + 1}`,
-          isDefault: index === 0,
-        }));
-        this.emit('trackschange', this.tracks);
-      }
-    }
-
-    // Handle video info
-    if (response.videoInfo) {
-      this.tracks.video = [{
-        index: 0,
-        width: response.videoInfo.width || 0,
-        height: response.videoInfo.height || 0,
-      }];
-    }
-
-    // Handle errors
-    if (response.error || response.errorCode) {
-      const errorMsg = response.error?.errorText || response.errorText || 'Erro de reproducao';
-      console.error('[LGWebOSAdapter] Luna playback error:', response);
-      this.setState('error');
-      this.emit('error', {
-        code: 'LUNA_PLAYBACK_ERROR',
-        message: errorMsg,
-      });
-    }
-  }
-
-  /**
-   * Show HTML5 video element (when not using Luna)
-   */
-  private showVideoElement(): void {
-    if (this.video) {
-      // Ensure video is visible - use 'block' explicitly instead of empty string
-      this.video.style.display = 'block';
-      this.video.style.visibility = 'visible';
-      this.video.style.opacity = '1';
-      console.log('[LGWebOSAdapter] Video element shown');
-    }
-    this.usingLunaService = false;
-  }
-
-  /**
-   * Play via Luna Service
-   */
-  private lunaPlay(): void {
-    if (!this.webOS || !this.lunaMediaId) return;
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method: 'play',
-      parameters: {
-        mediaId: this.lunaMediaId,
-      },
-      onSuccess: () => {
-        console.log('[LGWebOSAdapter] Luna play success');
-      },
-      onFailure: (error: LunaError) => {
-        console.error('[LGWebOSAdapter] Luna play error:', error);
-      },
-    });
-  }
-
-  /**
-   * Pause via Luna Service
-   */
-  private lunaPause(): void {
-    if (!this.webOS || !this.lunaMediaId) return;
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method: 'pause',
-      parameters: {
-        mediaId: this.lunaMediaId,
-      },
-      onSuccess: () => {
-        console.log('[LGWebOSAdapter] Luna pause success');
-      },
-      onFailure: (error: LunaError) => {
-        console.error('[LGWebOSAdapter] Luna pause error:', error);
-      },
-    });
-  }
-
-  /**
-   * Seek via Luna Service
-   */
-  private lunaSeek(positionMs: number): void {
-    if (!this.webOS || !this.lunaMediaId) return;
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method: 'seek',
-      parameters: {
-        mediaId: this.lunaMediaId,
-        position: positionMs,
-      },
-      onSuccess: () => {
-        console.log('[LGWebOSAdapter] Luna seek success');
-      },
-      onFailure: (error: LunaError) => {
-        console.error('[LGWebOSAdapter] Luna seek error:', error);
-      },
-    });
-  }
-
-  /**
-   * Unload/close Luna Service media
-   */
-  private lunaUnload(): void {
-    // Cancel subscription first
-    if (this.lunaSubscription) {
-      this.lunaSubscription.cancel();
-      this.lunaSubscription = null;
-    }
-
-    if (!this.webOS || !this.lunaMediaId) {
-      this.usingLunaService = false;
-      return;
-    }
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method: 'unload',
-      parameters: {
-        mediaId: this.lunaMediaId,
-      },
-      onSuccess: () => {
-        console.log('[LGWebOSAdapter] Luna unload success');
-      },
-      onFailure: (error: LunaError) => {
-        console.error('[LGWebOSAdapter] Luna unload error:', error);
-      },
-    });
-
-    this.lunaMediaId = null;
-    this.usingLunaService = false;
-    this.lunaDuration = 0;
-    this.lunaCurrentTime = 0;
-
-    // Show HTML5 video element again
-    this.showVideoElement();
-  }
-
-  /**
-   * Set audio track via Luna Service
-   */
-  private lunaSetAudioTrack(index: number): void {
-    if (!this.webOS || !this.lunaMediaId) return;
-
-    this.webOS.service.request('luna://com.webos.media', {
-      method: 'selectTrack',
-      parameters: {
-        mediaId: this.lunaMediaId,
-        type: 'audio',
-        index,
-      },
-      onSuccess: () => {
-        console.log('[LGWebOSAdapter] Luna audio track changed to:', index);
-        this.currentTracks.audioIndex = index;
-        this.emit('audiotrackchange', { index, track: this.tracks.audio[index] });
-      },
-      onFailure: (error: LunaError) => {
-        console.error('[LGWebOSAdapter] Luna audio track change error:', error);
-      },
-    });
-  }
-
   private loadTracksFromElement(): void {
     if (!this.video) return;
 
@@ -1681,70 +1071,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       hasUrl: !!url,
     });
 
-    // Ensure video element is attached to the DOM container
-    // This fixes singleton reuse when React recreates the container
-    this.ensureVideoAttached();
-
     this.options = options;
-
-    // Check for unsupported container formats (MKV, AVI, WMV, FLV)
-    // These require transcoding or native player (webOS Luna Service)
-    const containerCheck = isUnsupportedContainer(url);
-    if (containerCheck.unsupported) {
-      console.warn(`[LGWebOSAdapter] Formato ${containerCheck.format} não suportado pelo HTML5 video`);
-
-      // On webOS, try Luna Service (native player) which supports more formats
-      if (this.isWebOS) {
-        console.log(`[LGWebOSAdapter] Tentando Luna Service para formato ${containerCheck.format}`);
-        this.setState('loading');
-
-        // Extract referer from original URL
-        let referer: string | undefined;
-        try {
-          const parsed = new URL(url);
-          referer = parsed.origin;
-        } catch {
-          // Invalid URL, skip referer
-        }
-
-        // Proxify URL to bypass CORS/mixed-content
-        const streamUrl = this.proxifyUrl(url, referer);
-        this.currentUrl = streamUrl;
-        this.options = options;
-
-        // Try Luna Service playback
-        const lunaSuccess = await this.tryLunaServicePlayback(streamUrl);
-        if (lunaSuccess) {
-          console.log(`[LGWebOSAdapter] Luna Service iniciou reprodução de ${containerCheck.format}`);
-          return; // Luna Service is handling playback
-        }
-
-        // Luna Service failed, show error
-        console.error('[LGWebOSAdapter] Luna Service também falhou para este formato');
-      }
-
-      // Not webOS or Luna Service failed
-      this.setState('error');
-      this.emit('error', {
-        code: 'UNSUPPORTED_FORMAT',
-        message: `Formato ${containerCheck.format} não é suportado. Use um formato compatível (MP4, HLS).`,
-        format: containerCheck.format,
-      });
-      throw new Error(`Formato ${containerCheck.format} não suportado`);
-    }
-
     this.setState('loading');
 
     // Stop any running monitors
     this.stopTsRecoveryMonitor();
     this.stopLiveEdgeMonitor();
-
-    // Ensure HTML5 video element is visible (might be hidden from previous Luna Service playback)
-    // Close any active Luna session first
-    if (this.usingLunaService) {
-      this.lunaUnload();
-    }
-    this.showVideoElement();
 
     // Clean up previous HLS instance
     if (this.hls) {
@@ -1763,7 +1095,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.frozenCheckCount = 0;
     this.tsRecoveryAttempts = 0;
     this.lastPlaybackTime = 0;
-    this.isRecovering = false;
 
     // Extract referer from original URL
     let referer: string | undefined;
@@ -1785,17 +1116,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     // Detect IPTV TS streams - should NOT use HLS.js
     // Note: detection functions now extract original URL from proxified URLs
     const originalUrl = extractOriginalUrl(url);
-    const xtreamInfo = parseXtreamUrl(url);
     const isIptvTs = isIptvTsStream(url);
     const isLiveStream = this.options.isLive ?? (isIptvTs || isLikelyLiveHls(url));
     const isHls = isHlsUrl(url);
 
     console.log('[LGWebOSAdapter] Stream detection:', {
       originalUrl: originalUrl?.substring(0, 100),
-      isXtream: xtreamInfo.isXtream,
-      xtreamMediaType: xtreamInfo.mediaType,
-      xtreamExtension: xtreamInfo.extension,
-      xtreamIsHls: xtreamInfo.isHls, // Xtream live served as HLS (.m3u8)
       isIptvTs,
       isLiveStream,
       isHls,
@@ -1804,13 +1130,8 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
     // Use HLS.js for HLS streams (provides track selection APIs)
     // But NOT for raw IPTV TS streams
-    // This includes Xtream Live HLS (.m3u8) streams
     if (!isIptvTs && isHls && Hls.isSupported()) {
-      if (xtreamInfo.isXtream && xtreamInfo.isHls) {
-        console.log('[LGWebOSAdapter] Loading Xtream Live HLS stream via HLS.js:', streamUrl.substring(0, 100));
-      } else {
-        console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
-      }
+      console.log('[LGWebOSAdapter] Using HLS.js for stream:', streamUrl.substring(0, 100));
       this.usingHls = true;
 
       // Create custom loader to proxy all HLS sub-requests (playlists, segments)
@@ -1832,22 +1153,14 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       this.video.src = streamUrl;
       this.video.load();
     } else {
-      // Direct playback for non-HLS streams (including IPTV TS and Xtream VOD)
+      // Direct playback for non-HLS streams (including IPTV TS)
       if (isIptvTs) {
-        // Xtream Live or generic IPTV TS stream
-        if (xtreamInfo.isXtream && xtreamInfo.mediaType === 'live') {
-          console.log('[LGWebOSAdapter] Loading Xtream Live stream:', streamUrl.substring(0, 100));
-        } else {
-          console.log('[LGWebOSAdapter] Loading IPTV TS stream:', streamUrl.substring(0, 100));
-        }
+        console.log('[LGWebOSAdapter] Loading IPTV TS stream:', streamUrl.substring(0, 100));
         this.isRawTsStream = true;
         // Start TS recovery monitor for live IPTV streams
         if (isLiveStream) {
           this.startTsRecoveryMonitor();
         }
-      } else if (xtreamInfo.isXtream && (xtreamInfo.mediaType === 'vod' || xtreamInfo.mediaType === 'series')) {
-        // Xtream VOD (movie or series episode) - direct playback
-        console.log(`[LGWebOSAdapter] Loading Xtream ${xtreamInfo.mediaType === 'vod' ? 'VOD' : 'Series'} (${xtreamInfo.extension}):`, streamUrl.substring(0, 100));
       } else {
         console.log('[LGWebOSAdapter] Using HTML5 video for stream:', streamUrl.substring(0, 100));
       }
@@ -1917,11 +1230,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.stopTsRecoveryMonitor();
     this.stopLiveEdgeMonitor();
 
-    // Close Luna Service if active
-    if (this.usingLunaService) {
-      this.lunaUnload();
-    }
-
     if (this.hls) {
       this.hls.destroy();
       this.hls = null;
@@ -1963,10 +1271,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // Playback Controls
 
   play(): void {
-    if (this.usingLunaService) {
-      this.lunaPlay();
-      return;
-    }
     if (this.video) {
       this.video.play().catch((e) => {
         console.error('[LGWebOSAdapter] Error playing:', e);
@@ -1975,21 +1279,12 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   pause(): void {
-    if (this.usingLunaService) {
-      this.lunaPause();
-      return;
-    }
     if (this.video) {
       this.video.pause();
     }
   }
 
   stop(): void {
-    if (this.usingLunaService) {
-      this.lunaUnload();
-      this.setState('idle');
-      return;
-    }
     if (this.video) {
       this.video.pause();
       this.video.currentTime = 0;
@@ -1998,30 +1293,18 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   seek(position: number): void {
-    if (this.usingLunaService) {
-      this.lunaSeek(position);
-      return;
-    }
     if (this.video) {
       this.video.currentTime = position / 1000;
     }
   }
 
   seekForward(ms: number): void {
-    if (this.usingLunaService) {
-      this.lunaSeek(this.lunaCurrentTime + ms);
-      return;
-    }
     if (this.video) {
       this.video.currentTime += ms / 1000;
     }
   }
 
   seekBackward(ms: number): void {
-    if (this.usingLunaService) {
-      this.lunaSeek(Math.max(0, this.lunaCurrentTime - ms));
-      return;
-    }
     if (this.video) {
       this.video.currentTime = Math.max(0, this.video.currentTime - ms / 1000);
     }
@@ -2039,11 +1322,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   setAudioTrack(index: number): void {
     if (index < 0 || index >= this.tracks.audio.length) return;
-
-    if (this.usingLunaService) {
-      this.lunaSetAudioTrack(index);
-      return;
-    }
 
     if (this.usingHls && this.hls) {
       // Use HLS.js API for audio track switching
@@ -2118,18 +1396,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   }
 
   getPlaybackInfo(): PlaybackInfo {
-    // Luna Service playback info
-    if (this.usingLunaService) {
-      return {
-        currentTime: this.lunaCurrentTime,
-        duration: this.lunaDuration,
-        bufferedTime: 0, // Luna doesn't provide this
-        playbackRate: 1,
-        volume: 100, // Luna uses system volume
-        isMuted: false,
-      };
-    }
-
     if (!this.video) {
       return {
         currentTime: 0,
@@ -2233,13 +1499,6 @@ export class LGWebOSAdapter implements IPlayerAdapter {
    */
   isUsingHls(): boolean {
     return this.usingHls;
-  }
-
-  /**
-   * Check if currently using Luna Service (native webOS player)
-   */
-  isUsingLunaService(): boolean {
-    return this.usingLunaService;
   }
 }
 

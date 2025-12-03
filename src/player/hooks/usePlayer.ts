@@ -16,7 +16,7 @@ import type {
   SubtitleTrack,
 } from '../types';
 import { parseHlsManifest, type HlsManifestInfo } from '@core/services/hls/manifest';
-import { getMainPlayer, destroyMainPlayer, type PlayerFactoryOptions } from '../PlayerFactory';
+import { createPlayer, destroyMainPlayer, type PlayerFactoryOptions } from '../PlayerFactory';
 
 export interface UsePlayerOptions extends PlayerFactoryOptions {
   autoDestroy?: boolean;
@@ -122,18 +122,15 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Initialize player - use singleton to avoid multiple video elements
+  // Initialize player
   useEffect(() => {
-    playerRef.current = getMainPlayer(factoryOptions);
+    playerRef.current = createPlayer(factoryOptions);
 
     const handleEvent = (event: PlayerEvent) => {
       switch (event.type) {
-        case 'statechange': {
-          const newState = (event.data as { state: PlayerState }).state;
-          console.log('[usePlayer] State change:', newState);
-          setState(newState);
+        case 'statechange':
+          setState((event.data as { state: PlayerState }).state);
           break;
-        }
 
         case 'timeupdate':
           setPlaybackInfo((prev) => ({
@@ -177,7 +174,6 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
 
         case 'error': {
           const errorData = event.data as { code?: string; message?: string };
-          console.error('[usePlayer] Error event:', errorData);
           setErrorMessage(errorData.message || 'Erro desconhecido');
           break;
         }

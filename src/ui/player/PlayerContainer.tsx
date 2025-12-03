@@ -12,8 +12,6 @@ import {
 } from '@noriginmedia/norigin-spatial-navigation';
 import { usePlayer } from '@player/hooks/usePlayer';
 import type { AudioTrack, SubtitleTrack } from '@player/types';
-import { usePlaylistStore } from '@store/playlistStore';
-import type { XtreamEpgEntry } from '@core/services/api/xtream';
 import {
   MdPlayArrow,
   MdPause,
@@ -26,16 +24,15 @@ import {
   MdErrorOutline
 } from 'react-icons/md';
 import styles from './PlayerContainer.module.css';
-import { EpgBar } from './EpgBar';
 
 interface PlayerContainerProps {
   url: string;
   title?: string;
   startPosition?: number;
   isLive?: boolean;
-  /** Xtream stream ID for EPG (only for live Xtream channels) */
+  /** Xtream stream ID for EPG (only for live Xtream channels) - ignored in this version */
   xtreamStreamId?: string;
-  /** Whether the channel supports TV archive/catchup */
+  /** Whether the channel supports TV archive/catchup - ignored in this version */
   hasTvArchive?: boolean;
   onClose?: () => void;
   onEnded?: () => void;
@@ -196,21 +193,24 @@ export function PlayerContainer({
   title = '',
   startPosition = 0,
   isLive = false,
-  xtreamStreamId,
-  hasTvArchive = false,
   onClose,
   onEnded,
 }: PlayerContainerProps) {
   const BRIDGE_URL = import.meta.env.VITE_BRIDGE_URL;
-
-  // Get Xtream client for TV Archive functionality
-  const getXtreamClient = usePlaylistStore((s) => s.getXtreamClient);
 
   const buildStreamUrl = useCallback(
     (original: string) => {
       if (!BRIDGE_URL) return original;
       if (!/^https?:\/\//i.test(original)) return original;
       if (original.includes('/api/proxy/hls')) return original;
+
+      // Skip proxy for VOD files - access directly to avoid IP blocking
+      // TV video elements can play these directly without CORS issues
+      const vodExtensions = /\.(mp4|mkv|avi|mov|wmv|flv|webm)(\?|$)/i;
+      if (vodExtensions.test(original)) {
+        console.log('[PlayerContainer] Skipping proxy for VOD file:', original.substring(0, 80));
+        return original;
+      }
 
       // Extract referer (origin) from original URL for IPTV provider authentication
       let referer: string | undefined;
@@ -253,12 +253,50 @@ export function PlayerContainer({
   const [activeMenu, setActiveMenu] = useState<MenuType>(null);
   const hideControlsTimeout = useRef<ReturnType<typeof setTimeout>>();
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
 
   // Refs to avoid useEffect re-execution when functions change references
   const openRef = useRef(open);
   const buildStreamUrlRef = useRef(buildStreamUrl);
   openRef.current = open;
   buildStreamUrlRef.current = buildStreamUrl;
+
+  // Re-attach video element when React recreates the container div (state changes)
+  // This is critical because React renders different JSX for loading vs ready states
+  useEffect(() => {
+    const container = videoContainerRef.current;
+    const video = document.querySelector('video');
+
+    console.log('[PlayerContainer] State changed to:', state, {
+      containerExists: !!container,
+      videoExists: !!video,
+      videoParent: video?.parentElement?.id || 'none',
+      videoInContainer: video?.parentElement === container,
+      videoSrc: video?.src?.substring(0, 50) || 'none',
+      videoReadyState: video?.readyState,
+      videoPaused: video?.paused,
+      videoError: video?.error?.message || 'none',
+    });
+
+    if (!container) {
+      console.warn('[PlayerContainer] Container ref is null!');
+      return;
+    }
+
+    // If video exists but is not in this container, re-attach it
+    if (video && video.parentElement !== container) {
+      console.log('[PlayerContainer] Re-attaching video element to new container');
+      container.appendChild(video);
+
+      // Force video to continue playing after re-attach
+      if (video.src && !video.paused) {
+        console.log('[PlayerContainer] Video was playing, ensuring playback continues');
+      } else if (video.src && video.paused && video.readyState >= 2) {
+        console.log('[PlayerContainer] Video was paused but ready, attempting play');
+        video.play().catch(e => console.warn('[PlayerContainer] Play failed:', e));
+      }
+    }
+  }, [state]); // Re-run when state changes (which triggers different render paths)
 
   // Player-level focus context (boundary to isolate from rest of app)
   const { focusKey: playerFocusKey } = useFocusable({
@@ -295,64 +333,16 @@ export function PlayerContainer({
     onClose?.();
   }, [close, onClose]);
 
-  // Handle TV Archive / Catchup - Watch from start of current program
-  const handleWatchFromStart = useCallback(async (program: XtreamEpgEntry) => {
-    if (!xtreamStreamId || !hasTvArchive) return;
-
-    const client = getXtreamClient();
-    if (!client) {
-      console.error('[PlayerContainer] Xtream client not available for catchup');
-      return;
-    }
-
-    try {
-      // Calculate start timestamp and duration
-      const startTime = Math.floor(new Date(program.start).getTime() / 1000);
-      const endTime = Math.floor(new Date(program.end).getTime() / 1000);
-      const durationMins = Math.ceil((endTime - startTime) / 60);
-
-      console.log('[PlayerContainer] Fetching timeshift URL:', {
-        streamId: xtreamStreamId,
-        startTime,
-        durationMins,
-        programTitle: program.title,
-      });
-
-      const timeshiftUrl = await client.getTimeshiftUrl(
-        parseInt(xtreamStreamId, 10),
-        startTime,
-        durationMins
-      );
-
-      // Switch to timeshift URL
-      const streamUrl = buildStreamUrl(timeshiftUrl);
-      console.log('[PlayerContainer] Switching to timeshift stream:', streamUrl.substring(0, 80));
-      open(streamUrl, { startPosition: 0, autoPlay: true, isLive: false });
-
-    } catch (err) {
-      console.error('[PlayerContainer] Failed to get timeshift URL:', err);
-    }
-  }, [xtreamStreamId, hasTvArchive, getXtreamClient, buildStreamUrl, open]);
-
-  // Open video on mount - only depend on url to avoid re-opening on prop changes
-  // startPosition and isLive are captured at mount time via refs
-  const startPositionRef = useRef(startPosition);
-  const isLiveRef = useRef(isLive);
-
+  // Open video on mount - use refs to avoid re-initialization when functions change
   useEffect(() => {
-    console.log('[PlayerContainer] Opening video:', { url: url?.substring(0, 80), startPosition: startPositionRef.current, isLive: isLiveRef.current });
     const streamUrl = buildStreamUrlRef.current(url);
-    openRef.current(streamUrl, { startPosition: startPositionRef.current, autoPlay: true, isLive: isLiveRef.current });
-  }, [url]);
+    openRef.current(streamUrl, { startPosition, autoPlay: true, isLive });
+  }, [url, startPosition, isLive]);
 
   // Ensure player is closed when component unmounts
-  // Using empty deps array - close is stable (useCallback with [])
-  useEffect(() => {
-    return () => {
-      console.log('[PlayerContainer] Cleanup: closing player');
-      close();
-    };
-  }, []);
+  useEffect(() => () => {
+    close();
+  }, [close]);
 
   // Handle ended event
   useEffect(() => {
@@ -586,62 +576,24 @@ export function PlayerContainer({
     [duration, seek]
   );
 
-  // Render loading state
-  if (state === 'loading' || state === 'idle') {
-    return (
-      <div className={styles.container} ref={containerRef}>
-        <div id="player-container" className={styles.videoContainer} />
-        <div className={styles.loadingOverlay}>
-          <div className={styles.spinner} />
-          <span className={styles.loadingText}>Carregando...</span>
-        </div>
-      </div>
-    );
-  }
-
-  // Render error state
-  if (state === 'error') {
-    const unsupportedFormat = getUnsupportedFormat(url);
-    const isFormatError = unsupportedFormat !== null ||
-      (errorMessage?.includes('não suportado') ?? false);
-
-    // Use errorMessage from player if available, fallback to heuristics
-    const displayMessage = errorMessage || (
+  // Compute error state info (used in single render path)
+  const unsupportedFormat = state === 'error' ? getUnsupportedFormat(url) : null;
+  const isFormatError = state === 'error' && (
+    unsupportedFormat !== null || (errorMessage?.includes('não suportado') ?? false)
+  );
+  const errorDisplayMessage = state === 'error' ? (
+    errorMessage || (
       isFormatError
         ? `O formato ${unsupportedFormat || 'de vídeo'} não é suportado pelo navegador. Reproduza diretamente na TV.`
         : 'Não foi possível reproduzir o vídeo'
-    );
+    )
+  ) : '';
+  const errorDisplayTitle = isFormatError ? 'Formato Não Suportado' : 'Erro na Reprodução';
 
-    const displayTitle = isFormatError ? 'Formato Não Suportado' : 'Erro na Reprodução';
-
-    return (
-      <div className={styles.container} ref={containerRef}>
-        <div id="player-container" className={styles.videoContainer} />
-        <div className={styles.errorOverlay}>
-          <MdErrorOutline className={styles.errorIcon} />
-          <h2 className={styles.errorTitle}>{displayTitle}</h2>
-          <p className={styles.errorMessage}>{displayMessage}</p>
-          {!isFormatError && (
-            <button
-              className={styles.retryButton}
-              onClick={() => open(buildStreamUrl(url), { startPosition: currentTime, isLive })}
-              autoFocus
-            >
-              Tentar Novamente
-            </button>
-          )}
-          <button
-            className={styles.retryButton}
-            onClick={handleClose}
-            style={{ marginTop: isFormatError ? 0 : '0.5rem' }}
-            autoFocus={isFormatError}
-          >
-            Voltar
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Determine which overlay to show
+  const showLoading = state === 'loading' || state === 'idle';
+  const showError = state === 'error';
+  const showControlsOverlay = !showLoading && !showError;
 
   // Build audio menu items
   const audioMenuItems = audioTracks.map((track: AudioTrack, index: number) => ({
@@ -670,165 +622,192 @@ export function PlayerContainer({
     })),
   ];
 
+  // SINGLE RENDER PATH - prevents React from destroying the video container
+  // All states use the same JSX structure, just with different overlays visible
   return (
     <FocusContext.Provider value={playerFocusKey}>
       <div
         ref={containerRef}
         className={styles.container}
-        onClick={showControls}
-        onMouseMove={showControls}
+        onClick={showControlsOverlay ? showControls : undefined}
+        onMouseMove={showControlsOverlay ? showControls : undefined}
       >
-        <div id="player-container" className={styles.videoContainer} />
+        {/* Video container - NEVER DESTROYED by React state changes */}
+        <div id="player-container" ref={videoContainerRef} className={styles.videoContainer} />
 
-        {/* Controls Overlay */}
-        <div
-          className={`${styles.controlsOverlay} ${!controlsVisible ? styles.hidden : ''}`}
-        >
-          {/* Top Bar */}
-          <div className={styles.topBar}>
-            <h1 className={styles.title}>{title}</h1>
-            <CloseButton
-              focusKey="player-close"
-              onPress={handleClose}
-              onArrowPress={handleCloseArrowPress}
-              disabled={!controlsVisible}
-            />
+        {/* Loading Overlay */}
+        {showLoading && (
+          <div className={styles.loadingOverlay}>
+            <div className={styles.spinner} />
+            <span className={styles.loadingText}>Carregando...</span>
           </div>
+        )}
 
-          {/* EPG Bar - Only for live Xtream channels */}
-          {isLive && xtreamStreamId && (
-            <EpgBar
-              streamId={xtreamStreamId}
-              hasTvArchive={hasTvArchive}
-              onWatchFromStart={handleWatchFromStart}
-              visible={controlsVisible}
-              onNavigateUp={() => setFocus('player-close')}
-              onNavigateDown={() => setFocus('player-play-pause')}
-            />
-          )}
-
-          {/* Bottom Bar */}
-          <div className={styles.bottomBar}>
-            {/* Progress Bar */}
-            <div className={styles.progressContainer} onClick={handleSeekClick}>
-              <div
-                className={styles.progressBar}
-                role="progressbar"
-                aria-valuenow={progress}
-                aria-valuemin={0}
-                aria-valuemax={100}
+        {/* Error Overlay */}
+        {showError && (
+          <div className={styles.errorOverlay}>
+            <MdErrorOutline className={styles.errorIcon} />
+            <h2 className={styles.errorTitle}>{errorDisplayTitle}</h2>
+            <p className={styles.errorMessage}>{errorDisplayMessage}</p>
+            {!isFormatError && (
+              <button
+                className={styles.retryButton}
+                onClick={() => open(buildStreamUrl(url), { startPosition: currentTime, isLive })}
+                autoFocus
               >
-                <div
-                  className={styles.progressBuffered}
-                  style={{ width: `${bufferedProgress}%` }}
-                />
-                <div
-                  className={styles.progressFilled}
-                  style={{ width: `${progress}%` }}
-                />
-                <div
-                  className={styles.scrubber}
-                  style={{ left: `${progress}%` }}
-                />
-              </div>
-              <div className={styles.timeInfo}>
-                <span>{formatTime(currentTime)}</span>
-                <span>{formatTime(duration)}</span>
-              </div>
-            </div>
-
-            {/* Control Buttons */}
-            <div className={styles.controlsRow}>
-              <ControlButton
-                focusKey="player-seek-back"
-                onPress={() => seekBackward(10000)}
-                onArrowPress={(dir) => handleControlArrowPress(dir, 'seek-back')}
-                icon={<MdReplay10 />}
-                title="Voltar 10s"
-                disabled={!controlsVisible}
-              />
-
-              <ControlButton
-                focusKey="player-play-pause"
-                onPress={() => (state === 'playing' ? pause() : play())}
-                onArrowPress={(dir) => handleControlArrowPress(dir, 'play-pause')}
-                icon={state === 'playing' ? <MdPause /> : <MdPlayArrow />}
-                title={state === 'playing' ? 'Pausar' : 'Reproduzir'}
-                isPlayPause
-                disabled={!controlsVisible}
-              />
-
-              <ControlButton
-                focusKey="player-seek-forward"
-                onPress={() => seekForward(10000)}
-                onArrowPress={(dir) => handleControlArrowPress(dir, 'seek-forward')}
-                icon={<MdForward10 />}
-                title="Avançar 10s"
-                disabled={!controlsVisible}
-              />
-
-              <ControlButton
-                focusKey="player-audio"
-                onPress={() => setActiveMenu(activeMenu === 'audio' ? null : 'audio')}
-                onArrowPress={(dir) => handleControlArrowPress(dir, 'audio')}
-                icon={<MdVolumeUp />}
-                title="Áudio"
-                disabled={!controlsVisible}
-              />
-
-              <ControlButton
-                focusKey="player-subtitle"
-                onPress={() => setActiveMenu(activeMenu === 'subtitle' ? null : 'subtitle')}
-                onArrowPress={(dir) => handleControlArrowPress(dir, 'subtitle')}
-                icon={<MdSubtitles />}
-                title="Legendas"
-                disabled={!controlsVisible}
-              />
-            </div>
+                Tentar Novamente
+              </button>
+            )}
+            <button
+              className={styles.retryButton}
+              onClick={handleClose}
+              style={{ marginTop: isFormatError ? 0 : '0.5rem' }}
+              autoFocus={isFormatError}
+            >
+              Voltar
+            </button>
           </div>
+        )}
 
-          {/* Audio Track Menu */}
-          {activeMenu === 'audio' && audioMenuItems.length > 0 && (
-            <div className={styles.trackMenu}>
-              <div className={styles.trackMenuTitle}>Áudio</div>
-              {audioMenuItems.map((item, index) => (
-                <MenuItem
-                  key={item.key}
-                  focusKey={item.focusKey}
-                  label={item.label}
-                  isActive={item.isActive}
-                  onSelect={() => {
-                    setAudioTrack(item.trackIndex);
-                    setActiveMenu(null);
-                    setFocus('player-audio');
-                  }}
-                  onArrowPress={(dir) => handleMenuArrowPress(dir, 'audio', index, audioMenuItems.length)}
-                />
-              ))}
+        {/* Controls Overlay - only when not loading/error */}
+        {showControlsOverlay && (
+          <div
+            className={`${styles.controlsOverlay} ${!controlsVisible ? styles.hidden : ''}`}
+          >
+            {/* Top Bar */}
+            <div className={styles.topBar}>
+              <h1 className={styles.title}>{title}</h1>
+              <CloseButton
+                focusKey="player-close"
+                onPress={handleClose}
+                onArrowPress={handleCloseArrowPress}
+                disabled={!controlsVisible}
+              />
             </div>
-          )}
 
-          {/* Subtitle Track Menu */}
-          {activeMenu === 'subtitle' && (
-            <div className={styles.trackMenu}>
-              <div className={styles.trackMenuTitle}>Legendas</div>
-              {subtitleMenuItems.map((item, index) => (
-                <MenuItem
-                  key={item.key}
-                  focusKey={item.focusKey}
-                  label={item.label}
-                  isActive={item.isActive}
-                  onSelect={() => {
-                    setSubtitleTrack(item.trackIndex);
-                    setActiveMenu(null);
-                    setFocus('player-subtitle');
-                  }}
-                  onArrowPress={(dir) => handleMenuArrowPress(dir, 'subtitle', index, subtitleMenuItems.length)}
+            {/* Bottom Bar */}
+            <div className={styles.bottomBar}>
+              {/* Progress Bar */}
+              <div className={styles.progressContainer} onClick={handleSeekClick}>
+                <div
+                  className={styles.progressBar}
+                  role="progressbar"
+                  aria-valuenow={progress}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div
+                    className={styles.progressBuffered}
+                    style={{ width: `${bufferedProgress}%` }}
+                  />
+                  <div
+                    className={styles.progressFilled}
+                    style={{ width: `${progress}%` }}
+                  />
+                  <div
+                    className={styles.scrubber}
+                    style={{ left: `${progress}%` }}
+                  />
+                </div>
+                <div className={styles.timeInfo}>
+                  <span>{formatTime(currentTime)}</span>
+                  <span>{formatTime(duration)}</span>
+                </div>
+              </div>
+
+              {/* Control Buttons */}
+              <div className={styles.controlsRow}>
+                <ControlButton
+                  focusKey="player-seek-back"
+                  onPress={() => seekBackward(10000)}
+                  onArrowPress={(dir) => handleControlArrowPress(dir, 'seek-back')}
+                  icon={<MdReplay10 />}
+                  title="Voltar 10s"
+                  disabled={!controlsVisible}
                 />
-              ))}
+
+                <ControlButton
+                  focusKey="player-play-pause"
+                  onPress={() => (state === 'playing' ? pause() : play())}
+                  onArrowPress={(dir) => handleControlArrowPress(dir, 'play-pause')}
+                  icon={state === 'playing' ? <MdPause /> : <MdPlayArrow />}
+                  title={state === 'playing' ? 'Pausar' : 'Reproduzir'}
+                  isPlayPause
+                  disabled={!controlsVisible}
+                />
+
+                <ControlButton
+                  focusKey="player-seek-forward"
+                  onPress={() => seekForward(10000)}
+                  onArrowPress={(dir) => handleControlArrowPress(dir, 'seek-forward')}
+                  icon={<MdForward10 />}
+                  title="Avançar 10s"
+                  disabled={!controlsVisible}
+                />
+
+                <ControlButton
+                  focusKey="player-audio"
+                  onPress={() => setActiveMenu(activeMenu === 'audio' ? null : 'audio')}
+                  onArrowPress={(dir) => handleControlArrowPress(dir, 'audio')}
+                  icon={<MdVolumeUp />}
+                  title="Áudio"
+                  disabled={!controlsVisible}
+                />
+
+                <ControlButton
+                  focusKey="player-subtitle"
+                  onPress={() => setActiveMenu(activeMenu === 'subtitle' ? null : 'subtitle')}
+                  onArrowPress={(dir) => handleControlArrowPress(dir, 'subtitle')}
+                  icon={<MdSubtitles />}
+                  title="Legendas"
+                  disabled={!controlsVisible}
+                />
+              </div>
             </div>
-          )}
-        </div>
+
+            {/* Audio Track Menu */}
+            {activeMenu === 'audio' && audioMenuItems.length > 0 && (
+              <div className={styles.trackMenu}>
+                <div className={styles.trackMenuTitle}>Áudio</div>
+                {audioMenuItems.map((item, index) => (
+                  <MenuItem
+                    key={item.key}
+                    focusKey={item.focusKey}
+                    label={item.label}
+                    isActive={item.isActive}
+                    onSelect={() => {
+                      setAudioTrack(item.trackIndex);
+                      setActiveMenu(null);
+                      setFocus('player-audio');
+                    }}
+                    onArrowPress={(dir) => handleMenuArrowPress(dir, 'audio', index, audioMenuItems.length)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Subtitle Track Menu */}
+            {activeMenu === 'subtitle' && (
+              <div className={styles.trackMenu}>
+                <div className={styles.trackMenuTitle}>Legendas</div>
+                {subtitleMenuItems.map((item, index) => (
+                  <MenuItem
+                    key={item.key}
+                    focusKey={item.focusKey}
+                    label={item.label}
+                    isActive={item.isActive}
+                    onSelect={() => {
+                      setSubtitleTrack(item.trackIndex);
+                      setActiveMenu(null);
+                      setFocus('player-subtitle');
+                    }}
+                    onArrowPress={(dir) => handleMenuArrowPress(dir, 'subtitle', index, subtitleMenuItems.length)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Buffering Indicator */}
         {state === 'buffering' && (
