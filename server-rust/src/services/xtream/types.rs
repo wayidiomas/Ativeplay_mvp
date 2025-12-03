@@ -125,75 +125,17 @@ fn deserialize_string_or_int_required<'de, D>(deserializer: D) -> Result<String,
 where
     D: Deserializer<'de>,
 {
-    use serde::de::{self, Visitor};
+    // First try to deserialize as Option to handle null properly
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
 
-    struct StringOrIntRequiredVisitor;
-
-    impl<'de> Visitor<'de> for StringOrIntRequiredVisitor {
-        type Value = String;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a string, an integer, or null")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value.to_string())
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value)
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value.to_string())
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value.to_string())
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value.to_string())
-        }
-
-        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(if value { "1".to_string() } else { "0".to_string() })
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(String::new())
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(String::new())
-        }
+    match opt {
+        None => Ok(String::new()),
+        Some(serde_json::Value::Null) => Ok(String::new()),
+        Some(serde_json::Value::String(s)) => Ok(s),
+        Some(serde_json::Value::Number(n)) => Ok(n.to_string()),
+        Some(serde_json::Value::Bool(b)) => Ok(if b { "1".to_string() } else { "0".to_string() }),
+        Some(other) => Ok(other.to_string()),
     }
-
-    deserializer.deserialize_any(StringOrIntRequiredVisitor)
 }
 
 /// Deserialize a required i64 that can come as string/int/bool/null
@@ -201,70 +143,30 @@ fn deserialize_i64_required<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
 {
-    use serde::de::{self, Visitor};
+    use serde::de::Error;
 
-    struct I64Visitor;
+    // First try to deserialize as Option to handle null properly
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
 
-    impl<'de> Visitor<'de> for I64Visitor {
-        type Value = i64;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("an integer, a stringified integer, or null")
+    match opt {
+        None => Ok(0),
+        Some(serde_json::Value::Null) => Ok(0),
+        Some(serde_json::Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|u| u as i64))
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .ok_or_else(|| D::Error::custom("invalid number")),
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                Ok(0)
+            } else {
+                s.parse::<i64>()
+                    .map_err(|_| D::Error::custom(format!("invalid integer string: {}", s)))
+            }
         }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value)
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(value as i64)
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            value
-                .parse::<i64>()
-                .map_err(|_| E::custom(format!("invalid integer string: {}", value)))
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            self.visit_str(&value)
-        }
-
-        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(if value { 1 } else { 0 })
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(0)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(0)
-        }
+        Some(serde_json::Value::Bool(b)) => Ok(if b { 1 } else { 0 }),
+        Some(other) => Err(D::Error::custom(format!("expected integer, got: {}", other))),
     }
-
-    deserializer.deserialize_any(I64Visitor)
 }
 
 // ============================================================================
