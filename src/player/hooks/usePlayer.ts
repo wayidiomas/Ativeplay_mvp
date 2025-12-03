@@ -16,7 +16,7 @@ import type {
   SubtitleTrack,
 } from '../types';
 import { parseHlsManifest, type HlsManifestInfo } from '@core/services/hls/manifest';
-import { createPlayer, destroyMainPlayer, type PlayerFactoryOptions } from '../PlayerFactory';
+import { getMainPlayer, destroyMainPlayer, type PlayerFactoryOptions } from '../PlayerFactory';
 
 export interface UsePlayerOptions extends PlayerFactoryOptions {
   autoDestroy?: boolean;
@@ -122,9 +122,9 @@ export function usePlayer(options: UsePlayerOptions = {}): UsePlayerReturn {
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Initialize player
+  // Initialize player - use singleton to avoid multiple video elements
   useEffect(() => {
-    playerRef.current = createPlayer(factoryOptions);
+    playerRef.current = getMainPlayer(factoryOptions);
 
     const handleEvent = (event: PlayerEvent) => {
       switch (event.type) {

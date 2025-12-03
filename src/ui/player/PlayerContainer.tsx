@@ -247,7 +247,7 @@ export function PlayerContainer({
     setAudioTrack,
     setSubtitleTrack,
     close,
-  } = usePlayer({ containerId: 'player-container' });
+  } = usePlayer({ containerId: 'player-container', autoDestroy: true });
 
   const [controlsVisible, setControlsVisible] = useState(true);
   const [activeMenu, setActiveMenu] = useState<MenuType>(null);

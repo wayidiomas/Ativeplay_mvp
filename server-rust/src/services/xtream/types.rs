@@ -196,6 +196,77 @@ where
     deserializer.deserialize_any(StringOrIntRequiredVisitor)
 }
 
+/// Deserialize a required i64 that can come as string/int/bool/null
+fn deserialize_i64_required<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct I64Visitor;
+
+    impl<'de> Visitor<'de> for I64Visitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an integer, a stringified integer, or null")
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value as i64)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            value
+                .parse::<i64>()
+                .map_err(|_| E::custom(format!("invalid integer string: {}", value)))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(if value { 1 } else { 0 })
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(0)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(0)
+        }
+    }
+
+    deserializer.deserialize_any(I64Visitor)
+}
+
 // ============================================================================
 // Normalization Helpers (inspired by @iptv/xtream-api)
 // ============================================================================
@@ -632,8 +703,9 @@ pub struct XtreamVodDetails {
 /// Series information from get_series
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamSeries {
+    #[serde(default, deserialize_with = "deserialize_i64_required")]
     pub series_id: i64,
-    #[serde(deserialize_with = "deserialize_string_or_int_required")]
+    #[serde(default, deserialize_with = "deserialize_string_or_int_required")]
     pub name: String,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover: Option<String>,
@@ -670,7 +742,19 @@ pub struct XtreamSeriesInfo {
     pub seasons: Option<Vec<XtreamSeason>>,
     pub info: XtreamSeriesDetails,
     /// Episodes grouped by season number (key is season number as string)
+    #[serde(default, deserialize_with = "deserialize_episodes_map_or_null")]
     pub episodes: HashMap<String, Vec<XtreamEpisode>>,
+}
+
+/// Deserialize episodes map, treating null as empty map
+fn deserialize_episodes_map_or_null<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, Vec<XtreamEpisode>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<HashMap<String, Vec<XtreamEpisode>>>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
 /// Season information
