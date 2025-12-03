@@ -1648,6 +1648,13 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     this.stopTsRecoveryMonitor();
     this.stopLiveEdgeMonitor();
 
+    // Ensure HTML5 video element is visible (might be hidden from previous Luna Service playback)
+    // Close any active Luna session first
+    if (this.usingLunaService) {
+      this.lunaUnload();
+    }
+    this.showVideoElement();
+
     // Clean up previous HLS instance
     if (this.hls) {
       this.hls.destroy();
