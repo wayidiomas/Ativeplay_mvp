@@ -814,12 +814,12 @@ pub struct XtreamSeriesDetails {
 /// Episode information
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamEpisode {
-    #[serde(deserialize_with = "deserialize_string_or_int_required")]
+    #[serde(default, deserialize_with = "deserialize_string_or_int_required")]
     pub id: String,
     pub episode_num: i32,
-    #[serde(deserialize_with = "deserialize_string_or_int_required")]
+    #[serde(default, deserialize_with = "deserialize_string_or_int_required")]
     pub title: String,
-    #[serde(deserialize_with = "deserialize_string_or_int_required")]
+    #[serde(default, deserialize_with = "deserialize_string_or_int_required")]
     pub container_extension: String,
     #[serde(default)]
     pub info: Option<XtreamEpisodeInfo>,
