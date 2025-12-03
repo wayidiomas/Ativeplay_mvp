@@ -872,6 +872,7 @@ export function Home() {
     if (!row || !row.hasMore || loadingRowId === row.group.id) return;
 
     setLoadingRowId(row.group.id);
+    const xtreamMode = isXtream();
 
     try {
       // For series rows, load more from cache
@@ -896,37 +897,74 @@ export function Home() {
           setRowsCache(mediaKind, updatedRows);
           return updatedRows;
         });
-      } else {
-        // For regular items, load from API
-        const itemsRes = await getItems(hash, {
-          group: row.group.name,
-          mediaKind: row.group.mediaKind,
-          limit: ITEMS_PER_GROUP,
-          offset: row.items.length,
-        });
+        return;
+      }
+
+      // =====================================================================
+      // XTREAM MODE: Load more items from cache
+      // =====================================================================
+      if (xtreamMode) {
+        const itemsCache = getXtreamItemsCache(mediaKind);
+        if (!itemsCache) {
+          console.warn('[Home] Xtream items cache not available for row pagination');
+          return;
+        }
+
+        const allCategoryItems = itemsCache[row.group.id] || [];
+        const currentCount = row.items.length;
+        const nextItems = allCategoryItems.slice(currentCount, currentCount + ITEMS_PER_GROUP);
+        const hasMore = currentCount + nextItems.length < allCategoryItems.length;
+
+        console.log(`[Home] Xtream loadMoreRowItems: ${row.group.name} - adding ${nextItems.length} items (${currentCount} -> ${currentCount + nextItems.length}/${allCategoryItems.length})`);
 
         setRows(prev => {
           const updatedRows = prev.map((r, idx) => {
             if (idx === rowIndex) {
               return {
                 ...r,
-                items: [...r.items, ...itemsRes.items],
-                hasMore: itemsRes.hasMore,
+                items: [...r.items, ...nextItems],
+                hasMore,
               };
             }
             return r;
           });
-          // Update cache with updated rows
           setRowsCache(mediaKind, updatedRows);
           return updatedRows;
         });
+        return;
       }
+
+      // =====================================================================
+      // M3U MODE: Load more items from API
+      // =====================================================================
+      const itemsRes = await getItems(hash, {
+        group: row.group.name,
+        mediaKind: row.group.mediaKind,
+        limit: ITEMS_PER_GROUP,
+        offset: row.items.length,
+      });
+
+      setRows(prev => {
+        const updatedRows = prev.map((r, idx) => {
+          if (idx === rowIndex) {
+            return {
+              ...r,
+              items: [...r.items, ...itemsRes.items],
+              hasMore: itemsRes.hasMore,
+            };
+          }
+          return r;
+        });
+        // Update cache with updated rows
+        setRowsCache(mediaKind, updatedRows);
+        return updatedRows;
+      });
     } catch (error) {
       console.error('[Home] Failed to load more items:', error);
     } finally {
       setLoadingRowId(null);
     }
-  }, [hash, rows, loadingRowId, seriesCache, mediaKind, setRowsCache]);
+  }, [hash, rows, loadingRowId, seriesCache, mediaKind, setRowsCache, isXtream, getXtreamItemsCache]);
 
   // ============================================================================
   // Render
