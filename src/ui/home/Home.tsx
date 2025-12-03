@@ -21,6 +21,7 @@ import {
   getParseStatus,
   normalizeXtreamCategories,
   normalizeXtreamStreams,
+  normalizeXtreamSeriesToSeriesInfo,
   type PlaylistGroup,
   type PlaylistItem,
   type SeriesInfo,
@@ -385,6 +386,59 @@ export function Home() {
           const groups = normalizeXtreamCategories(categories, mediaKind);
           setGroupsCache(groups);
 
+          // Store all groups for pagination
+          setAllFilteredGroups(groups);
+
+          // Load first page of groups
+          const groupsToLoad = groups.slice(0, GROUPS_PER_PAGE);
+          setLoadedGroupsCount(groupsToLoad.length);
+          setHasMoreGroups(groups.length > GROUPS_PER_PAGE);
+
+          // =====================================================================
+          // SERIES: Use SeriesInfo[] format with isSeries: true
+          // This ensures handleSelectSeries is called instead of handleSelectItem
+          // =====================================================================
+          if (mediaKind === 'series') {
+            // Convert to SeriesInfo[] instead of PlaylistItem[]
+            const allSeriesInfo = normalizeXtreamSeriesToSeriesInfo(streams);
+
+            // Build a map of series by category ID for fast lookup
+            const seriesByCategory: Record<string, SeriesInfo[]> = {};
+            for (const series of allSeriesInfo) {
+              const categoryId = series.group || 'uncategorized';
+              if (!seriesByCategory[categoryId]) {
+                seriesByCategory[categoryId] = [];
+              }
+              seriesByCategory[categoryId].push(series);
+            }
+
+            // Cache for pagination
+            setXtreamItemsCache(mediaKind, seriesByCategory as unknown as Record<string, PlaylistItem[]>);
+
+            // Build rows with series data and isSeries: true
+            const rowsData: Row[] = groupsToLoad.map((group) => {
+              const categorySeries = seriesByCategory[group.id] || [];
+              const slicedSeries = categorySeries.slice(0, ITEMS_PER_GROUP);
+              return {
+                group: { ...group, itemCount: categorySeries.length },
+                items: [],
+                series: slicedSeries,
+                isSeries: true,
+                hasMore: categorySeries.length > ITEMS_PER_GROUP,
+              };
+            });
+
+            // Filter out empty rows
+            const nonEmptyRows = rowsData.filter(r => (r.series && r.series.length > 0));
+            setRows(nonEmptyRows);
+            setRowsCache(mediaKind, nonEmptyRows);
+            console.log(`[Home] Xtream: Cached ${nonEmptyRows.length} series rows for ${mediaKind} tab`);
+            return;
+          }
+
+          // =====================================================================
+          // VOD/LIVE: Use PlaylistItem[] format (existing behavior)
+          // =====================================================================
           // Normalize streams to PlaylistItem format
           const allItems = normalizeXtreamStreams(streams, xtreamMediaType);
 
@@ -400,14 +454,6 @@ export function Home() {
 
           // Cache itemsByCategory for pagination (loadMoreGroups needs this)
           setXtreamItemsCache(mediaKind, itemsByCategory);
-
-          // Store all groups for pagination
-          setAllFilteredGroups(groups);
-
-          // Load first page of groups
-          const groupsToLoad = groups.slice(0, GROUPS_PER_PAGE);
-          setLoadedGroupsCount(groupsToLoad.length);
-          setHasMoreGroups(groups.length > GROUPS_PER_PAGE);
 
           // Build rows with items from the streams
           const rowsData: Row[] = groupsToLoad.map((group) => {
@@ -794,6 +840,35 @@ export function Home() {
         return;
       }
 
+      // For series, treat cache as SeriesInfo[] and use isSeries: true
+      if (mediaKind === 'series') {
+        const seriesCache = itemsCache as unknown as Record<string, SeriesInfo[]>;
+        const newRowsData: Row[] = groupsToLoad.map((group) => {
+          const categorySeries = seriesCache[group.id] || [];
+          const slicedSeries = categorySeries.slice(0, ITEMS_PER_GROUP);
+          return {
+            group: { ...group, itemCount: categorySeries.length },
+            items: [],
+            series: slicedSeries,
+            isSeries: true,
+            hasMore: categorySeries.length > ITEMS_PER_GROUP,
+          };
+        });
+
+        const nonEmptyRows = newRowsData.filter(r => r.series && r.series.length > 0);
+        console.log(`[Home] Xtream loadMoreGroups (series): adding ${nonEmptyRows.length} rows (${startIndex}-${endIndex})`);
+
+        setRows(prev => {
+          const updatedRows = [...prev, ...nonEmptyRows];
+          setRowsCache(mediaKind, updatedRows);
+          return updatedRows;
+        });
+        setLoadedGroupsCount(endIndex);
+        setHasMoreGroups(endIndex < allFilteredGroups.length);
+        return;
+      }
+
+      // For VOD/LIVE, use existing PlaylistItem[] behavior
       const newRowsData: Row[] = groupsToLoad.map((group) => {
         const categoryItems = itemsCache[group.id] || [];
         const slicedItems = categoryItems.slice(0, ITEMS_PER_GROUP);

@@ -9,6 +9,8 @@
  * - Auto-generated seasons from episodes when missing
  */
 
+import type { SeriesInfo } from './index';
+
 const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
 // ============================================================================
@@ -406,9 +408,29 @@ export function normalizeXtreamStreams(
   }));
 }
 
+/**
+ * Convert Xtream series streams to SeriesInfo format for Home.tsx display
+ * This allows series to be rendered with the correct handler (handleSelectSeries)
+ */
+export function normalizeXtreamSeriesToSeriesInfo(
+  streams: XtreamStreamItem[]
+): SeriesInfo[] {
+  return streams.map((s) => ({
+    id: s.id,
+    name: s.name,
+    logo: s.logo,
+    group: s.categoryId || 'Uncategorized',
+    totalEpisodes: 0, // Will be loaded in SeriesDetail
+    totalSeasons: 0, // Will be loaded in SeriesDetail
+    firstSeason: 1,
+    lastSeason: 1,
+  }));
+}
+
 export default {
   XtreamAPI,
   createXtreamClient,
   normalizeXtreamCategories,
   normalizeXtreamStreams,
+  normalizeXtreamSeriesToSeriesInfo,
 };

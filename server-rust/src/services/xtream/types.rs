@@ -169,6 +169,37 @@ where
     }
 }
 
+/// Deserialize a required i32 that can come as string/int/bool/null
+fn deserialize_i32_required<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+
+    match opt {
+        None => Ok(0),
+        Some(serde_json::Value::Null) => Ok(0),
+        Some(serde_json::Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|u| u as i64))
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .map(|v| v as i32)
+            .ok_or_else(|| D::Error::custom("invalid number")),
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                Ok(0)
+            } else {
+                s.parse::<i32>()
+                    .map_err(|_| D::Error::custom(format!("invalid i32 string: {}", s)))
+            }
+        }
+        Some(serde_json::Value::Bool(b)) => Ok(if b { 1 } else { 0 }),
+        Some(other) => Err(D::Error::custom(format!("expected i32, got: {}", other))),
+    }
+}
+
 /// Deserialize a string array that may contain null values
 /// Filters out null/non-string values and returns only valid strings
 fn deserialize_string_array_with_nulls<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -758,6 +789,7 @@ pub struct XtreamSeriesDetails {
 pub struct XtreamEpisode {
     #[serde(default, deserialize_with = "deserialize_string_or_int_required")]
     pub id: String,
+    #[serde(deserialize_with = "deserialize_i32_required")]
     pub episode_num: i32,
     #[serde(default, deserialize_with = "deserialize_string_or_int_required")]
     pub title: String,

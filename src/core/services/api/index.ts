@@ -431,6 +431,7 @@ export {
   createXtreamClient,
   normalizeXtreamCategories,
   normalizeXtreamStreams,
+  normalizeXtreamSeriesToSeriesInfo,
   type XtreamCategory,
   type XtreamStreamItem,
   type XtreamVodInfo,
