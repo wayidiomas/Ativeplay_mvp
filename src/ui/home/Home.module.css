@@ -249,8 +249,8 @@
 .carouselTrack {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(180px, 220px);
-  gap: 12px;
+  grid-auto-columns: minmax(230px, 280px);
+  gap: 16px;
   overflow-x: auto;
   padding: 6px;
   scroll-behavior: smooth;
@@ -307,6 +307,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 10px;
 }
 
 .cardPlaceholder {
@@ -354,7 +355,7 @@
 }
 
 .skeletonPoster {
-  height: 240px;
+  height: 320px;
   border-radius: 10px;
   background: rgba(255,255,255,0.06);
   position: relative;

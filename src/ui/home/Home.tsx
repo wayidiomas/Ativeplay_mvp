@@ -44,10 +44,10 @@ import styles from './Home.module.css';
 
 type NavItem = 'movies' | 'series' | 'live';
 
-const ITEMS_PER_GROUP = 6; // Fewer items per carousel for faster load and better TV experience
-const CARD_WIDTH = 240; // Larger cards for better visibility on small TVs (32")
-const CARD_GAP = 16;
-const CAROUSEL_HEIGHT = 320;
+const ITEMS_PER_GROUP = 4; // Mostrar 4 cards por linha para um carrossel mais limpo
+const CARD_WIDTH = 260; // Cartas maiores para ocupar melhor o espaço
+const CARD_GAP = 18;
+const CAROUSEL_HEIGHT = 400;
 
 interface Row {
   group: PlaylistGroup;
