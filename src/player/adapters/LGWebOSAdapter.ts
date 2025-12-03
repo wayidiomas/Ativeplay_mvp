@@ -1281,46 +1281,91 @@ export class LGWebOSAdapter implements IPlayerAdapter {
 
   /**
    * Handle Luna Service state change events
+   * Luna API returns state as object properties, e.g. { playing: {...} }, { paused: {...} }
    */
   private handleLunaStateChange(response: LunaMediaResponse): void {
-    console.log('[LGWebOSAdapter] Luna state:', response.state, response);
+    // Detect which state property is present
+    const stateKeys = ['playing', 'paused', 'buffering', 'loading', 'idle', 'stopped', 'endOfStream', 'loadCompleted'];
+    const detectedState = stateKeys.find(key => key in response);
 
-    // Update duration
-    if (response.duration !== undefined) {
+    console.log('[LGWebOSAdapter] Luna state:', detectedState || 'update', response);
+
+    // Update duration from sourceInfo or direct property
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sourceInfo = response.sourceInfo as any;
+    if (sourceInfo?.duration !== undefined) {
+      this.lunaDuration = sourceInfo.duration / 1000; // Convert ms to seconds
+      this.emit('durationchange', { duration: this.lunaDuration });
+    } else if (response.duration !== undefined) {
       this.lunaDuration = response.duration;
       this.emit('durationchange', { duration: response.duration });
     }
 
-    // Update current time
-    if (response.currentTime !== undefined) {
+    // Update current time - Luna returns { currentTime: { currentTime: number } } in ms
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const currentTimeData = (response as any).currentTime;
+    if (currentTimeData?.currentTime !== undefined) {
+      this.lunaCurrentTime = currentTimeData.currentTime / 1000; // Convert ms to seconds
+      this.emit('timeupdate', { currentTime: this.lunaCurrentTime });
+    } else if (typeof response.currentTime === 'number') {
       this.lunaCurrentTime = response.currentTime;
       this.emit('timeupdate', { currentTime: response.currentTime });
     }
 
-    // Handle state changes
-    switch (response.state) {
-      case 'load':
-        this.setState('loading');
-        break;
-      case 'buffering':
-        this.setState('buffering');
-        this.emit('bufferingstart');
-        break;
-      case 'playing':
-        this.setState('playing');
-        this.emit('bufferingend');
-        break;
-      case 'paused':
-        this.setState('paused');
-        break;
-      case 'stopped':
-      case 'idle':
-        this.setState('idle');
-        break;
-      case 'endOfStream':
-        this.setState('ended');
-        this.emit('ended');
-        break;
+    // Handle state changes based on detected property
+    if ('loadCompleted' in response) {
+      // loadCompleted means ready to play - emit duration if available
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const loadData = (response as any).loadCompleted;
+      if (loadData?.duration !== undefined) {
+        this.lunaDuration = loadData.duration / 1000;
+        this.emit('durationchange', { duration: this.lunaDuration });
+      }
+    }
+
+    if ('playing' in response) {
+      this.setState('playing');
+      this.emit('bufferingend');
+    } else if ('paused' in response) {
+      this.setState('paused');
+    } else if ('buffering' in response) {
+      this.setState('buffering');
+      this.emit('bufferingstart');
+    } else if ('loading' in response || 'load' in response) {
+      this.setState('loading');
+    } else if ('stopped' in response || 'idle' in response) {
+      this.setState('idle');
+    } else if ('endOfStream' in response) {
+      this.setState('ended');
+      this.emit('ended');
+    }
+
+    // Also check response.state for backward compatibility
+    if (response.state) {
+      switch (response.state) {
+        case 'load':
+          this.setState('loading');
+          break;
+        case 'buffering':
+          this.setState('buffering');
+          this.emit('bufferingstart');
+          break;
+        case 'playing':
+          this.setState('playing');
+          this.emit('bufferingend');
+          break;
+        case 'paused':
+          this.setState('paused');
+          break;
+        case 'stopped':
+        case 'idle':
+          this.setState('idle');
+          break;
+        case 'endOfStream':
+          this.setState('ended');
+          this.emit('ended');
+          break;
+      }
     }
 
     // Handle source info for tracks
