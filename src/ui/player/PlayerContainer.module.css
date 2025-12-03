@@ -18,11 +18,23 @@
   left: 0;
   width: 100%;
   height: 100%;
+  z-index: 0;
 }
 
-/* Controls Overlay */
+.videoContainer video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  z-index: 0;
+}
+
+/* Controls Overlay - must be above video but with transparent background to show video */
 .controlsOverlay {
   position: absolute;
+  z-index: 1;
   top: 0;
   left: 0;
   width: 100%;

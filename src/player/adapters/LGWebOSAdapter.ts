@@ -463,8 +463,14 @@ export class LGWebOSAdapter implements IPlayerAdapter {
       width: 100%;
       height: 100%;
       background: black;
+      display: block;
+      visibility: visible;
+      opacity: 1;
+      z-index: 0;
+      object-fit: contain;
     `;
     this.video.setAttribute('playsinline', '');
+    console.log('[LGWebOSAdapter] Video element created in container:', containerId);
 
     const container = containerId
       ? document.getElementById(containerId)
@@ -1408,7 +1414,11 @@ export class LGWebOSAdapter implements IPlayerAdapter {
    */
   private showVideoElement(): void {
     if (this.video) {
-      this.video.style.display = '';
+      // Ensure video is visible - use 'block' explicitly instead of empty string
+      this.video.style.display = 'block';
+      this.video.style.visibility = 'visible';
+      this.video.style.opacity = '1';
+      console.log('[LGWebOSAdapter] Video element shown');
     }
     this.usingLunaService = false;
   }
