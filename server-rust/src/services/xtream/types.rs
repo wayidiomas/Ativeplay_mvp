@@ -120,7 +120,7 @@ where
     deserializer.deserialize_option(StringOrIntVisitor)
 }
 
-/// Deserialize a required string that could be either string or integer
+/// Deserialize a required string that could be either string, integer, or null (null becomes empty string)
 fn deserialize_string_or_int_required<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -133,7 +133,7 @@ where
         type Value = String;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a string or an integer")
+            formatter.write_str("a string, an integer, or null")
         }
 
         fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -162,6 +162,34 @@ where
             E: de::Error,
         {
             Ok(value.to_string())
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value.to_string())
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(if value { "1".to_string() } else { "0".to_string() })
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(String::new())
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(String::new())
         }
     }
 
@@ -545,55 +573,55 @@ pub struct XtreamVodInfo {
 /// VOD metadata details
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamVodDetails {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub tmdb_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub title: Option<String>,
-    #[serde(default, rename = "o_name")]
+    #[serde(default, rename = "o_name", deserialize_with = "deserialize_string_or_int")]
     pub original_name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover_big: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub movie_image: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub releasedate: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub episode_run_time: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub youtube_trailer: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub director: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub actors: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cast: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub plot: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub age: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub mpaa_rating: Option<String>,
     #[serde(default)]
     pub rating_count_kinopoisk: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub country: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub genre: Option<String>,
     #[serde(default)]
     pub backdrop_path: Option<Vec<String>>,
     #[serde(default)]
     pub duration_secs: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub duration: Option<String>,
     #[serde(default)]
     pub bitrate: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub rating: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub year: Option<String>,
 }
 
@@ -605,32 +633,33 @@ pub struct XtreamVodDetails {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamSeries {
     pub series_id: i64,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub plot: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cast: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub director: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub genre: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub releaseDate: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub last_modified: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub rating: Option<String>,
     #[serde(default, rename = "rating_5based")]
     pub rating_5based: Option<f32>,
     #[serde(default)]
     pub backdrop_path: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub youtube_trailer: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub episode_run_time: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub category_id: Option<String>,
 }
 
@@ -647,73 +676,76 @@ pub struct XtreamSeriesInfo {
 /// Season information
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamSeason {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub air_date: Option<String>,
     #[serde(default)]
     pub episode_count: Option<i32>,
     #[serde(default)]
     pub id: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub overview: Option<String>,
     #[serde(default)]
     pub season_number: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover_big: Option<String>,
 }
 
 /// Series metadata details
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamSeriesDetails {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cover: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub plot: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub cast: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub director: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub genre: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub releaseDate: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub last_modified: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub rating: Option<String>,
     #[serde(default, rename = "rating_5based")]
     pub rating_5based: Option<f32>,
     #[serde(default)]
     pub backdrop_path: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub youtube_trailer: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub episode_run_time: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub category_id: Option<String>,
 }
 
 /// Episode information
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamEpisode {
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub id: String,
     pub episode_num: i32,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub title: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub container_extension: String,
     #[serde(default)]
     pub info: Option<XtreamEpisodeInfo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub custom_sid: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub added: Option<String>,
     #[serde(default)]
     pub season: Option<i32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub direct_source: Option<String>,
 }
 
@@ -722,15 +754,15 @@ pub struct XtreamEpisode {
 pub struct XtreamEpisodeInfo {
     #[serde(default)]
     pub tmdb_id: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub releasedate: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub plot: Option<String>,
     #[serde(default)]
     pub duration_secs: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub duration: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub movie_image: Option<String>,
     #[serde(default)]
     pub bitrate: Option<i32>,
@@ -747,16 +779,25 @@ pub struct XtreamEpisodeInfo {
 /// Short EPG entry (from get_short_epg)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct XtreamEpgEntry {
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub id: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub epg_id: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub title: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub lang: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub start: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub end: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub description: Option<String>,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub channel_id: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub start_timestamp: String,
+    #[serde(deserialize_with = "deserialize_string_or_int_required")]
     pub stop_timestamp: String,
     /// Whether this program has archive available (1 = yes, 0 = no)
     #[serde(default)]
