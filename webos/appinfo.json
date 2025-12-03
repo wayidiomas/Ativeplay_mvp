@@ -13,6 +13,7 @@
   "disableBackHistoryAPI": false,
   "requiredPermissions": [
     "time.query",
-    "media.operation"
+    "media.operation",
+    "application.operation"
   ]
 }
