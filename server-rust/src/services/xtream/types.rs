@@ -169,6 +169,46 @@ where
     }
 }
 
+/// Deserialize a string array that may contain null values
+/// Filters out null/non-string values and returns only valid strings
+fn deserialize_string_array_with_nulls<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Array(arr)) => {
+            let strings: Vec<String> = arr
+                .into_iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s),
+                    serde_json::Value::Null => None,
+                    // Convert other types to string
+                    other => Some(other.to_string().trim_matches('"').to_string()),
+                })
+                .filter(|s| !s.is_empty())
+                .collect();
+            if strings.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(strings))
+            }
+        }
+        // If it's a single string, wrap it in a vec
+        Some(serde_json::Value::String(s)) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(vec![s]))
+            }
+        }
+        // Other types - return None
+        Some(_) => Ok(None),
+    }
+}
+
 // ============================================================================
 // Normalization Helpers (inspired by @iptv/xtream-api)
 // ============================================================================
@@ -584,7 +624,7 @@ pub struct XtreamVodDetails {
     pub country: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub genre: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_array_with_nulls")]
     pub backdrop_path: Option<Vec<String>>,
     #[serde(default)]
     pub duration_secs: Option<i64>,
@@ -627,7 +667,7 @@ pub struct XtreamSeries {
     pub rating: Option<String>,
     #[serde(default, rename = "rating_5based")]
     pub rating_5based: Option<f32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_array_with_nulls")]
     pub backdrop_path: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub youtube_trailer: Option<String>,
@@ -703,7 +743,7 @@ pub struct XtreamSeriesDetails {
     pub rating: Option<String>,
     #[serde(default, rename = "rating_5based")]
     pub rating_5based: Option<f32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_array_with_nulls")]
     pub backdrop_path: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub youtube_trailer: Option<String>,
