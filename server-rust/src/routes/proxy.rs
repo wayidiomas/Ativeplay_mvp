@@ -17,7 +17,7 @@ use crate::AppState;
 // Re-export reqwest header module to avoid version conflicts
 mod reqwest_header {
     pub use reqwest::header::{
-        ACCEPT, ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE,
+        ACCEPT, ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
         ETAG, LAST_MODIFIED, RANGE, REFERER,
     };
 }
@@ -288,7 +288,7 @@ pub async fn hls_proxy(
     );
     response_headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        "Content-Length, Content-Type, Accept-Ranges".parse().unwrap(),
+        "Content-Length, Content-Type, Accept-Ranges, Content-Range".parse().unwrap(),
     );
 
     // For HLS manifests: read body, rewrite URLs, return modified content
@@ -351,6 +351,16 @@ pub async fn hls_proxy(
         if let Ok(ar) = accept_ranges.to_str() {
             if let Ok(parsed) = ar.parse() {
                 response_headers.insert(header::ACCEPT_RANGES, parsed);
+            }
+        }
+    }
+
+    // Forward Content-Range header for partial content (206) responses
+    // This is essential for MP4 byte-range playback
+    if let Some(content_range) = upstream_response.headers().get(reqwest_header::CONTENT_RANGE) {
+        if let Ok(cr) = content_range.to_str() {
+            if let Ok(parsed) = cr.parse() {
+                response_headers.insert(header::CONTENT_RANGE, parsed);
             }
         }
     }
