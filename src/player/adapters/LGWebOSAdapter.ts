@@ -1199,6 +1199,39 @@ export class LGWebOSAdapter implements IPlayerAdapter {
   // ============================================================================
 
   /**
+   * Get the windowId from the foreground app info
+   * This is required for Luna Service video to render on real TV devices
+   * Empty windowId only works on the emulator
+   */
+  private async getWindowId(): Promise<string> {
+    if (!this.webOS) {
+      return '';
+    }
+
+    return new Promise((resolve) => {
+      try {
+        this.webOS!.service.request('luna://com.webos.applicationManager', {
+          method: 'getForegroundAppInfo',
+          parameters: {},
+          onSuccess: (response: { windowId?: string; appId?: string; returnValue?: boolean }) => {
+            const windowId = response.windowId || '';
+            console.log('[LGWebOSAdapter] Got windowId from getForegroundAppInfo:', windowId, 'appId:', response.appId);
+            resolve(windowId);
+          },
+          onFailure: (error: LunaError) => {
+            console.error('[LGWebOSAdapter] Failed to get windowId:', error);
+            // Fallback to empty string (works on emulator)
+            resolve('');
+          },
+        });
+      } catch (e) {
+        console.error('[LGWebOSAdapter] Exception getting windowId:', e);
+        resolve('');
+      }
+    });
+  }
+
+  /**
    * Try to play using Luna Service (native webOS media player)
    * This supports more formats than HTML5 video including MKV, AVI, WMV, FLV
    */
@@ -1209,6 +1242,10 @@ export class LGWebOSAdapter implements IPlayerAdapter {
     }
 
     console.log('[LGWebOSAdapter] Attempting Luna Service playback for:', url.substring(0, 100));
+
+    // Get windowId first - required for video to render on real TV devices
+    const windowId = await this.getWindowId();
+    console.log('[LGWebOSAdapter] Using windowId for Luna Service:', windowId || '(empty - emulator mode)');
 
     return new Promise((resolve) => {
       try {
@@ -1226,7 +1263,7 @@ export class LGWebOSAdapter implements IPlayerAdapter {
             payload: {
               option: {
                 appId: 'com.ativeplay.app',
-                windowId: '',
+                windowId: windowId,
               },
             },
           },
